@@ -17,6 +17,7 @@ mod test_circuit_breaker;
 // Pre-existing compile failures (stale APIs / missing traits); not harvest coverage.
 // mod test_concurrent_timelocks;
 mod test_deposit;
+mod test_deposit_limits;
 #[cfg(feature = "dex-devnet")]
 mod test_dex_devnet;
 mod test_dex_integration;
