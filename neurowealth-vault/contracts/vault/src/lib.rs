@@ -6106,6 +6106,36 @@ impl NeuroWealthVault {
         Self::get_max_deposit_internal(&env)
     }
 
+    /// Returns both the minimum and maximum per-transaction deposit limits as
+    /// a single `(min, max)` tuple.
+    ///
+    /// This is the recommended view function for deposit-limit validation
+    /// because it avoids two separate RPC round-trips when both values are
+    /// needed (e.g., frontend preview or off-chain validation).
+    ///
+    /// # Returns
+    ///
+    /// `(min_deposit, max_deposit)` where:
+    /// - `min_deposit` — minimum USDC per deposit (default 1,000,000 = 1 USDC)
+    /// - `max_deposit` — maximum USDC per deposit (default 10,000,000,000 = 10,000 USDC)
+    ///
+    /// Both values are in stroops (7 decimal places).
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// - [`VaultError::NotInitialized`] if the vault has not been initialized.
+    pub fn get_deposit_limits(env: Env) -> (i128, i128) {
+        Self::require_initialized(&env);
+        (
+            Self::get_min_deposit_internal(&env),
+            Self::get_max_deposit_internal(&env),
+        )
+    }
+
     // ==========================================================================
     // USER STRATEGY PREFERENCE
     // ==========================================================================
