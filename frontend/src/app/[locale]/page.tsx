@@ -8,6 +8,7 @@ import { StrategyBadge } from '@/components/StrategyBadge';
 import { PortfolioChart } from '@/components/PortfolioChart';
 import { TransactionHistory } from '@/components/TransactionHistory';
 import { ActionModal } from '@/components/ActionModal';
+import { WithdrawalModal } from '@/components/WithdrawalModal';
 import { MessageSquare, Bot, ArrowRight, ShieldCheck, Zap, Layers } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { connectFreighterWallet } from '@/lib/freighter';
@@ -37,6 +38,7 @@ export default function DashboardPage() {
   // Modal State
   const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
   const [modalType, setModalType] = useState<'deposit' | 'withdraw'>('deposit');
+  const [isWithdrawModalOpen, setIsWithdrawModalOpen] = useState<boolean>(false);
 
   const handleConnect = async () => {
     const key = await connectFreighterWallet();
@@ -74,8 +76,12 @@ export default function DashboardPage() {
   }, [publicKey]);
 
   const openModal = (type: 'deposit' | 'withdraw') => {
-    setModalType(type);
-    setIsModalOpen(true);
+    if (type === 'withdraw') {
+      setIsWithdrawModalOpen(true);
+    } else {
+      setModalType(type);
+      setIsModalOpen(true);
+    }
   };
 
   return (
@@ -179,7 +185,7 @@ export default function DashboardPage() {
         </main>
       </div>
 
-      {/* Action Modal */}
+      {/* Action Modal — deposit only */}
       <ActionModal
         isOpen={isModalOpen}
         onClose={() => setIsModalOpen(false)}
@@ -187,6 +193,17 @@ export default function DashboardPage() {
         userPublicKey={publicKey}
         balance={vaultState.balance}
         exchangeRate={vaultState.exchangeRate}
+      />
+
+      {/* Withdrawal Modal — full withdrawal flow with preview and pause support */}
+      <WithdrawalModal
+        isOpen={isWithdrawModalOpen}
+        onClose={() => setIsWithdrawModalOpen(false)}
+        userPublicKey={publicKey}
+        balance={vaultState.balance}
+        exchangeRate={vaultState.exchangeRate}
+        isPaused={false}
+        onSuccess={(newBalance) => setVaultState((prev) => ({ ...prev, balance: newBalance }))}
       />
 
       {/* Footer */}
