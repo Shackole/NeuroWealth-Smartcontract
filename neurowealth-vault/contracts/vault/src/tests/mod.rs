@@ -26,6 +26,7 @@ mod test_event_schema;
 mod test_events;
 mod test_exchange_rate;
 mod test_fuzz_deposit_withdraw;
+mod test_get_pending_agent_update_none;
 mod test_get_user_strategy_unset;
 mod test_harvest;
 mod test_inflation_attack;
