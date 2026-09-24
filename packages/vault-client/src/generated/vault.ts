@@ -66,6 +66,22 @@ export interface RateLimitState {
   calls: number;
 }
 
+/**
+ * Asset breakdown returned by {@link VaultClient.getAssetBreakdown}.
+ *
+ * Both values use 7 decimal places (Stellar USDC convention):
+ *   1 USDC = 10_000_000 raw units.
+ *
+ * Invariant (within rounding):
+ *   `idle + deployed ≈ get_total_deposits()`
+ */
+export interface AssetBreakdown {
+  /** USDC held inside the vault contract, not yet deployed to any protocol (i128, 7 decimals) */
+  idle: bigint;
+  /** USDC currently supplied to the active yield protocol (i128, 7 decimals) */
+  deployed: bigint;
+}
+
 // ----------------------------------------------------------------
 // Event payload types
 // ----------------------------------------------------------------
@@ -1855,6 +1871,48 @@ export class VaultClient {
   }
 
   /**
+   * Get the vault's asset breakdown as (idle, deployed) in a single call.
+   *
+   * Avoids two separate RPC round-trips compared to calling
+   * `get_idle_balance` + `get_deployed_assets` individually.
+   *
+   * @returns Promise resolving to `{ idle: bigint, deployed: bigint }`.
+   *   - `idle`     — USDC held in the vault and not deployed to any protocol (7 decimals).
+   *   - `deployed` — USDC currently supplied to the active yield protocol (7 decimals).
+   *
+   * @example
+   * ```typescript
+   * const breakdown = await client.getAssetBreakdown(sourcePublicKey);
+   * const sum = breakdown.idle + breakdown.deployed;  // ≈ get_total_deposits()
+   * ```
+   */
+  async getAssetBreakdown(sourcePublicKey: string): Promise<AssetBreakdown> {
+    const args: StellarSdk.xdr.ScVal[] = [];
+    const raw = await this.simulate<[bigint, bigint] | { idle: bigint; deployed: bigint } | unknown>(
+      'get_asset_breakdown',
+      args,
+      sourcePublicKey,
+    );
+
+    // The Soroban contract returns a tuple (idle, deployed).
+    // scValToNative converts Soroban tuples to JS arrays.
+    if (Array.isArray(raw) && raw.length === 2) {
+      return { idle: BigInt(raw[0]), deployed: BigInt(raw[1]) };
+    }
+
+    // Fallback: object shape (if the SDK ever maps it differently)
+    if (raw && typeof raw === 'object' && 'idle' in (raw as object) && 'deployed' in (raw as object)) {
+      const obj = raw as { idle: bigint | number; deployed: bigint | number };
+      return { idle: BigInt(obj.idle), deployed: BigInt(obj.deployed) };
+    }
+
+    throw new Error(
+      `get_asset_breakdown returned an unexpected shape: ${JSON.stringify(raw)}`
+    );
+  }
+
+  /**
+   * @deprecated Use {@link getAssetBreakdown} for a typed return value.
    * Get the vault's asset breakdown as (idle, deployed) in a single call
    */
   async get_asset_breakdown(sourcePublicKey: string): Promise<unknown> {
