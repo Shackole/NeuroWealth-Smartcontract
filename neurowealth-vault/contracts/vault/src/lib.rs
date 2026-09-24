@@ -491,6 +491,16 @@ pub enum DataKey {
     LastRebalanceLedger,
     /// Number of ledgers added to the current ledger for protocol approvals.
     ApprovalTtl,
+    /// Ledger at which the last Blend token approval expires.
+    ///
+    /// Written by `supply_to_blend` whenever an approval is issued.
+    /// Read by `maybe_renew_blend_approval` to decide whether a near-expiry
+    /// renewal is needed before the next `rebalance` or `harvest` call (#57).
+    BlendApprovalExpiry,
+    /// Ledger at which the last DEX token approval expires.
+    ///
+    /// Analogous to `BlendApprovalExpiry` for the DEX supply path (#57).
+    DexApprovalExpiry,
     /// DEX liquidity pool contract address
     /// The address of the Stellar DEX liquidity pool contract used by the
     /// Balanced/Growth strategies for on-chain liquidity provision.
@@ -1874,6 +1884,14 @@ const MAX_DEPOSIT_CEILING: i128 = 100_000_000_000_i128;
 pub(crate) const DEFAULT_APPROVAL_TTL: u32 = 100_000;
 const MIN_APPROVAL_TTL: u32 = 1_000;
 const MAX_APPROVAL_TTL: u32 = 500_000;
+/// Ledgers-remaining threshold below which a token approval is proactively
+/// renewed before `rebalance` and `harvest` (#57).
+///
+/// When the stored approval expiry is within this many ledgers of the current
+/// ledger sequence, `rebalance` and `harvest` renew the approval to a full
+/// `ApprovalTtl` window before executing any protocol call.  This prevents
+/// protocol calls from reverting because a stale allowance expired mid-call.
+pub(crate) const APPROVAL_RENEWAL_THRESHOLD: u32 = 1_000;
 
 /// Default circuit-breaker threshold (#439): the number of consecutive failed
 /// rebalances that trips an automatic emergency pause when the owner has not
@@ -3943,6 +3961,12 @@ impl NeuroWealthVault {
         // calls, so a gracefully handled failed exit still counts as an attempt.
         Self::enforce_global_rate_limit(&env, RATE_LIMIT_REBALANCE);
 
+        // Near-expiry approval renewal (#57): proactively refresh token
+        // approvals for whichever protocol pool is configured before any
+        // protocol call is made, so approvals never lapse mid-call.
+        Self::maybe_renew_blend_approval(&env);
+        Self::maybe_renew_dex_approval(&env);
+
         let current_protocol: Symbol = env
             .storage()
             .instance()
@@ -4652,6 +4676,11 @@ impl NeuroWealthVault {
         // alternating between `rebalance` and `harvest`.
         Self::enforce_global_rate_limit(&env, RATE_LIMIT_REBALANCE);
 
+        // Near-expiry approval renewal (#57): proactively refresh token
+        // approvals before the withdraw-then-resupply round-trip.
+        Self::maybe_renew_blend_approval(&env);
+        Self::maybe_renew_dex_approval(&env);
+
         let withdrawn = Self::withdraw_from_protocol(&env, &current_protocol, min_out);
 
         if withdrawn > 0 {
@@ -4892,6 +4921,11 @@ impl NeuroWealthVault {
         // global rebalance bucket so it cannot bypass the frequency guard by
         // alternating between `rebalance` and `harvest`.
         Self::enforce_global_rate_limit(&env, RATE_LIMIT_REBALANCE);
+
+        // Near-expiry approval renewal (#57): proactively refresh token
+        // approvals before the withdraw-then-resupply round-trip.
+        Self::maybe_renew_blend_approval(&env);
+        Self::maybe_renew_dex_approval(&env);
 
         let withdrawn = Self::withdraw_from_protocol(&env, &current_protocol, min_out);
 
@@ -9687,6 +9721,135 @@ impl NeuroWealthVault {
         }
     }
 
+    // ─── Near-expiry approval renewal helpers (#57) ───────────────────────────
+
+    /// Proactively renews the Blend token approval if the stored expiry is
+    /// within `APPROVAL_RENEWAL_THRESHOLD` ledgers of the current sequence.
+    ///
+    /// Called at the start of `rebalance` and `harvest` so that approvals
+    /// never expire mid-call even if many ledgers have elapsed between agent
+    /// invocations.  When no approval has been issued yet (no stored expiry)
+    /// this is a no-op — `supply_to_blend` will issue the first approval when
+    /// it is called.
+    ///
+    /// The renewal issues an approval for `i128::MAX` (the maximum possible
+    /// allowance) so the spender can consume whatever amount the subsequent
+    /// supply call requires without a second approval round-trip.
+    fn maybe_renew_blend_approval(env: &Env) {
+        let stored_expiry: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::BlendApprovalExpiry)
+            .unwrap_or(0);
+
+        if stored_expiry == 0 {
+            // No approval has been issued yet; nothing to renew.
+            return;
+        }
+
+        let current = env.ledger().sequence();
+        let ledgers_remaining = stored_expiry.saturating_sub(current);
+
+        if ledgers_remaining <= APPROVAL_RENEWAL_THRESHOLD {
+            // Approval is near expiry — renew it now.
+            let pool_address: Option<Address> =
+                env.storage().instance().get(&DataKey::BlendPool);
+            let usdc_token: Option<Address> =
+                env.storage().instance().get(&DataKey::UsdcToken);
+
+            if let (Some(pool), Some(token)) = (pool_address, usdc_token) {
+                let vault_address = env.current_contract_address();
+                let new_expiry = current.saturating_add(Self::get_approval_ttl_internal(env));
+
+                let approval_args: Vec<Val> = vec![
+                    env,
+                    vault_address.clone().into_val(env),
+                    pool.clone().into_val(env),
+                    i128::MAX.into_val(env),
+                    new_expiry.into_val(env),
+                ];
+
+                env.authorize_as_current_contract(vec![
+                    env,
+                    InvokerContractAuthEntry::Contract(SubContractInvocation {
+                        context: ContractContext {
+                            contract: token.clone(),
+                            fn_name: Symbol::new(env, "approve"),
+                            args: approval_args,
+                        },
+                        sub_invocations: vec![env],
+                    }),
+                ]);
+
+                let token_client = token::Client::new(env, &token);
+                token_client.approve(&vault_address, &pool, &i128::MAX, &new_expiry);
+
+                // Update stored expiry.
+                env.storage()
+                    .instance()
+                    .set(&DataKey::BlendApprovalExpiry, &new_expiry);
+            }
+        }
+    }
+
+    /// Proactively renews the DEX token approval if the stored expiry is
+    /// within `APPROVAL_RENEWAL_THRESHOLD` ledgers of the current sequence (#57).
+    ///
+    /// Analogous to `maybe_renew_blend_approval` for the DEX supply path.
+    fn maybe_renew_dex_approval(env: &Env) {
+        let stored_expiry: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::DexApprovalExpiry)
+            .unwrap_or(0);
+
+        if stored_expiry == 0 {
+            return;
+        }
+
+        let current = env.ledger().sequence();
+        let ledgers_remaining = stored_expiry.saturating_sub(current);
+
+        if ledgers_remaining <= APPROVAL_RENEWAL_THRESHOLD {
+            let pool_address: Option<Address> =
+                env.storage().instance().get(&DataKey::DexPool);
+            let usdc_token: Option<Address> =
+                env.storage().instance().get(&DataKey::UsdcToken);
+
+            if let (Some(pool), Some(token)) = (pool_address, usdc_token) {
+                let vault_address = env.current_contract_address();
+                let new_expiry = current.saturating_add(Self::get_approval_ttl_internal(env));
+
+                let approval_args: Vec<Val> = vec![
+                    env,
+                    vault_address.clone().into_val(env),
+                    pool.clone().into_val(env),
+                    i128::MAX.into_val(env),
+                    new_expiry.into_val(env),
+                ];
+
+                env.authorize_as_current_contract(vec![
+                    env,
+                    InvokerContractAuthEntry::Contract(SubContractInvocation {
+                        context: ContractContext {
+                            contract: token.clone(),
+                            fn_name: Symbol::new(env, "approve"),
+                            args: approval_args,
+                        },
+                        sub_invocations: vec![env],
+                    }),
+                ]);
+
+                let token_client = token::Client::new(env, &token);
+                token_client.approve(&vault_address, &pool, &i128::MAX, &new_expiry);
+
+                env.storage()
+                    .instance()
+                    .set(&DataKey::DexApprovalExpiry, &new_expiry);
+            }
+        }
+    }
+
     /// Internal helper: Supplies USDC to the Blend pool.
     ///
     /// This function handles the cross-contract call to Blend's supply function.
@@ -9770,6 +9933,12 @@ impl NeuroWealthVault {
             }),
         ]);
         token_client.approve(&vault_address, &pool_address, &amount, &approval_ledger);
+
+        // Record the expiry so the near-expiry renewal guard in rebalance/harvest
+        // can proactively refresh this approval before it lapses (#57).
+        env.storage()
+            .instance()
+            .set(&DataKey::BlendApprovalExpiry, &approval_ledger);
 
         // Authorize and execute Blend supply
         env.authorize_as_current_contract(vec![
@@ -9967,6 +10136,12 @@ impl NeuroWealthVault {
             }),
         ]);
         token_client.approve(&vault_address, &pool_address, &amount, &approval_ledger);
+
+        // Record the expiry so the near-expiry renewal guard in rebalance/harvest
+        // can proactively refresh this approval before it lapses (#57).
+        env.storage()
+            .instance()
+            .set(&DataKey::DexApprovalExpiry, &approval_ledger);
 
         // Authorize and execute the DEX add_liquidity (pulls USDC via transfer_from).
         env.authorize_as_current_contract(vec![
