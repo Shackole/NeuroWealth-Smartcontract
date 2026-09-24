@@ -368,6 +368,9 @@ impl VaultError {
     pub const EmergencyWithdrawalNotAllowed: Self = Self::NotPaused;
     pub const HoldingPeriodNotElapsed: Self = Self::InvalidStrategy;
     pub const InvalidHoldingPeriod: Self = Self::InvalidStrategy;
+    /// Alias for `TimelockNotExpired` using the vocabulary from issue #58.
+    /// Both names map to the same on-chain error code (#50).
+    pub const TimelockNotElapsed: Self = Self::TimelockNotExpired;
 }
 
 // ============================================================================
@@ -6309,26 +6312,30 @@ impl NeuroWealthVault {
     /// Can only be called once `env.ledger().sequence() >= AgentTimelockExpiry`.
     /// On success the pending agent becomes the active agent and the proposal is cleared.
     ///
+    /// **Idempotency**: if no pending proposal exists (because the update was
+    /// already confirmed or there was never a proposal), this function returns
+    /// without error or events — it is a no-op. This makes double-confirm safe
+    /// and avoids spurious failures from replayed or retried transactions.
+    ///
     /// # Events
     ///
-    /// Emits:
+    /// Emits (only when a pending proposal is actually applied):
     /// - `AgentUpdateConfirmedEvent`
     /// - `AgentUpdatedEvent` (for backward-compatible indexers)
     ///
     /// # Panics
     ///
     /// - If the caller is not the owner.
-    /// - If no pending proposal exists (`NoTimelockPending`).
-    /// - If the timelock delay has not yet elapsed (`TimelockNotExpired`).
+    /// - If the timelock delay has not yet elapsed (`TimelockNotElapsed` / `TimelockNotExpired`, error #50).
     pub fn confirm_agent_update(env: Env) {
         Self::require_initialized(&env);
         Self::require_is_owner(&env);
 
-        Self::require(
-            &env,
-            env.storage().instance().has(&DataKey::PendingAgent),
-            VaultError::NoTimelockPending,
-        );
+        // Idempotency: if no pending proposal exists, silently return.
+        // This makes double-confirm a safe no-op instead of a hard panic.
+        if !env.storage().instance().has(&DataKey::PendingAgent) {
+            return;
+        }
 
         let expiry: u32 = env
             .storage()
@@ -6339,7 +6346,7 @@ impl NeuroWealthVault {
         Self::require(
             &env,
             env.ledger().sequence() >= expiry,
-            VaultError::TimelockNotExpired,
+            VaultError::TimelockNotElapsed,
         );
 
         let old_agent: Address = env.storage().instance().get(&DataKey::Agent).unwrap();
@@ -6376,7 +6383,9 @@ impl NeuroWealthVault {
     /// Cancels a pending agent update before it can be confirmed. (#317)
     ///
     /// Only the owner may cancel. Clears the pending proposal so a new one can
-    /// be proposed. Safe to call at any point during the timelock window.
+    /// be proposed. Safe to call at any point — both **before** and **after**
+    /// the timelock expiry — giving the owner the option to simply discard a
+    /// proposal rather than confirming it even once the window has opened.
     ///
     /// # Events
     ///
