@@ -368,6 +368,10 @@ impl VaultError {
     pub const EmergencyWithdrawalNotAllowed: Self = Self::NotPaused;
     pub const HoldingPeriodNotElapsed: Self = Self::InvalidStrategy;
     pub const InvalidHoldingPeriod: Self = Self::InvalidStrategy;
+    /// No pending ownership transfer exists (`accept_ownership` called with nothing pending).
+    pub const NoPendingOwner: Self = Self::CallerIsNotPendingOwner;
+    /// The pending ownership transfer has expired and can no longer be accepted.
+    pub const OwnershipTransferExpired: Self = Self::CallerIsNotPendingOwner;
 }
 
 // ============================================================================
@@ -608,6 +612,14 @@ pub enum DataKey {
     /// `update_standby_agent` and perform an instant switchover via
     /// `switch_to_standby_agent`. Appended to preserve serialized layout.
     StandbyAgent,
+
+    /// Ledger sequence at which the pending ownership transfer expires (#61).
+    ///
+    /// Written atomically with `DataKey::PendingOwner` when `transfer_ownership`
+    /// is called. If `accept_ownership` is not called before this ledger, the
+    /// transfer is considered expired and the owner may re-propose without
+    /// calling `cancel_ownership_transfer` first.
+    PendingOwnerExpiry,
 }
 
 /// Owner-configured allowance for one rate-limit category.
@@ -1227,6 +1239,21 @@ pub struct OwnershipTransferCancelledEvent {
     pub owner: Address,
     /// Pending owner address that was discarded
     pub cancelled_pending: Address,
+}
+
+/// Emitted when a stale pending ownership transfer is overwritten by a new
+/// proposal because the previous proposal's 48-hour window has expired (#61).
+///
+/// # Topics
+/// - `SymbolShort("own_expir")` (`TOPIC_OWNERSHIP_EXPIRED`) - Event identifier
+#[contracttype]
+pub struct PendingOwnerExpiredEvent {
+    /// Current owner who is re-proposing.
+    pub owner: Address,
+    /// Expired pending-owner address that was silently discarded.
+    pub expired_pending: Address,
+    /// The new proposed owner address replacing the expired one.
+    pub new_pending: Address,
 }
 
 /// Information about a pending ownership transfer.
@@ -1884,6 +1911,12 @@ const DEFAULT_MAX_CONSECUTIVE_FAILURES: u32 = 3;
 /// 17,280 ledgers × ~5 s per ledger ≈ 86,400 s = 24 h.
 const AGENT_TIMELOCK_LEDGERS: u32 = 17_280;
 
+/// Number of ledgers after which a pending ownership transfer expires (#61).
+/// 34,560 ledgers × ~5 s per ledger ≈ 172,800 s = 48 h.
+/// If `accept_ownership` is not called within this window the proposal is
+/// considered expired and the owner can re-propose without cancelling first.
+const OWNERSHIP_TRANSFER_EXPIRY_LEDGERS: u32 = 34_560;
+
 /// Number of ledgers an upgrade must wait between `schedule_upgrade` and
 /// `execute_upgrade` (#316). Same 24-hour window as the agent timelock, giving
 /// users and operators a recovery window to react to a malicious or mistaken
@@ -1963,8 +1996,8 @@ use topics::{
     TOPIC_DEX_POOL_CONFIGURED, TOPIC_DEX_SUPPLY, TOPIC_DEX_WITHDRAW, TOPIC_EMERGENCY_HARVEST,
     TOPIC_EMERGENCY_PAUSED, TOPIC_EMERGENCY_WITHDRAWAL, TOPIC_HARVEST, TOPIC_INIT,
     TOPIC_LIMITS_UPDATED, TOPIC_MAX_FAILURES_UPDATED, TOPIC_MIGRATE, TOPIC_MIGRATION_PAUSED,
-    TOPIC_MIGRATION_TARGET_UPDATED, TOPIC_OWNERSHIP_CANCELLED, TOPIC_OWNERSHIP_INITIATED,
-    TOPIC_OWNERSHIP_TRANSFERRED, TOPIC_PAUSED, TOPIC_PROTOCOL_CHANGED,
+    TOPIC_MIGRATION_TARGET_UPDATED, TOPIC_OWNERSHIP_CANCELLED, TOPIC_OWNERSHIP_EXPIRED,
+    TOPIC_OWNERSHIP_INITIATED, TOPIC_OWNERSHIP_TRANSFERRED, TOPIC_PAUSED, TOPIC_PROTOCOL_CHANGED,
     TOPIC_RATE_LIMIT_CONFIG_UPDATED, TOPIC_RATE_LIMIT_HIT, TOPIC_REBALANCE,
     TOPIC_REBALANCE_COOLDOWN_UPDATED, TOPIC_REBALANCE_FAILED, TOPIC_SHARES_LOCKED,
     TOPIC_SHARES_UNLOCKED, TOPIC_SUPPORTED_ASSETS_UPDATED, TOPIC_STANDBY_AGENT_UPDATED,
@@ -7037,9 +7070,50 @@ impl NeuroWealthVault {
 
         let current_owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
 
+        // If there is already a pending transfer, check whether it has expired.
+        // An expired pending transfer can be silently overwritten (re-proposed)
+        // without requiring an explicit cancel first (#61).
+        // A still-active (non-expired) pending transfer must be cancelled first.
+        if let Some(existing_pending) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Address>(&DataKey::PendingOwner)
+        {
+            let expiry: u32 = env
+                .storage()
+                .instance()
+                .get(&DataKey::PendingOwnerExpiry)
+                .unwrap_or(0);
+
+            if expiry == 0 || env.ledger().sequence() < expiry {
+                // Transfer is still active — owner must cancel first.
+                // We reuse TimelockAlreadyPending to signal "a proposal is
+                // already live and has not yet expired."
+                panic_with_error!(&env, VaultError::TimelockAlreadyPending);
+            }
+
+            // Expired: silently overwrite and emit PendingOwnerExpiredEvent.
+            env.events().publish(
+                (TOPIC_OWNERSHIP_EXPIRED,),
+                PendingOwnerExpiredEvent {
+                    owner: current_owner.clone(),
+                    expired_pending: existing_pending,
+                    new_pending: new_owner.clone(),
+                },
+            );
+        }
+
+        let expiry_ledger = env
+            .ledger()
+            .sequence()
+            .saturating_add(OWNERSHIP_TRANSFER_EXPIRY_LEDGERS);
+
         env.storage()
             .instance()
             .set(&DataKey::PendingOwner, &new_owner);
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingOwnerExpiry, &expiry_ledger);
 
         env.events().publish(
             (TOPIC_OWNERSHIP_INITIATED,),
@@ -7082,22 +7156,35 @@ impl NeuroWealthVault {
         Self::require_initialized(&env);
         new_owner.require_auth();
 
+        // Require that a pending transfer exists; otherwise NoPendingOwner.
         let pending: Address = env
             .storage()
             .instance()
             .get(&DataKey::PendingOwner)
-            .unwrap_or_else(|| panic_with_error!(&env, VaultError::CallerIsNotPendingOwner));
+            .unwrap_or_else(|| panic_with_error!(&env, VaultError::NoPendingOwner));
 
+        // Verify the caller matches the pending owner.
         Self::require(
             &env,
             new_owner == pending,
             VaultError::CallerIsNotPendingOwner,
         );
 
+        // Reject if the 48-hour acceptance window has elapsed (#61).
+        let expiry: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingOwnerExpiry)
+            .unwrap_or(0);
+        if expiry > 0 && env.ledger().sequence() >= expiry {
+            panic_with_error!(&env, VaultError::OwnershipTransferExpired);
+        }
+
         let old_owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
 
         env.storage().instance().set(&DataKey::Owner, &new_owner);
         env.storage().instance().remove(&DataKey::PendingOwner);
+        env.storage().instance().remove(&DataKey::PendingOwnerExpiry);
 
         env.events().publish(
             (TOPIC_OWNERSHIP_TRANSFERRED,),
@@ -7147,6 +7234,7 @@ impl NeuroWealthVault {
         let owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
 
         env.storage().instance().remove(&DataKey::PendingOwner);
+        env.storage().instance().remove(&DataKey::PendingOwnerExpiry);
 
         env.events().publish(
             (TOPIC_OWNERSHIP_CANCELLED,),
@@ -7183,9 +7271,16 @@ impl NeuroWealthVault {
     pub fn get_pending_ownership(env: Env) -> Option<PendingOwnershipInfo> {
         Self::require_initialized(&env);
         let pending_owner: Option<Address> = env.storage().instance().get(&DataKey::PendingOwner);
-        pending_owner.map(|owner| PendingOwnershipInfo {
-            pending_owner: owner,
-            timelock_expiry: 0,
+        pending_owner.map(|owner| {
+            let expiry: u32 = env
+                .storage()
+                .instance()
+                .get(&DataKey::PendingOwnerExpiry)
+                .unwrap_or(0);
+            PendingOwnershipInfo {
+                pending_owner: owner,
+                timelock_expiry: u64::from(expiry),
+            }
         })
     }
 
