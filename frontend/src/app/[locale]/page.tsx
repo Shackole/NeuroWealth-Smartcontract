@@ -5,6 +5,7 @@ import { Header } from '@/components/Header';
 import { BalanceCard } from '@/components/BalanceCard';
 import { EarningsCard } from '@/components/EarningsCard';
 import { StrategyBadge } from '@/components/StrategyBadge';
+import { APYDisplay } from '@/components/APYDisplay';
 import { PortfolioChart } from '@/components/PortfolioChart';
 import { TransactionHistory } from '@/components/TransactionHistory';
 import { ActionModal } from '@/components/ActionModal';
@@ -108,8 +109,8 @@ export default function DashboardPage() {
             </div>
           )}
 
-          {/* Top 3 Cards Grid */}
-          <section id="dashboard" className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          {/* Top Cards Grid — 2-col on md, 4-col on lg */}
+          <section id="dashboard" className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
             <BalanceCard
               balance={vaultState.balance}
               usdEquivalent={vaultState.balance * 1.0}
@@ -120,6 +121,12 @@ export default function DashboardPage() {
             />
 
             <EarningsCard earnings={earnings} isConnected={!!publicKey} />
+
+            {/* Real-time APY Display — Issue #10 */}
+            <APYDisplay
+              apyOverride={vaultState.apy}
+              strategy={vaultState.strategy}
+            />
 
             <StrategyBadge
               strategy={vaultState.strategy}
