@@ -38,6 +38,7 @@ mod test_multi_user_concurrent;
 mod test_multi_asset;
 mod test_no_privilege_escalation_proptest;
 mod test_pause;
+mod test_partial_withdrawal;
 mod test_pool_config_idempotent;
 mod test_pool_rotation_with_deployed_funds;
 mod test_rate_limiting;
