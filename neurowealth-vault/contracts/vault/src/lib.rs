@@ -6424,6 +6424,14 @@ impl NeuroWealthVault {
     /// 24-hour timelock window opened by [`update_agent`](crate::NeuroWealthVault::update_agent), and decide
     /// whether to let it proceed or call [`cancel_agent_update`](crate::NeuroWealthVault::cancel_agent_update).
     ///
+    /// **Post-confirm / post-cancel behaviour (issue #58):** Both
+    /// [`confirm_agent_update`](crate::NeuroWealthVault::confirm_agent_update) and
+    /// [`cancel_agent_update`](crate::NeuroWealthVault::cancel_agent_update) remove the
+    /// `PendingAgent` and `AgentTimelockExpiry` storage entries before they
+    /// return. Therefore this function **always returns `None`** after either
+    /// of those operations completes — the `Some` variant can only be observed
+    /// while a proposal is still in flight.
+    ///
     /// # Arguments
     ///
     /// * `env` - The Soroban environment.
@@ -6433,8 +6441,10 @@ impl NeuroWealthVault {
     /// * `Some((new_agent, effective_ledger))` while a proposal is pending,
     ///   where `effective_ledger` is the first ledger at which
     ///   [`confirm_agent_update`](crate::NeuroWealthVault::confirm_agent_update) may be called.
-    /// * `None` when no proposal is pending — either none was made, or it was
-    ///   already confirmed or cancelled.
+    /// * `None` when no proposal is pending — either:
+    ///   - No proposal has been submitted yet (`update_agent` not called), **or**
+    ///   - The proposal was confirmed via `confirm_agent_update`, **or**
+    ///   - The proposal was cancelled via `cancel_agent_update`.
     ///
     /// Compare `effective_ledger` against `env.ledger().sequence()` to tell a
     /// still-waiting proposal from a ready-to-confirm one. The currently active
@@ -6464,9 +6474,11 @@ impl NeuroWealthVault {
     ///     Some((new_agent, effective_ledger)) => {
     ///         if env.ledger().sequence() >= effective_ledger {
     ///             vault_client.confirm_agent_update();
+    ///             // get_pending_agent_update() now returns None
     ///         } else {
     ///             // Still inside the timelock window; cancel if unexpected.
-    ///             let _ = new_agent;
+    ///             vault_client.cancel_agent_update();
+    ///             // get_pending_agent_update() now returns None
     ///         }
     ///     }
     /// }
