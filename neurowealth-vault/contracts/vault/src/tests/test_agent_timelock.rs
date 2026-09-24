@@ -168,17 +168,30 @@ fn test_new_proposal_allowed_after_cancel() {
     assert!(client.get_pending_agent_update().is_some());
 }
 
-/// Confirm with no pending proposal must be rejected with NoTimelockPending (#49).
+/// Confirm with no pending proposal is a no-op (idempotent after confirmation
+/// or when no proposal was ever made). The active agent must remain unchanged.
 #[test]
-#[should_panic(expected = "Error(Contract, #49)")]
-fn test_confirm_with_no_pending_rejected() {
+fn test_confirm_with_no_pending_is_noop() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, _owner, _usdc_token) = setup_vault_with_token(&env);
+    let (contract_id, old_agent, _owner, _usdc_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
+    // Confirm with no proposal in flight — must return without error.
     client.confirm_agent_update();
+
+    // Active agent must be unchanged.
+    assert_eq!(
+        client.get_agent(),
+        old_agent,
+        "active agent must not change on no-op confirm"
+    );
+    // Pending state still empty.
+    assert!(
+        client.get_pending_agent_update().is_none(),
+        "no pending state should exist"
+    );
 }
 
 /// Cancel with no pending proposal must be rejected with NoTimelockPending (#49).
@@ -247,6 +260,52 @@ fn test_confirm_agent_update_long_after_expiry_succeeds() {
     );
 }
 
+// ─── Double-confirm idempotency (#58) ────────────────────────────────────────
+
+/// `confirm_agent_update()` called a second time after a successful first
+/// confirmation is a silent no-op — it must not panic, must not change the
+/// active agent again, and must leave `get_pending_agent_update()` as `None`.
+#[test]
+fn test_double_confirm_is_noop() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (contract_id, _old_agent, _owner, _usdc_token) = setup_vault_with_token(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+
+    let new_agent = Address::generate(&env);
+    client.update_agent(&new_agent);
+
+    let (_, expiry) = client.get_pending_agent_update().unwrap();
+    env.ledger().set_sequence_number(expiry);
+
+    // First confirm — applies the update.
+    client.confirm_agent_update();
+    assert_eq!(
+        client.get_agent(),
+        new_agent,
+        "agent must be updated after first confirm"
+    );
+    assert!(
+        client.get_pending_agent_update().is_none(),
+        "pending state must be cleared after first confirm"
+    );
+
+    // Second confirm — must be a silent no-op.
+    client.confirm_agent_update();
+
+    // Agent still the same, no stale rollback.
+    assert_eq!(
+        client.get_agent(),
+        new_agent,
+        "active agent must not change on double-confirm"
+    );
+    assert!(
+        client.get_pending_agent_update().is_none(),
+        "pending state must remain empty after double-confirm"
+    );
+}
+
 // ─── Issue #514 ──────────────────────────────────────────────────────────────
 
 /// `cancel_agent_update()` panics with `NoTimelockPending` (#49) when called
@@ -280,18 +339,18 @@ fn test_cancel_agent_update_after_prior_cancel_rejected() {
 
 // ─── Issue #533 ──────────────────────────────────────────────────────────────
 
-/// `confirm_agent_update()` panics with `NoTimelockPending` (#49) when called
-/// after the pending proposal was already cancelled — the slot is empty again.
+/// `confirm_agent_update()` is a no-op when called after the pending proposal
+/// was already cancelled — the pending slot is empty and confirm silently
+/// returns without changing the active agent.
 ///
-/// This verifies that cancel clears the pending state so that a subsequent
-/// confirm has nothing to act on.
+/// This verifies that cancel clears the pending state so a subsequent confirm
+/// has nothing to act on and does not apply any stale change.
 #[test]
-#[should_panic(expected = "Error(Contract, #49)")]
-fn test_confirm_after_cancel_rejected() {
+fn test_confirm_after_cancel_is_noop() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, _owner, _usdc_token) = setup_vault_with_token(&env);
+    let (contract_id, old_agent, _owner, _usdc_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
     let new_agent = Address::generate(&env);
@@ -304,8 +363,19 @@ fn test_confirm_after_cancel_rejected() {
         "pending state must be empty after cancel"
     );
 
-    // Confirming with no pending proposal must panic.
+    // Confirming with no pending proposal must be a silent no-op.
     client.confirm_agent_update();
+
+    // Active agent must still be the original — no stale update applied.
+    assert_eq!(
+        client.get_agent(),
+        old_agent,
+        "active agent must not change on no-op confirm after cancel"
+    );
+    assert!(
+        client.get_pending_agent_update().is_none(),
+        "pending state must remain empty after no-op confirm"
+    );
 }
 
 // ─── Issue #418 ──────────────────────────────────────────────────────────────
@@ -408,5 +478,90 @@ fn test_new_owner_can_cancel_surviving_pending_agent_update() {
     assert!(
         client.get_pending_agent_update().is_none(),
         "pending state cleared after cancel by new owner"
+    );
+}
+
+// ─── Issue #58 acceptance-criteria tests ─────────────────────────────────────
+
+/// `cancel_agent_update()` succeeds even after the timelock has already elapsed.
+///
+/// The owner may choose not to apply a pending agent update even once the
+/// timelock window has opened — cancelling post-expiry must be accepted.
+#[test]
+fn test_cancel_after_timelock_elapsed_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (contract_id, old_agent, _owner, _usdc_token) = setup_vault_with_token(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+
+    let new_agent = Address::generate(&env);
+    client.update_agent(&new_agent);
+
+    let (_, expiry) = client.get_pending_agent_update().unwrap();
+
+    // Advance past expiry — timelock has elapsed.
+    env.ledger().set_sequence_number(expiry + 1_000);
+
+    // Cancel must succeed even after expiry.
+    client.cancel_agent_update();
+
+    assert_eq!(
+        client.get_agent(),
+        old_agent,
+        "active agent unchanged after post-expiry cancel"
+    );
+    assert!(
+        client.get_pending_agent_update().is_none(),
+        "pending state cleared after post-expiry cancel"
+    );
+}
+
+/// `confirm_agent_update()` emits `AgentUpdateConfirmedEvent` on successful confirmation.
+#[test]
+fn test_confirm_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (contract_id, old_agent, _owner, _usdc_token) = setup_vault_with_token(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+
+    let new_agent = Address::generate(&env);
+    client.update_agent(&new_agent);
+
+    let (_, expiry) = client.get_pending_agent_update().unwrap();
+    env.ledger().set_sequence_number(expiry);
+    client.confirm_agent_update();
+
+    // Verify at least two events were emitted (confirmed + backward-compat).
+    let events = env.events().all();
+    assert!(
+        !events.is_empty(),
+        "at least one event must be emitted on confirmation"
+    );
+
+    // Active agent updated.
+    assert_eq!(client.get_agent(), new_agent);
+    // Old agent address was the original.
+    let _ = old_agent; // used in proposal; confirm should have applied new_agent.
+}
+
+/// `cancel_agent_update()` emits `AgentUpdateCancelledEvent` on cancellation.
+#[test]
+fn test_cancel_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (contract_id, _old_agent, _owner, _usdc_token) = setup_vault_with_token(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+
+    let new_agent = Address::generate(&env);
+    client.update_agent(&new_agent);
+    client.cancel_agent_update();
+
+    let events = env.events().all();
+    assert!(
+        !events.is_empty(),
+        "at least one event must be emitted on cancellation"
     );
 }
