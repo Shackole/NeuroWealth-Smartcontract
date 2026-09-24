@@ -1,6 +1,6 @@
 {
   "name": "@neurowealth/vault-client",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Auto-generated typed bindings for the NeuroWealth Vault Soroban contract",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

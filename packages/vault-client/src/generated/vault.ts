@@ -133,6 +133,40 @@ export interface ProtocolChangedEvent {
 }
 
 /** Emitted by the contract. */
+export interface ProtocolAllocationChangedEvent {
+  /** Blend allocation before the change, in basis points. */
+  old_blend_bps: number;
+  /** DEX allocation before the change, in basis points. */
+  old_dex_bps: number;
+  /** Blend allocation after the change, in basis points. */
+  new_blend_bps: number;
+  /** DEX allocation after the change, in basis points. */
+  new_dex_bps: number;
+  /** USDC principal deployed to Blend after the change, in raw units. */
+  deployed_to_blend: bigint;
+  /** USDC principal deployed to the DEX after the change, in raw units. */
+  deployed_to_dex: bigint;
+}
+
+/** Emitted by the contract. */
+export interface MultiProtocolModeChangedEvent {
+  /** `true` when multi-protocol allocation is now active. */
+  enabled: boolean;
+  /** Blend allocation seeded by the migration, in basis points. */
+  blend_bps: number;
+  /** DEX allocation seeded by the migration, in basis points. */
+  dex_bps: number;
+}
+
+/** Emitted by the contract. */
+export interface ProtocolApyUpdatedEvent {
+  /** Protocol the APY applies to (`"blend"` or `"dex"`). */
+  protocol: string;
+  /** Reported APY in basis points. */
+  apy_bps: number;
+}
+
+/** Emitted by the contract. */
 export interface PauseEvent {
   /** `true` if the vault is now paused, `false` if it is now unpaused */
   paused: boolean;
@@ -262,6 +296,14 @@ export interface ApprovalTtlUpdatedEvent {
   old_ttl: number;
   /** Approval TTL in ledgers after the change */
   new_ttl: number;
+}
+
+/** Emitted by the contract. */
+export interface MaxConsecutiveFailuresUpdatedEvent {
+  /** Effective threshold before the change (the default if never configured) */
+  old_threshold: number;
+  /** Threshold after the change */
+  new_threshold: number;
 }
 
 /** Emitted by the contract. */
@@ -410,6 +452,128 @@ export interface DexPoolConfiguredEvent {
   new_pool: string;
   /** Owner who triggered the configuration change */
   owner: string;
+}
+
+/** Emitted by the contract. */
+export interface ProtocolAdapterUpdatedEvent {
+  /** The protocol symbol the adapter serves (e.g. `"phoenix"`). */
+  protocol: string;
+  /** Previous adapter address, or None if it was not configured. */
+  old_address: string | null;
+  /** Newly configured adapter contract address. */
+  new_address: string;
+  /** Owner who triggered the configuration change. */
+  owner: string;
+}
+
+/** Emitted by the contract. */
+export interface ProtocolWhitelistUpdatedEvent {
+  /** The protocol symbol whose whitelist state changed. */
+  protocol: string;
+  /** Whether the protocol is now whitelisted. */
+  enabled: boolean;
+  /** Owner who triggered the whitelist change. */
+  owner: string;
+}
+
+/** Emitted by the contract. */
+export interface ProtocolSupplyEvent {
+  /** The asset address (USDC). */
+  asset: string;
+  /** The protocol symbol the funds were supplied to. */
+  protocol: string;
+  /** Actual amount transferred (may be less than requested due to venue limits). */
+  amount_actual: bigint;
+  /** Whether the supply was successful. */
+  success: boolean;
+}
+
+/** Emitted by the contract. */
+export interface ProtocolWithdrawEvent {
+  /** The asset address (USDC). */
+  asset: string;
+  /** The protocol symbol the funds were withdrawn from. */
+  protocol: string;
+  /** Actual amount received (may be less than requested due to venue liquidity). */
+  amount_actual: bigint;
+  /** Whether the withdrawal was successful. */
+  success: boolean;
+}
+
+/** Emitted by the contract. */
+export interface AgentKeyRotatedEvent {
+  /** Primary agent address before the switchover. */
+  old_primary: string;
+  /** Primary agent address after the switchover (the former standby). */
+  new_primary: string;
+  /** Standby agent address after the switchover (the former primary, or a new address supplied by the owner). */
+  new_standby: string;
+  /** Owner who triggered the switchover. */
+  owner: string;
+  /** Ledger timestamp of the switchover. */
+  timestamp: bigint;
+}
+
+/** Emitted by the contract. */
+export interface StandbyAgentUpdatedEvent {
+  /** Standby agent address before the change, or None if not configured. */
+  old_standby: string | null;
+  /** Standby agent address after the change. */
+  new_standby: string;
+  /** Owner who triggered the change. */
+  owner: string;
+  /** Ledger timestamp of the change. */
+  timestamp: bigint;
+}
+
+/** Emitted by the contract. */
+export interface YieldAttributedEvent {
+  /** The user whose yield is being attributed. */
+  user: string;
+  /** The protocol where the yield was earned (e.g. `"blend"`, `"dex"`). */
+  protocol: string;
+  /** Amount of yield attributed, in the asset's native units. */
+  amount: bigint;
+  /** Time period label: `"daily"`, `"weekly"`, `"monthly"`, or `"since_dep"`. */
+  period: string;
+  /** Ledger timestamp of the attribution. */
+  timestamp: bigint;
+}
+
+/** Emitted by the contract. */
+export interface AssetDepositEvent {
+  /** The user who made the deposit. */
+  user: string;
+  /** The asset deposited (e.g. `"XLM"`, `"USDT"`, `"EURC"`, `"USDC"`). */
+  asset: string;
+  /** Amount of the asset deposited (native units). */
+  amount: bigint;
+  /** Number of shares minted in the asset's per-asset share pool. */
+  shares: bigint;
+}
+
+/** Emitted by the contract. */
+export interface AssetWithdrawEvent {
+  /** The user who made the withdrawal. */
+  user: string;
+  /** The asset withdrawn (e.g. `"XLM"`, `"USDT"`, `"EURC"`, `"USDC"`). */
+  asset: string;
+  /** Amount of the asset returned (native units, after liquidity shortfall). */
+  amount: bigint;
+  /** Number of shares burned in the asset's per-asset share pool. */
+  shares: bigint;
+}
+
+/** Emitted by the contract. */
+export interface SupportedAssetsUpdatedEvent {
+  /** The asset symbol whose support state changed. */
+  asset: string;
+  /** `true` when the asset was added, `false` when it was removed. */
+  added: boolean;
+  /** Owner who triggered the change. */
+  owner: string;
+  /** Ledger timestamp of the change. */
+  timestamp: bigint;
 }
 
 /** Emitted by the contract. */
@@ -690,6 +854,12 @@ export const VaultErrorCode = {
   HoldingPeriodNotElapsed: 75,
   /** Holding period configuration is invalid (must be non-negative) (#659). */
   InvalidHoldingPeriod: 76,
+  /** Multi-protocol allocation is invalid: a leg is out of the 0..=10_000 basis-point range, or the legs sum to more than 10_000. */
+  InvalidAllocation: 77,
+  /** The call requires multi-protocol allocation mode, which is not enabled. */
+  MultiProtocolNotEnabled: 78,
+  /** The call requires single-protocol mode, but multi-protocol mode is active. */
+  MultiProtocolEnabledError: 79,
   /** The configured call rate for an operation has been exhausted. */
   RateLimitExceeded: 77,
   /** The owner supplied an unsupported rate-limit category. */
@@ -698,6 +868,10 @@ export const VaultErrorCode = {
   InvalidRateLimitConfig: 79,
   /** A batch contains more entries than the configured maximum. */
   BatchSizeExceeded: 80,
+  /** No adapter contract is configured for the requested protocol (#656). */
+  ProtocolAdapterNotConfigured: 81,
+  /** The requested protocol is not on the owner-managed whitelist (#656). */
+  ProtocolNotWhitelisted: 82,
   /** General validation error */
   ValidationError: 100,
   /** Vault is paused, deposits and withdrawals disabled */
@@ -1007,6 +1181,47 @@ export class VaultClient {
   }
 
   /**
+   * Function deposit_asset
+   * @param user
+   * @param asset
+   * @param amount
+   */
+  async deposit_asset(signer: StellarSdk.Keypair, user: string, asset: string, amount: bigint): Promise<TxResult<void>> {
+    const args: StellarSdk.xdr.ScVal[] = [new StellarSdk.Address(user).toScVal(), nativeToScVal(asset, { type: 'symbol' }), nativeToScVal(amount, { type: 'i128' })];
+    return this.invoke<void>('deposit_asset', args, signer);
+  }
+
+  /**
+   * Function withdraw_asset
+   * @param user
+   * @param asset
+   * @param amount
+   */
+  async withdraw_asset(signer: StellarSdk.Keypair, user: string, asset: string, amount: bigint): Promise<TxResult<void>> {
+    const args: StellarSdk.xdr.ScVal[] = [new StellarSdk.Address(user).toScVal(), nativeToScVal(asset, { type: 'symbol' }), nativeToScVal(amount, { type: 'i128' })];
+    return this.invoke<void>('withdraw_asset', args, signer);
+  }
+
+  /**
+   * Function get_balance_asset
+   * @param user
+   * @param asset
+   */
+  async get_balance_asset(user: string, asset: string, sourcePublicKey: string): Promise<bigint> {
+    const args: StellarSdk.xdr.ScVal[] = [new StellarSdk.Address(user).toScVal(), nativeToScVal(asset, { type: 'symbol' })];
+    return this.simulate<bigint>('get_balance_asset', args, sourcePublicKey);
+  }
+
+  /**
+   * Function get_total_assets_by_asset
+   * @param asset
+   */
+  async get_total_assets_by_asset(asset: string, sourcePublicKey: string): Promise<bigint> {
+    const args: StellarSdk.xdr.ScVal[] = [nativeToScVal(asset, { type: 'symbol' })];
+    return this.simulate<bigint>('get_total_assets_by_asset', args, sourcePublicKey);
+  }
+
+  /**
    * Function migrate_shares
    * @param user
    */
@@ -1064,6 +1279,93 @@ export class VaultClient {
   async rebalance(signer: StellarSdk.Keypair, protocol: string, expected_apy: bigint, min_out: bigint): Promise<TxResult<void>> {
     const args: StellarSdk.xdr.ScVal[] = [nativeToScVal(protocol, { type: 'symbol' }), nativeToScVal(expected_apy, { type: 'i128' }), nativeToScVal(min_out, { type: 'i128' })];
     return this.invoke<void>('rebalance', args, signer);
+  }
+
+  /**
+   * Function enable_multi_protocol
+   * @param enabled
+   */
+  async enable_multi_protocol(signer: StellarSdk.Keypair, enabled: boolean): Promise<TxResult<void>> {
+    const args: StellarSdk.xdr.ScVal[] = [nativeToScVal(enabled, { type: 'bool' })];
+    return this.invoke<void>('enable_multi_protocol', args, signer);
+  }
+
+  /**
+   * Function is_multi_protocol_enabled
+   */
+  async is_multi_protocol_enabled(sourcePublicKey: string): Promise<boolean> {
+    const args: StellarSdk.xdr.ScVal[] = [];
+    return this.simulate<boolean>('is_multi_protocol_enabled', args, sourcePublicKey);
+  }
+
+  /**
+   * Function get_allocation
+   */
+  async get_allocation(sourcePublicKey: string): Promise<unknown> {
+    const args: StellarSdk.xdr.ScVal[] = [];
+    return this.simulate<unknown>('get_allocation', args, sourcePublicKey);
+  }
+
+  /**
+   * Function get_deployed_to_blend
+   */
+  async get_deployed_to_blend(sourcePublicKey: string): Promise<bigint> {
+    const args: StellarSdk.xdr.ScVal[] = [];
+    return this.simulate<bigint>('get_deployed_to_blend', args, sourcePublicKey);
+  }
+
+  /**
+   * Function get_deployed_to_dex
+   */
+  async get_deployed_to_dex(sourcePublicKey: string): Promise<bigint> {
+    const args: StellarSdk.xdr.ScVal[] = [];
+    return this.simulate<bigint>('get_deployed_to_dex', args, sourcePublicKey);
+  }
+
+  /**
+   * Function get_protocol_breakdown
+   */
+  async get_protocol_breakdown(sourcePublicKey: string): Promise<unknown> {
+    const args: StellarSdk.xdr.ScVal[] = [];
+    return this.simulate<unknown>('get_protocol_breakdown', args, sourcePublicKey);
+  }
+
+  /**
+   * Function set_protocol_apy
+   * @param protocol
+   * @param apy_bps
+   */
+  async set_protocol_apy(signer: StellarSdk.Keypair, protocol: string, apy_bps: number): Promise<TxResult<void>> {
+    const args: StellarSdk.xdr.ScVal[] = [nativeToScVal(protocol, { type: 'symbol' }), nativeToScVal(apy_bps, { type: 'u32' })];
+    return this.invoke<void>('set_protocol_apy', args, signer);
+  }
+
+  /**
+   * Function get_protocol_apy
+   * @param protocol
+   */
+  async get_protocol_apy(protocol: string, sourcePublicKey: string): Promise<number> {
+    const args: StellarSdk.xdr.ScVal[] = [nativeToScVal(protocol, { type: 'symbol' })];
+    return this.simulate<number>('get_protocol_apy', args, sourcePublicKey);
+  }
+
+  /**
+   * Function get_composite_apy
+   */
+  async get_composite_apy(sourcePublicKey: string): Promise<number> {
+    const args: StellarSdk.xdr.ScVal[] = [];
+    return this.simulate<number>('get_composite_apy', args, sourcePublicKey);
+  }
+
+  /**
+   * Function rebalance_multi
+   * @param blend_bps
+   * @param dex_bps
+   * @param min_out
+   */
+  async rebalance_multi(signer: StellarSdk.Keypair, blend_bps: number, dex_bps: number, min_out: bigint): Promise<TxResult<void>> {
+    const args: StellarSdk.xdr.ScVal[] = [nativeToScVal(blend_bps, { type: 'u32' }), nativeToScVal(dex_bps, { type: 'u32' }), nativeToScVal(min_out, { type: 'i128' })];
+    return this.invoke<void>('rebalance_multi', args, signer);
   }
 
   /**
@@ -1515,6 +1817,110 @@ export class VaultClient {
   }
 
   /**
+   * Function get_standby_agent
+   */
+  async get_standby_agent(sourcePublicKey: string): Promise<string | null> {
+    const args: StellarSdk.xdr.ScVal[] = [];
+    return this.simulate<string | null>('get_standby_agent', args, sourcePublicKey);
+  }
+
+  /**
+   * Function update_standby_agent
+   * @param new_standby
+   */
+  async update_standby_agent(signer: StellarSdk.Keypair, new_standby: string): Promise<TxResult<void>> {
+    const args: StellarSdk.xdr.ScVal[] = [new StellarSdk.Address(new_standby).toScVal()];
+    return this.invoke<void>('update_standby_agent', args, signer);
+  }
+
+  /**
+   * Function switch_to_standby_agent
+   */
+  async switch_to_standby_agent(signer: StellarSdk.Keypair): Promise<TxResult<void>> {
+    const args: StellarSdk.xdr.ScVal[] = [];
+    return this.invoke<void>('switch_to_standby_agent', args, signer);
+  }
+
+  /**
+   * Function add_supported_asset
+   * @param asset
+   * @param token_address
+   * @param min_deposit
+   * @param deposit_limit
+   * @param tvl_cap
+   */
+  async add_supported_asset(signer: StellarSdk.Keypair, asset: string, token_address: string, min_deposit: bigint, deposit_limit: bigint, tvl_cap: bigint): Promise<TxResult<void>> {
+    const args: StellarSdk.xdr.ScVal[] = [nativeToScVal(asset, { type: 'symbol' }), new StellarSdk.Address(token_address).toScVal(), nativeToScVal(min_deposit, { type: 'i128' }), nativeToScVal(deposit_limit, { type: 'i128' }), nativeToScVal(tvl_cap, { type: 'i128' })];
+    return this.invoke<void>('add_supported_asset', args, signer);
+  }
+
+  /**
+   * Function update_asset_limits
+   * @param asset
+   * @param min_deposit
+   * @param deposit_limit
+   * @param tvl_cap
+   */
+  async update_asset_limits(signer: StellarSdk.Keypair, asset: string, min_deposit: bigint, deposit_limit: bigint, tvl_cap: bigint): Promise<TxResult<void>> {
+    const args: StellarSdk.xdr.ScVal[] = [nativeToScVal(asset, { type: 'symbol' }), nativeToScVal(min_deposit, { type: 'i128' }), nativeToScVal(deposit_limit, { type: 'i128' }), nativeToScVal(tvl_cap, { type: 'i128' })];
+    return this.invoke<void>('update_asset_limits', args, signer);
+  }
+
+  /**
+   * Function remove_supported_asset
+   * @param asset
+   */
+  async remove_supported_asset(signer: StellarSdk.Keypair, asset: string): Promise<TxResult<void>> {
+    const args: StellarSdk.xdr.ScVal[] = [nativeToScVal(asset, { type: 'symbol' })];
+    return this.invoke<void>('remove_supported_asset', args, signer);
+  }
+
+  /**
+   * Function get_supported_assets
+   */
+  async get_supported_assets(sourcePublicKey: string): Promise<unknown> {
+    const args: StellarSdk.xdr.ScVal[] = [];
+    return this.simulate<unknown>('get_supported_assets', args, sourcePublicKey);
+  }
+
+  /**
+   * Function get_asset_config
+   * @param asset
+   */
+  async get_asset_config(asset: string, sourcePublicKey: string): Promise<unknown | null> {
+    const args: StellarSdk.xdr.ScVal[] = [nativeToScVal(asset, { type: 'symbol' })];
+    return this.simulate<unknown | null>('get_asset_config', args, sourcePublicKey);
+  }
+
+  /**
+   * Function get_asset_tvl_cap
+   * @param asset
+   */
+  async get_asset_tvl_cap(asset: string, sourcePublicKey: string): Promise<bigint> {
+    const args: StellarSdk.xdr.ScVal[] = [nativeToScVal(asset, { type: 'symbol' })];
+    return this.simulate<bigint>('get_asset_tvl_cap', args, sourcePublicKey);
+  }
+
+  /**
+   * Function get_asset_totals
+   * @param asset
+   */
+  async get_asset_totals(asset: string, sourcePublicKey: string): Promise<unknown> {
+    const args: StellarSdk.xdr.ScVal[] = [nativeToScVal(asset, { type: 'symbol' })];
+    return this.simulate<unknown>('get_asset_totals', args, sourcePublicKey);
+  }
+
+  /**
+   * Function get_asset_balance
+   * @param user
+   * @param asset
+   */
+  async get_asset_balance(user: string, asset: string, sourcePublicKey: string): Promise<unknown> {
+    const args: StellarSdk.xdr.ScVal[] = [new StellarSdk.Address(user).toScVal(), nativeToScVal(asset, { type: 'symbol' })];
+    return this.simulate<unknown>('get_asset_balance', args, sourcePublicKey);
+  }
+
+  /**
    * Set Blend pool address for yield deployment
    * @param owner
    * @param pool_address
@@ -1756,6 +2162,15 @@ export class VaultClient {
   async convert_to_assets(signer: StellarSdk.Keypair, shares: bigint): Promise<TxResult<bigint>> {
     const args: StellarSdk.xdr.ScVal[] = [nativeToScVal(shares, { type: 'i128' })];
     return this.invoke<bigint>('convert_to_assets', args, signer);
+  }
+
+  /**
+   * Function get_user_apy
+   * @param user
+   */
+  async get_user_apy(user: string, sourcePublicKey: string): Promise<bigint> {
+    const args: StellarSdk.xdr.ScVal[] = [new StellarSdk.Address(user).toScVal()];
+    return this.simulate<bigint>('get_user_apy', args, sourcePublicKey);
   }
 
   /**
