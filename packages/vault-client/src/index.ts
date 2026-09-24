@@ -21,6 +21,9 @@ export {
   type RateLimitConfig,
   type RateLimitState,
 
+  // Asset breakdown (Issue #59) — single-call optimisation
+  type AssetBreakdown,
+
   // Event payload interfaces
   type VaultInitializedEvent,
   type InitFailedEvent,
