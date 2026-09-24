@@ -5,13 +5,7 @@ import { Bot, Sparkles } from 'lucide-react';
 import { WalletConnect } from './WalletConnect';
 import { LanguageSwitcher } from './LanguageSwitcher';
 
-interface HeaderProps {
-  publicKey: string | null;
-  onConnect: () => void;
-  onDisconnect: () => void;
-}
-
-export const Header: React.FC<HeaderProps> = ({ publicKey, onConnect, onDisconnect }) => {
+export const Header: React.FC = () => {
   return (
     <header className="sticky top-0 z-50 w-full border-b border-slate-800/80 bg-[#080b11]/80 backdrop-blur-xl">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
@@ -36,17 +30,29 @@ export const Header: React.FC<HeaderProps> = ({ publicKey, onConnect, onDisconne
         </div>
 
         {/* Navigation */}
-        <nav className="hidden md:flex items-center gap-8 text-sm font-medium text-slate-300">
-          <a href="#dashboard" className="text-emerald-400 hover:text-emerald-300 transition-colors">Dashboard</a>
-          <a href="#strategies" className="hover:text-emerald-400 transition-colors">Strategies</a>
-          <a href="#history" className="hover:text-emerald-400 transition-colors">Transactions</a>
-          <a href="#whatsapp" className="hover:text-emerald-400 transition-colors">WhatsApp Bot</a>
+        <nav
+          className="hidden md:flex items-center gap-8 text-sm font-medium text-slate-300"
+          aria-label="Main navigation"
+        >
+          <a href="#dashboard" className="text-emerald-400 hover:text-emerald-300 transition-colors">
+            Dashboard
+          </a>
+          <a href="#strategies" className="hover:text-emerald-400 transition-colors">
+            Strategies
+          </a>
+          <a href="#history" className="hover:text-emerald-400 transition-colors">
+            Transactions
+          </a>
+          <a href="#whatsapp" className="hover:text-emerald-400 transition-colors">
+            WhatsApp Bot
+          </a>
         </nav>
 
         {/* Wallet Connection & Language */}
         <div className="flex items-center gap-4">
           <LanguageSwitcher />
-          <WalletConnect publicKey={publicKey} onConnect={onConnect} onDisconnect={onDisconnect} />
+          {/* WalletConnect reads/writes wallet state from Zustand store directly */}
+          <WalletConnect />
         </div>
       </div>
     </header>
