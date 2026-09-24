@@ -7,9 +7,12 @@ on:
       - develop
     paths:
       - 'neurowealth-vault/contracts/vault/src/**'
+      - 'neurowealth-vault/Cargo.toml'
+      - 'neurowealth-vault/Cargo.lock'
       - 'scripts/generate-spec.py'
       - 'scripts/validate-spec.py'
       - 'scripts/generate-client.js'
+      - 'scripts/bump-client-version.js'
       - '.github/workflows/contract-spec.yml'
   pull_request:
     branches:
@@ -17,11 +20,16 @@ on:
       - develop
     paths:
       - 'neurowealth-vault/contracts/vault/src/**'
+      - 'neurowealth-vault/Cargo.toml'
+      - 'neurowealth-vault/Cargo.lock'
       - 'contract-spec.json'
       - 'scripts/generate-spec.py'
       - 'scripts/validate-spec.py'
       - 'scripts/generate-client.js'
+      - 'scripts/bump-client-version.js'
       - 'packages/vault-client/src/generated/vault.ts'
+      - 'packages/vault-client/package.json'
+      - 'packages/vault-client/package-lock.json'
   workflow_dispatch:
 
 jobs:
@@ -29,6 +37,7 @@ jobs:
     name: Generate & Validate Contract Spec
     runs-on: ubuntu-latest
     permissions:
+      contents: write
       pull-requests: write
 
     steps:
@@ -39,6 +48,19 @@ jobs:
         uses: actions/setup-python@v4
         with:
           python-version: '3.11'
+
+      - name: 🦀 Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: 🏗️ Compile vault WASM
+        working-directory: neurowealth-vault
+        run: |
+          RUSTFLAGS="-C target-cpu=mvp" cargo build \
+            -p neurowealth-vault \
+            --target wasm32-unknown-unknown \
+            --release
       
       - name: 🔧 Generate contract specification
         run: |
@@ -50,6 +72,15 @@ jobs:
           echo "Validating specification against contract implementation..."
           echo "Local equivalent: python3 scripts/validate-spec.py"
           python3 scripts/validate-spec.py
+
+      - name: 🔒 Check generated spec has no drift
+        if: github.event_name == 'pull_request'
+        run: |
+          git diff --exit-code -- contract-spec.json || {
+            echo "❌ contract-spec.json is stale. Regenerate it with:"
+            echo "   python3 scripts/generate-spec.py"
+            exit 1
+          }
 
       - name: 🔬 Detect parameter and error-shape drift
         run: |
@@ -105,6 +136,9 @@ jobs:
           echo "Generating TypeScript client from contract-spec.json..."
           node scripts/generate-client.js
 
+      - name: 📦 Bump vault-client version when spec changes
+        run: node scripts/bump-client-version.js
+
       - name: 🔍 TypeScript typecheck vault-client
         working-directory: packages/vault-client
         run: |
@@ -112,25 +146,16 @@ jobs:
           npm ci
           npm run typecheck
 
-      - name: 🔍 Check TypeScript client is up-to-date
+      - name: 🔍 Check generated client and package version are up-to-date
         if: github.event_name == 'pull_request'
         run: |
-          echo "Checking that generated TypeScript client matches current spec..."
-          if git diff --quiet packages/vault-client/src/generated/vault.ts; then
-            echo "✅ TypeScript client is up-to-date"
-          else
-            echo ""
-            echo "❌ Generated TypeScript client is stale!"
-            echo ""
-            echo "The file packages/vault-client/src/generated/vault.ts does not match"
-            echo "what would be generated from the current contract-spec.json."
-            echo ""
-            echo "Run the following command and commit the result:"
-            echo "  node scripts/generate-client.js"
-            echo ""
-            git diff packages/vault-client/src/generated/vault.ts
-            exit 1
-          fi
+          git diff --exit-code -- \
+            packages/vault-client/src/generated/vault.ts \
+            packages/vault-client/package.json \
+            packages/vault-client/package-lock.json || {
+              echo "❌ Generated vault-client files are stale. Run the contract-spec generation workflow locally and commit the result."
+              exit 1
+            }
 
       - name: 📦 Upload spec as artifact
         uses: actions/upload-artifact@v4
@@ -141,27 +166,24 @@ jobs:
             packages/vault-client/src/generated/vault.ts
           retention-days: 30
       
-      - name: 💾 Commit spec if changed
+      - name: 💾 Commit generated spec and client if changed
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
-          
-          if git diff --quiet contract-spec.json; then
-            echo "✅ Spec unchanged"
+          if git diff --quiet -- \
+            contract-spec.json \
+            packages/vault-client/src/generated/vault.ts \
+            packages/vault-client/package.json \
+            packages/vault-client/package-lock.json; then
+            echo "✅ Contract spec and TypeScript client are unchanged"
           else
-            echo "📝 Spec updated, committing changes..."
-            git add contract-spec.json
-            git commit -m "chore: update contract specification [skip ci]"
-            git push
-          fi
-
-          if git diff --quiet packages/vault-client/src/generated/vault.ts; then
-            echo "✅ TypeScript client unchanged"
-          else
-            echo "📝 TypeScript client updated, committing changes..."
-            git add packages/vault-client/src/generated/vault.ts
-            git commit -m "chore: regenerate TypeScript vault client [skip ci]"
+            git add \
+              contract-spec.json \
+              packages/vault-client/src/generated/vault.ts \
+              packages/vault-client/package.json \
+              packages/vault-client/package-lock.json
+            git commit -m "chore: regenerate contract spec and vault client [skip ci]"
             git push
           fi
       
