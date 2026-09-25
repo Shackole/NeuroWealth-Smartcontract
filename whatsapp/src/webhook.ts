@@ -402,9 +402,25 @@ async function processVerifiedIntent(
 // DB logging
 // ─────────────────────────────────────────────────────────
 
+// Lazy pg Pool — only created when DATABASE_URL is configured
+let _pgPool: import('pg').Pool | null = null;
+
+async function getDbPool(): Promise<import('pg').Pool | null> {
+  if (!process.env.DATABASE_URL) return null;
+  if (_pgPool) return _pgPool;
+  try {
+    const { Pool } = await import('pg');
+    _pgPool = new Pool({ connectionString: process.env.DATABASE_URL });
+    return _pgPool;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Log a message event to the database.
  * Stores the hashed phone number (never the raw number) for privacy.
+ * Silently no-ops when DATABASE_URL is not configured.
  */
 async function logMessageToDb(
   phoneHash: string,
@@ -412,12 +428,11 @@ async function logMessageToDb(
   body: string,
   mediaUrl?: string,
 ): Promise<void> {
-  // Lazy import to avoid circular dependency issues in tests
-  const dbModule = await import('../../../db/client').catch(() => null);
-  if (!dbModule || !process.env.DATABASE_URL) return;
+  const pool = await getDbPool();
+  if (!pool) return;
 
   try {
-    await dbModule.db.query(
+    await pool.query(
       `INSERT INTO whatsapp_message_logs
          (phone_hash, direction, body_preview, media_url, created_at)
        VALUES ($1, $2, $3, $4, NOW())`,
