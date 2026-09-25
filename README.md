@@ -230,6 +230,7 @@ See [`scripts/README-E2E.md`](scripts/README-E2E.md) for end-to-end devnet valid
 | [`docs/ERC4626_CONFORMANCE_CHECKLIST.md`](docs/ERC4626_CONFORMANCE_CHECKLIST.md) | ERC-4626 conformance checklist: function-by-function diff against the spec (Issue #602) |
 | [`docs/ISSUER_FREEZE_CONTINGENCY.md`](docs/ISSUER_FREEZE_CONTINGENCY.md) | Operational plan if the vault's USDC or agent wallet is frozen by the issuer (Issue #604) |
 | [`docs/SECRETS_HYGIENE.md`](docs/SECRETS_HYGIENE.md) | Full-history secret scan results and pre-commit/CI enforcement (Issue #605) |
+| [`docs/ROADMAP.md`](docs/ROADMAP.md) | Detailed Phase 2 and Phase 3 product & technical roadmap specifications (Issue #80) |
 
 
 ## Smart Contract
@@ -550,6 +551,8 @@ Webhook: Same server as agent, or a separate serverless function
 
 
 ## Roadmap
+
+> For detailed feature specifications, acceptance criteria, dependencies, and timeline estimates, see [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ### Phase 1 — Foundation (Current)
 
