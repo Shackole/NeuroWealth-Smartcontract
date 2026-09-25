@@ -15,26 +15,20 @@ body {
   overflow-x: hidden;
 }
 
-.dark body,
-body {
-  background-color: #080b11;
-  color: #f8fafc;
+/* ─── Light mode ─────────────────────────────────────────── */
+:root,
+.light {
+  color-scheme: light;
 }
 
-@media (prefers-color-scheme: light) {
-  body:not(.dark *) {
-    background-color: #ffffff;
-    color: #0f172a;
-  }
+/* ─── Dark mode ─────────────────────────────────────────── */
+.dark {
+  color-scheme: dark;
 }
 
-.dark body {
-  background-color: #080b11;
-  color: #f8fafc;
-}
-
+/* ─── Glass panels ───────────────────────────────────────── */
 .glass-panel {
-  background: rgba(248, 250, 252, 0.8);
+  background: rgba(248, 250, 252, 0.85);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
   border: 1px solid rgba(0, 0, 0, 0.08);
@@ -46,7 +40,7 @@ body {
 }
 
 .glass-panel-interactive {
-  background: rgba(248, 250, 252, 0.8);
+  background: rgba(248, 250, 252, 0.85);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
   border: 1px solid rgba(0, 0, 0, 0.08);
@@ -64,7 +58,7 @@ body {
   box-shadow: 0 10px 30px -10px rgba(16, 185, 129, 0.15);
 }
 
-/* Custom scrollbar */
+/* ─── Custom scrollbar ──────────────────────────────────── */
 ::-webkit-scrollbar {
   width: 6px;
 }
@@ -83,4 +77,10 @@ body {
 }
 .dark ::-webkit-scrollbar-thumb:hover {
   background: #334155;
+}
+
+/* ─── Focus ring (WCAG AA) ──────────────────────────────── */
+:focus-visible {
+  outline: 2px solid #10b981;
+  outline-offset: 2px;
 }
