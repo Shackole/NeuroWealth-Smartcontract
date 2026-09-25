@@ -608,6 +608,15 @@ pub enum DataKey {
     /// `update_standby_agent` and perform an instant switchover via
     /// `switch_to_standby_agent`. Appended to preserve serialized layout.
     StandbyAgent,
+
+    /// Guardian address for co-signing `execute_upgrade` (#44 / #607).
+    ///
+    /// When set, `execute_upgrade` requires **both** the owner signature and the
+    /// guardian signature. The guardian key provides defense-in-depth against a
+    /// compromised owner key: an attacker must steal both keys to execute a
+    /// malicious upgrade. Set by the owner via `set_guardian`; removed via
+    /// `remove_guardian`. Appended to preserve serialized discriminants.
+    Guardian,
 }
 
 /// Owner-configured allowance for one rate-limit category.
@@ -1835,6 +1844,33 @@ pub struct RateLimitExceededEvent {
     pub calls: u32,
 }
 
+/// Emitted after `batch_touch_ttl` completes processing the full user batch (#48).
+///
+/// # Topics
+/// - `SymbolShort("batch_ttl")` (`TOPIC_BATCH_TTL_TOUCHED`)
+#[contracttype]
+pub struct BatchTtlTouchedEvent {
+    /// Total number of users in the batch.
+    pub count: u32,
+    /// Number of users whose `Shares` entry was extended (had an existing entry).
+    pub users_extended: u32,
+}
+
+/// Emitted when the guardian key is set or cleared via `set_guardian` /
+/// `remove_guardian` (#44 / #607).
+///
+/// # Topics
+/// - `SymbolShort("guard_set")` (`TOPIC_GUARDIAN_SET`)
+#[contracttype]
+pub struct GuardianSetEvent {
+    /// Previous guardian address, or `None` if no guardian was set.
+    pub old_guardian: Option<Address>,
+    /// New guardian address, or `None` if the guardian was removed.
+    pub new_guardian: Option<Address>,
+    /// Owner address that made the change.
+    pub owner: Address,
+}
+
 // ============================================================================
 // BLEND POOL CLIENT INTERFACE
 // ============================================================================
@@ -1971,6 +2007,7 @@ use topics::{
     TOPIC_TVL_CAP_UPDATED, TOPIC_UNPAUSED, TOPIC_UPGRADED,
     TOPIC_UPGRADE_CANCELLED, TOPIC_UPGRADE_SCHEDULED, TOPIC_USER_CAP_UPDATED,
     TOPIC_USER_STRATEGY_UPDATED, TOPIC_WITHDRAW, TOPIC_YIELD_ATTRIBUTED,
+    TOPIC_BATCH_TTL_TOUCHED, TOPIC_GUARDIAN_SET,
     TOPIC_USER_STRATEGY_UPDATED, TOPIC_WITHDRAW,
     TOPIC_BLEND_POOL_CONFIGURED, TOPIC_BLEND_SUPPLY, TOPIC_BLEND_WITHDRAW, TOPIC_CAPS_UPDATED,
     TOPIC_DEPOSIT, TOPIC_DEPOSIT_LIMITS_UPDATED, TOPIC_DEX_POOL_CONFIGURED, TOPIC_DEX_SUPPLY,
@@ -6611,6 +6648,115 @@ impl NeuroWealthVault {
             },
         );
     }
+
+    // ==========================================================================
+    // GUARDIAN KEY — SECOND SIGNATURE FOR EXECUTE_UPGRADE (#44 / #607)
+    // ==========================================================================
+
+    /// Sets the guardian address that must co-sign `execute_upgrade` (#44).
+    ///
+    /// The guardian key is an additional defence-in-depth measure for the
+    /// upgrade flow: once set, `execute_upgrade` requires **both** the owner
+    /// signature and the guardian signature. An adversary who steals only the
+    /// owner key cannot execute a malicious upgrade without also stealing the
+    /// guardian key.
+    ///
+    /// The guardian key has **no other privileges**: it cannot pause, rebalance,
+    /// change configuration, or perform any owner-only action.
+    ///
+    /// Only the owner can call this function (no timelock required). Guardian
+    /// key rotation requires only the owner, so it is fast and does not risk
+    /// locking out legitimate upgrades.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `new_guardian` - The new guardian address.
+    ///
+    /// # Events
+    ///
+    /// Emits `GuardianSetEvent`.
+    ///
+    /// # Panics
+    ///
+    /// - [`VaultError::CallerIsNotOwner`] if the caller is not the owner.
+    pub fn set_guardian(env: Env, new_guardian: Address) {
+        Self::require_initialized(&env);
+        Self::require_is_owner(&env);
+
+        let old_guardian: Option<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::Guardian);
+
+        env.storage()
+            .instance()
+            .set(&DataKey::Guardian, &new_guardian);
+
+        let owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
+        env.events().publish(
+            (TOPIC_GUARDIAN_SET,),
+            GuardianSetEvent {
+                old_guardian,
+                new_guardian: Some(new_guardian),
+                owner,
+            },
+        );
+    }
+
+    /// Removes the guardian requirement from `execute_upgrade`.
+    ///
+    /// After calling this, `execute_upgrade` reverts to single-owner operation.
+    /// This is the emergency path if the guardian key is lost and upgrades need
+    /// to be applied before a new guardian key is available.
+    ///
+    /// Only the owner can call this.
+    ///
+    /// # Events
+    ///
+    /// Emits `GuardianSetEvent` with `new_guardian: None`.
+    ///
+    /// # Panics
+    ///
+    /// - [`VaultError::CallerIsNotOwner`] if the caller is not the owner.
+    pub fn remove_guardian(env: Env) {
+        Self::require_initialized(&env);
+        Self::require_is_owner(&env);
+
+        let old_guardian: Option<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::Guardian);
+
+        env.storage().instance().remove(&DataKey::Guardian);
+
+        let owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
+        env.events().publish(
+            (TOPIC_GUARDIAN_SET,),
+            GuardianSetEvent {
+                old_guardian,
+                new_guardian: None,
+                owner,
+            },
+        );
+    }
+
+    /// Returns the current guardian address, if one is configured.
+    ///
+    /// Returns `None` when no guardian is set (single-owner upgrade path).
+    ///
+    /// # Events
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// - [`VaultError::NotInitialized`] if the vault has not been initialized.
+    pub fn get_guardian(env: Env) -> Option<Address> {
+        Self::require_initialized(&env);
+        env.storage().instance().get(&DataKey::Guardian)
+    }
+
 // ==========================================================================
     // MULTI-ASSET SUPPORT (#646) — ADMINISTRATION
     // ==========================================================================
@@ -7467,6 +7613,20 @@ impl NeuroWealthVault {
         let stored_owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
         Self::require(&env, owner == stored_owner, VaultError::CallerIsNotOwner);
 
+        // --- Guardian co-signature requirement (#44 / #607) ---
+        // When a guardian key is configured, `execute_upgrade` requires BOTH the
+        // owner signature and the guardian signature. This raises the attack bar:
+        // an adversary must compromise two separate keys to execute a malicious
+        // upgrade. `cancel_upgrade` remains owner-only for agile incident response.
+        if let Some(guardian) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Address>(&DataKey::Guardian)
+        {
+            guardian.require_auth();
+        }
+        // --- End guardian co-signature ---
+
         Self::require(
             &env,
             env.storage().instance().has(&DataKey::PendingUpgradeHash),
@@ -8066,6 +8226,75 @@ impl NeuroWealthVault {
         }
         Self::extend_user_shares_ttl(&env, &user);
         true
+    }
+
+    /// Extends the `Shares` entry TTL for a batch of users in a single transaction.
+    ///
+    /// Reduces keeper-job overhead by batching up to `max_batch_size` TTL
+    /// maintenance calls into one transaction. Each user is processed
+    /// independently — a missing entry returns `false` for that slot but does
+    /// not abort the batch. The same `UserTTL` rate-limit bucket as
+    /// `touch_user_ttl` is consumed for every user in the batch, so the
+    /// combined per-user allowance applies.
+    ///
+    /// No authentication is required: anyone can extend TTL for any user.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `users` - Addresses to touch, in the desired order. Must not exceed
+    ///   the configured `max_batch_size`.
+    ///
+    /// # Returns
+    ///
+    /// A `Vec<bool>` in the same order as `users`: `true` when the entry
+    /// existed and was extended, `false` when no `Shares` entry was found.
+    ///
+    /// # Events
+    ///
+    /// Emits:
+    /// - `BatchTtlTouchedEvent` with the total batch size and extension count.
+    ///
+    /// # Panics
+    ///
+    /// - [`VaultError::NotInitialized`] if the vault has not been initialized.
+    /// - [`VaultError::BatchSizeExceeded`] if `users.len() > max_batch_size`.
+    /// - [`VaultError::RateLimitExceeded`] if any user's TTL bucket is exhausted.
+    pub fn batch_touch_ttl(env: Env, users: Vec<Address>) -> Vec<bool> {
+        Self::require_initialized(&env);
+        let total = users.len();
+        Self::require_batch_size(&env, total);
+
+        let mut results: Vec<bool> = Vec::new(&env);
+        let mut users_extended: u32 = 0;
+
+        for i in 0..total {
+            let user = users.get(i).unwrap();
+            // Enforce per-user rate limit (same bucket as single touch_user_ttl).
+            // Count every probe, even for missing entries, to prevent DoS via probing.
+            Self::enforce_user_rate_limit(&env, &user, RATE_LIMIT_TOUCH_TTL);
+            if env
+                .storage()
+                .persistent()
+                .has(&DataKey::Shares(user.clone()))
+            {
+                Self::extend_user_shares_ttl(&env, &user);
+                results.push_back(true);
+                users_extended = users_extended.saturating_add(1);
+            } else {
+                results.push_back(false);
+            }
+        }
+
+        env.events().publish(
+            (TOPIC_BATCH_TTL_TOUCHED,),
+            BatchTtlTouchedEvent {
+                count: total,
+                users_extended,
+            },
+        );
+
+        results
     }
 
     /// Returns both the principal balance and share balance for a user.
