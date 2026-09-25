@@ -92,4 +92,6 @@ mod test_performance_fee;
 mod test_user_apy;
 mod test_insurance_fund;
 mod test_withdrawal_queue;
+mod test_batch_touch_ttl;
+mod test_guardian;
 
