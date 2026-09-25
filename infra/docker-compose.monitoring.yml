@@ -1,0 +1,115 @@
+# NeuroWealth — Prometheus + Grafana Monitoring Stack
+#
+# Starts:
+#   - Prometheus (scrapes the agent /metrics endpoint)
+#   - Grafana    (provisioned with datasource + dashboards automatically)
+#   - Alertmanager (receives alerts from Prometheus)
+#
+# Usage:
+#   docker-compose -f infra/docker-compose.monitoring.yml up -d
+#
+# Prerequisites:
+#   - The Node.js agent must be running and exposing /metrics
+#   - Set AGENT_HOST below (or export it as an environment variable)
+#     to the hostname/IP reachable from inside the Docker network.
+#
+# Dashboard JSON files are read from docs/grafana/ and mounted into
+# Grafana at /etc/grafana/dashboards. Any JSON file dropped there will be
+# auto-imported on Grafana startup (and hot-reloaded every 30 s).
+
+version: "3.9"
+
+x-restart: &restart-policy
+  restart: unless-stopped
+
+networks:
+  monitoring:
+    name: neurowealth_monitoring
+
+volumes:
+  prometheus_data: {}
+  grafana_data: {}
+
+services:
+
+  # ── Prometheus ─────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    <<: *restart-policy
+    networks: [monitoring]
+    ports:
+      - "9090:9090"
+    volumes:
+      # Main scrape config
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # Alert rules
+      - ./rules:/etc/prometheus/rules:ro
+      # Persistent TSDB storage
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=30d"
+      - "--web.enable-lifecycle"
+      - "--web.enable-remote-write-receiver"
+    environment:
+      # These are substituted into prometheus.yml via envsubst or directly
+      # if you use --enable-feature=expand-external-labels
+      AGENT_HOST: "${AGENT_HOST:-host.docker.internal}"
+      AGENT_PORT: "${AGENT_PORT:-3000}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ── Alertmanager ───────────────────────────────────────────────────────────
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    <<: *restart-policy
+    networks: [monitoring]
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - "--storage.path=/alertmanager"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9093/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ── Grafana ────────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:10.4.2
+    <<: *restart-policy
+    networks: [monitoring]
+    ports:
+      - "3030:3000"
+    volumes:
+      # Provisioning: datasources and dashboard discovery
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      # Dashboard JSON files (hot-reloaded every 30 s)
+      - ../docs/grafana:/etc/grafana/dashboards:ro
+      # Persistent Grafana state (plugins, preferences, alert history)
+      - grafana_data:/var/lib/grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: "${GRAFANA_ADMIN_USER:-admin}"
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD:-changeme}"
+      GF_SERVER_ROOT_URL: "${GRAFANA_ROOT_URL:-http://localhost:3030}"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_LOG_LEVEL: "warn"
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3

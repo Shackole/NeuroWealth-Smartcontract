@@ -1,0 +1,13 @@
+{
+  "name": "@neurowealth/agent-metrics",
+  "version": "1.0.0",
+  "description": "Prometheus metrics middleware for the NeuroWealth AI agent",
+  "main": "metrics.js",
+  "scripts": {
+    "test": "node -e \"const m = require('./metrics'); console.log('metrics module loaded OK');\""
+  },
+  "dependencies": {
+    "express": "4.18.2",
+    "prom-client": "15.1.0"
+  }
+}
