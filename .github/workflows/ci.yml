@@ -13,10 +13,11 @@ permissions:
   contents: write
 
 env:
-  # Maximum allowed size in bytes for the optimised contract WASM.
-  # Raise this in the same PR as any deliberate feature addition that grows
-  # the binary, and document the reason in the PR description.
+  # Repository-configured upper ceiling for the optimised contract WASM.
+  # Confirm the live network parameter independently before deployment.
   WASM_SIZE_LIMIT_BYTES: 1500000
+  # Keep a 20% margin below the repository-configured ceiling.
+  WASM_SIZE_BUDGET_BYTES: 1200000
 
 jobs:
   # Secret scan (#605): fails the build if any commit in the PR (or push)
@@ -173,6 +174,7 @@ jobs:
 
               WASM_SIZE=$(stat -c%s "$WASM_FILE")
               LIMIT="${WASM_SIZE_LIMIT_BYTES:-1500000}"
+              BUDGET="${WASM_SIZE_BUDGET_BYTES:-1200000}"
               BASE_BRANCH="${GITHUB_BASE_REF:-${GITHUB_REF_NAME}}"
               BASELINE_FILE=".github/wasm-size-history.json"
               BASELINE_SOURCE_FILE="$BASELINE_FILE"
@@ -210,6 +212,7 @@ jobs:
                 echo "| Metric | Value |"
                 echo "|--------|-------|"
                 echo "| Optimised size | ${WASM_SIZE} bytes |"
+                echo "| Safety budget  | ${BUDGET} bytes |"
                 echo "| Limit          | ${LIMIT} bytes |"
                 if [ -n "$BASELINE_SIZE" ]; then
                   echo "| Baseline (${BASE_BRANCH}) | ${BASELINE_SIZE} bytes |"
@@ -220,7 +223,11 @@ jobs:
                 fi
               } >> "$GITHUB_STEP_SUMMARY"
 
-              if [ "$WASM_SIZE" -gt "$LIMIT" ]; then
+              if [ "$WASM_SIZE" -gt "$BUDGET" ]; then
+                echo "| Status | :x: EXCEEDED SAFETY BUDGET |" >> "$GITHUB_STEP_SUMMARY"
+                echo "::error::Optimised WASM is ${WASM_SIZE} bytes, which exceeds the ${BUDGET}-byte safety budget (20% below the ${LIMIT}-byte upload ceiling). See docs/WASM_SIZE.md for reduction tips."
+                exit 1
+              elif [ "$WASM_SIZE" -gt "$LIMIT" ]; then
                 echo "| Status | :x: EXCEEDED |" >> "$GITHUB_STEP_SUMMARY"
                 echo "::error::Optimised WASM is ${WASM_SIZE} bytes, which exceeds the ${LIMIT}-byte limit. See docs/WASM_SIZE.md for reduction tips."
                 exit 1
