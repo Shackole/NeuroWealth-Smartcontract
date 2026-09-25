@@ -1,4 +1,4 @@
-import { SorobanRpc } from '@stellar/stellar-sdk';
+import { rpc as SorobanRpc } from '@stellar/stellar-sdk';
 import { pool } from './db';
 import { evaluateYield } from './yieldComparison';
 import { processEventForAlerts } from './alertEngine';

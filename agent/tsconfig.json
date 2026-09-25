@@ -4,7 +4,7 @@
     "module": "commonjs",
     "rootDir": "./src",
     "outDir": "./dist",
-    "types": ["node", "mocha"],
+    "types": ["node", "mocha", "jest"],
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "strict": true,
