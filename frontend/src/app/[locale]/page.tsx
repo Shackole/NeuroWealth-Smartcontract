@@ -8,69 +8,99 @@ import { StrategyBadge } from '@/components/StrategyBadge';
 import { PortfolioChart } from '@/components/PortfolioChart';
 import { TransactionHistory } from '@/components/TransactionHistory';
 import { ActionModal } from '@/components/ActionModal';
-import { MessageSquare, Bot, ArrowRight, ShieldCheck, Zap, Layers } from 'lucide-react';
+import { ErrorBoundary } from '@/components/ErrorBoundary';
+import { useToast } from '@/components/ToastProvider';
+import { MessageSquare, Bot, ArrowRight, Zap } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { connectFreighterWallet } from '@/lib/freighter';
 import { fetchVaultState, VaultState } from '@/lib/stellar';
+import { translateVaultError } from '@/lib/vaultErrors';
 import {
   getEarningsSummary,
   getPortfolioValueHistory,
   getRecentTransactions,
   EarningsSummary,
   ChartDataPoint,
-  TransactionRecord
+  TransactionRecord,
 } from '@/lib/database';
+
+const PLACEHOLDER_CHART: ChartDataPoint[] = [
+  { date: 'Jul 21', value: 1000, yield: 0 },
+  { date: 'Jul 24', value: 1200, yield: 15 },
+  { date: 'Jul 28', value: 1450, yield: 45 },
+];
 
 export default function DashboardPage() {
   const t = useTranslations('Index');
+  const { success, error: toastError, info } = useToast();
+
   const [publicKey, setPublicKey] = useState<string | null>(null);
   const [vaultState, setVaultState] = useState<VaultState>({
     balance: 0,
     strategy: 'Balanced',
     exchangeRate: 1.042,
-    apy: 8.4
+    apy: 8.4,
   });
   const [earnings, setEarnings] = useState<EarningsSummary>({ today: 0, week: 0, month: 0 });
   const [chartData, setChartData] = useState<ChartDataPoint[]>([]);
   const [transactions, setTransactions] = useState<TransactionRecord[]>([]);
-
-  // Modal State
-  const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
+  const [isModalOpen, setIsModalOpen] = useState(false);
   const [modalType, setModalType] = useState<'deposit' | 'withdraw'>('deposit');
 
   const handleConnect = async () => {
-    const key = await connectFreighterWallet();
-    if (key) {
-      setPublicKey(key);
+    try {
+      const key = await connectFreighterWallet();
+      if (key) {
+        setPublicKey(key);
+        success('Wallet connected successfully.');
+      } else {
+        info('Wallet connection cancelled.');
+      }
+    } catch (err) {
+      toastError(translateVaultError(err));
     }
   };
 
   const handleDisconnect = () => {
     setPublicKey(null);
+    info('Wallet disconnected.');
   };
 
   useEffect(() => {
+    if (!publicKey) {
+      setVaultState({ balance: 0, strategy: 'Balanced', exchangeRate: 1.042, apy: 8.4 });
+      setEarnings({ today: 0, week: 0, month: 0 });
+      setChartData([]);
+      setTransactions([]);
+      return;
+    }
+
+    let cancelled = false;
+
     async function loadData() {
-      if (publicKey) {
-        const state = await fetchVaultState(publicKey);
-        setVaultState(state);
-
-        const earnData = await getEarningsSummary(publicKey);
-        setEarnings(earnData);
-
-        const chart = await getPortfolioValueHistory(publicKey);
-        setChartData(chart);
-
-        const txs = await getRecentTransactions(publicKey);
-        setTransactions(txs);
-      } else {
-        setVaultState({ balance: 0, strategy: 'Balanced', exchangeRate: 1.042, apy: 8.4 });
-        setEarnings({ today: 0, week: 0, month: 0 });
-        setChartData([]);
-        setTransactions([]);
+      try {
+        const [state, earnData, chart, txs] = await Promise.all([
+          fetchVaultState(publicKey!),
+          getEarningsSummary(publicKey!),
+          getPortfolioValueHistory(publicKey!),
+          getRecentTransactions(publicKey!),
+        ]);
+        if (!cancelled) {
+          setVaultState(state);
+          setEarnings(earnData);
+          setChartData(chart);
+          setTransactions(txs);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          toastError(translateVaultError(err));
+        }
       }
     }
+
     loadData();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [publicKey]);
 
   const openModal = (type: 'deposit' | 'withdraw') => {
@@ -79,12 +109,19 @@ export default function DashboardPage() {
   };
 
   return (
-    <div className="min-h-screen bg-[#080b11] text-slate-100 flex flex-col justify-between">
+    <div className="min-h-screen bg-white dark:bg-[#080b11] text-slate-900 dark:text-slate-100 flex flex-col justify-between">
       <div>
-        <Header publicKey={publicKey} onConnect={handleConnect} onDisconnect={handleDisconnect} />
+        {/* Header wrapped in its own error boundary */}
+        <ErrorBoundary section="Header">
+          <Header
+            publicKey={publicKey}
+            onConnect={handleConnect}
+            onDisconnect={handleDisconnect}
+          />
+        </ErrorBoundary>
 
         <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
-          {/* Hero Banner / Wallet Banner */}
+          {/* Hero / Connect Banner */}
           {!publicKey && (
             <div className="glass-panel rounded-3xl p-8 relative overflow-hidden border border-emerald-500/20 bg-gradient-to-r from-emerald-950/30 via-slate-900/60 to-indigo-950/30 shadow-glow-emerald">
               <div className="max-w-2xl relative z-10">
@@ -108,66 +145,74 @@ export default function DashboardPage() {
             </div>
           )}
 
-          {/* Top 3 Cards Grid */}
-          <section id="dashboard" className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <BalanceCard
-              balance={vaultState.balance}
-              usdEquivalent={vaultState.balance * 1.0}
-              exchangeRate={vaultState.exchangeRate}
-              onOpenDeposit={() => openModal('deposit')}
-              onOpenWithdraw={() => openModal('withdraw')}
-              isConnected={!!publicKey}
-            />
+          {/* Portfolio Cards */}
+          <ErrorBoundary section="Portfolio Cards">
+            <section id="dashboard" className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              <BalanceCard
+                balance={vaultState.balance}
+                usdEquivalent={vaultState.balance * 1.0}
+                exchangeRate={vaultState.exchangeRate}
+                onOpenDeposit={() => openModal('deposit')}
+                onOpenWithdraw={() => openModal('withdraw')}
+                isConnected={!!publicKey}
+              />
+              <EarningsCard earnings={earnings} isConnected={!!publicKey} />
+              <StrategyBadge
+                strategy={vaultState.strategy}
+                apy={vaultState.apy}
+                onSelectStrategy={(newSt) =>
+                  setVaultState((prev) => ({ ...prev, strategy: newSt }))
+                }
+              />
+            </section>
+          </ErrorBoundary>
 
-            <EarningsCard earnings={earnings} isConnected={!!publicKey} />
-
-            <StrategyBadge
-              strategy={vaultState.strategy}
-              apy={vaultState.apy}
-              onSelectStrategy={(newSt) => setVaultState((prev) => ({ ...prev, strategy: newSt }))}
-            />
-          </section>
-
-          {/* Portfolio Chart Section */}
-          <section id="strategies">
-            <PortfolioChart data={chartData.length > 0 ? chartData : [
-              { date: 'Jul 21', value: 1000, yield: 0 },
-              { date: 'Jul 24', value: 1200, yield: 15 },
-              { date: 'Jul 28', value: 1450, yield: 45 }
-            ]} />
-          </section>
+          {/* Portfolio Chart */}
+          <ErrorBoundary section="Portfolio Chart">
+            <section id="strategies">
+              <PortfolioChart
+                data={chartData.length > 0 ? chartData : PLACEHOLDER_CHART}
+              />
+            </section>
+          </ErrorBoundary>
 
           {/* Transaction History & WhatsApp Banner */}
           <section id="history" className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div className="lg:col-span-2">
-              <TransactionHistory transactions={transactions} />
-            </div>
+            <ErrorBoundary section="Transaction History">
+              <div className="lg:col-span-2">
+                <TransactionHistory transactions={transactions} />
+              </div>
+            </ErrorBoundary>
 
-            {/* WhatsApp Integration Callout Card */}
-            <div id="whatsapp" className="glass-panel-interactive rounded-2xl p-6 relative overflow-hidden flex flex-col justify-between border border-emerald-500/20">
+            {/* WhatsApp Integration Callout */}
+            <div
+              id="whatsapp"
+              className="glass-panel-interactive rounded-2xl p-6 relative overflow-hidden flex flex-col justify-between border border-emerald-500/20"
+            >
               <div>
                 <div className="flex items-center justify-between mb-4">
                   <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-                    <MessageSquare size={14} className="text-emerald-400" /> WhatsApp Integration
+                    <MessageSquare size={14} className="text-emerald-400" aria-hidden="true" />
+                    WhatsApp Integration
                   </span>
                   <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
                     Live Bot
                   </span>
                 </div>
-
                 <h3 className="text-lg font-bold text-white mb-2">
                   Interact via WhatsApp Chat
                 </h3>
                 <p className="text-xs text-slate-300 leading-relaxed mb-4">
-                  No browser or wallet needed! Simply text our Twilio bot to verify with OTP, check balance, deposit, or withdraw on the go.
+                  No browser or wallet needed! Simply text our Twilio bot to verify
+                  with OTP, check balance, deposit, or withdraw on the go.
                 </p>
-
                 <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 font-mono text-xs text-emerald-400 space-y-1 mb-4">
                   <div>User: deposit 100 USDC</div>
-                  <div className="text-slate-300">Agent: Got it! Deposited 100 USDC into Balanced strategy. ✅</div>
+                  <div className="text-slate-300">
+                    Agent: Got it! Deposited 100 USDC into Balanced strategy. ✅
+                  </div>
                 </div>
               </div>
-
               <div className="pt-4 border-t border-slate-800">
                 <span className="text-xs text-slate-400 block mb-2">Webhook URL:</span>
                 <code className="text-[11px] bg-slate-900 px-2 py-1 rounded border border-slate-800 text-slate-300 block truncate">
@@ -190,17 +235,23 @@ export default function DashboardPage() {
       />
 
       {/* Footer */}
-      <footer className="border-t border-slate-800/80 bg-[#06080e] py-6 mt-12 text-center text-xs text-slate-400">
+      <footer className="border-t border-slate-200 dark:border-slate-800/80 bg-slate-50 dark:bg-[#06080e] py-6 mt-12 text-center text-xs text-slate-500 dark:text-slate-400">
         <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-4">
           <div className="flex items-center gap-2">
-            <Bot size={16} className="text-emerald-400" />
-            <span className="font-semibold text-slate-300">NeuroWealth AI Vault</span>
+            <Bot size={16} className="text-emerald-500 dark:text-emerald-400" aria-hidden="true" />
+            <span className="font-semibold text-slate-700 dark:text-slate-300">NeuroWealth AI Vault</span>
             <span>— Soroban Smart Contract Architecture</span>
           </div>
           <div className="flex items-center gap-6">
-            <a href="https://stellar.org" target="_blank" rel="noreferrer" className="hover:text-emerald-400 transition-colors">Stellar Network</a>
-            <a href="https://soroban.stellar.org" target="_blank" rel="noreferrer" className="hover:text-emerald-400 transition-colors">Soroban SDK</a>
-            <a href="https://freighter.app" target="_blank" rel="noreferrer" className="hover:text-emerald-400 transition-colors">Freighter Wallet</a>
+            <a href="https://stellar.org" target="_blank" rel="noreferrer" className="hover:text-emerald-500 dark:hover:text-emerald-400 transition-colors">
+              Stellar Network
+            </a>
+            <a href="https://soroban.stellar.org" target="_blank" rel="noreferrer" className="hover:text-emerald-500 dark:hover:text-emerald-400 transition-colors">
+              Soroban SDK
+            </a>
+            <a href="https://freighter.app" target="_blank" rel="noreferrer" className="hover:text-emerald-500 dark:hover:text-emerald-400 transition-colors">
+              Freighter Wallet
+            </a>
           </div>
         </div>
       </footer>
