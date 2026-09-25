@@ -2,6 +2,7 @@
 
 import React, { useState } from 'react';
 import { TrendingUp, Calendar } from 'lucide-react';
+import { useTranslations } from 'next-intl';
 import { EarningsSummary } from '@/lib/database';
 
 interface EarningsCardProps {
@@ -10,6 +11,7 @@ interface EarningsCardProps {
 }
 
 export const EarningsCard: React.FC<EarningsCardProps> = ({ earnings, isConnected }) => {
+  const t = useTranslations('EarningsCard');
   const [period, setPeriod] = useState<'today' | 'week' | 'month'>('today');
 
   const currentValue = isConnected ? earnings[period] : 0;
@@ -19,7 +21,7 @@ export const EarningsCard: React.FC<EarningsCardProps> = ({ earnings, isConnecte
       <div>
         <div className="flex items-center justify-between mb-4">
           <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-            <TrendingUp size={14} className="text-indigo-400" /> Yield Earnings
+            <TrendingUp size={14} className="text-indigo-400" /> {t('title')}
           </span>
           <div className="flex bg-slate-900 p-1 rounded-lg border border-slate-800 text-xs">
             <button
@@ -28,7 +30,7 @@ export const EarningsCard: React.FC<EarningsCardProps> = ({ earnings, isConnecte
                 period === 'today' ? 'bg-indigo-600 text-white font-medium' : 'text-slate-400 hover:text-white'
               }`}
             >
-              Today
+              {t('today')}
             </button>
             <button
               onClick={() => setPeriod('week')}
@@ -36,7 +38,7 @@ export const EarningsCard: React.FC<EarningsCardProps> = ({ earnings, isConnecte
                 period === 'week' ? 'bg-indigo-600 text-white font-medium' : 'text-slate-400 hover:text-white'
               }`}
             >
-              Week
+              {t('week')}
             </button>
             <button
               onClick={() => setPeriod('month')}
@@ -44,7 +46,7 @@ export const EarningsCard: React.FC<EarningsCardProps> = ({ earnings, isConnecte
                 period === 'month' ? 'bg-indigo-600 text-white font-medium' : 'text-slate-400 hover:text-white'
               }`}
             >
-              Month
+              {t('month')}
             </button>
           </div>
         </div>
@@ -55,26 +57,26 @@ export const EarningsCard: React.FC<EarningsCardProps> = ({ earnings, isConnecte
               +${currentValue.toFixed(2)}
             </span>
             <span className="text-xs font-semibold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20">
-              Auto-Compounded
+              {t('autoCompounded')}
             </span>
           </div>
           <p className="text-xs text-slate-400 mt-2 flex items-center gap-1">
-            <Calendar size={12} /> Yield generated autonomously by AI agent strategy
+            <Calendar size={12} /> {t('yieldNote')}
           </p>
         </div>
       </div>
 
       <div className="pt-4 border-t border-slate-800/80 grid grid-cols-3 gap-2 text-center text-xs">
         <div className="bg-slate-900/60 p-2 rounded-lg border border-slate-800">
-          <div className="text-slate-400">Today</div>
+          <div className="text-slate-400">{t('today')}</div>
           <div className="font-semibold text-emerald-400 font-mono">+${earnings.today.toFixed(2)}</div>
         </div>
         <div className="bg-slate-900/60 p-2 rounded-lg border border-slate-800">
-          <div className="text-slate-400">7 Days</div>
+          <div className="text-slate-400">{t('week')}</div>
           <div className="font-semibold text-emerald-400 font-mono">+${earnings.week.toFixed(2)}</div>
         </div>
         <div className="bg-slate-900/60 p-2 rounded-lg border border-slate-800">
-          <div className="text-slate-400">30 Days</div>
+          <div className="text-slate-400">{t('month')}</div>
           <div className="font-semibold text-emerald-400 font-mono">+${earnings.month.toFixed(2)}</div>
         </div>
       </div>

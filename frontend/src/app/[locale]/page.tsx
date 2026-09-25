@@ -8,7 +8,7 @@ import { StrategyBadge } from '@/components/StrategyBadge';
 import { PortfolioChart } from '@/components/PortfolioChart';
 import { TransactionHistory } from '@/components/TransactionHistory';
 import { ActionModal } from '@/components/ActionModal';
-import { MessageSquare, Bot, ArrowRight, ShieldCheck, Zap, Layers } from 'lucide-react';
+import { MessageSquare, Bot, ArrowRight, Zap } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { connectFreighterWallet } from '@/lib/freighter';
 import { fetchVaultState, VaultState } from '@/lib/stellar';
@@ -23,6 +23,10 @@ import {
 
 export default function DashboardPage() {
   const t = useTranslations('Index');
+  const tHero = useTranslations('Hero');
+  const tWhatsApp = useTranslations('WhatsAppCard');
+  const tFooter = useTranslations('Footer');
+
   const [publicKey, setPublicKey] = useState<string | null>(null);
   const [vaultState, setVaultState] = useState<VaultState>({
     balance: 0,
@@ -34,33 +38,25 @@ export default function DashboardPage() {
   const [chartData, setChartData] = useState<ChartDataPoint[]>([]);
   const [transactions, setTransactions] = useState<TransactionRecord[]>([]);
 
-  // Modal State
   const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
   const [modalType, setModalType] = useState<'deposit' | 'withdraw'>('deposit');
 
   const handleConnect = async () => {
     const key = await connectFreighterWallet();
-    if (key) {
-      setPublicKey(key);
-    }
+    if (key) setPublicKey(key);
   };
 
-  const handleDisconnect = () => {
-    setPublicKey(null);
-  };
+  const handleDisconnect = () => setPublicKey(null);
 
   useEffect(() => {
     async function loadData() {
       if (publicKey) {
         const state = await fetchVaultState(publicKey);
         setVaultState(state);
-
         const earnData = await getEarningsSummary(publicKey);
         setEarnings(earnData);
-
         const chart = await getPortfolioValueHistory(publicKey);
         setChartData(chart);
-
         const txs = await getRecentTransactions(publicKey);
         setTransactions(txs);
       } else {
@@ -84,12 +80,12 @@ export default function DashboardPage() {
         <Header publicKey={publicKey} onConnect={handleConnect} onDisconnect={handleDisconnect} />
 
         <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
-          {/* Hero Banner / Wallet Banner */}
+          {/* Hero Banner */}
           {!publicKey && (
             <div className="glass-panel rounded-3xl p-8 relative overflow-hidden border border-emerald-500/20 bg-gradient-to-r from-emerald-950/30 via-slate-900/60 to-indigo-950/30 shadow-glow-emerald">
               <div className="max-w-2xl relative z-10">
                 <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 text-emerald-400 text-xs font-semibold border border-emerald-500/20 mb-4">
-                  <Zap size={14} /> AI-Powered Autonomous Yield Engine
+                  <Zap size={14} /> {tHero('badge')}
                 </div>
                 <h1 className="text-3xl sm:text-4xl font-extrabold tracking-tight text-white mb-3">
                   {t('title')}
@@ -108,7 +104,7 @@ export default function DashboardPage() {
             </div>
           )}
 
-          {/* Top 3 Cards Grid */}
+          {/* Top 3 Cards */}
           <section id="dashboard" className="grid grid-cols-1 md:grid-cols-3 gap-6">
             <BalanceCard
               balance={vaultState.balance}
@@ -118,9 +114,7 @@ export default function DashboardPage() {
               onOpenWithdraw={() => openModal('withdraw')}
               isConnected={!!publicKey}
             />
-
             <EarningsCard earnings={earnings} isConnected={!!publicKey} />
-
             <StrategyBadge
               strategy={vaultState.strategy}
               apy={vaultState.apy}
@@ -128,7 +122,7 @@ export default function DashboardPage() {
             />
           </section>
 
-          {/* Portfolio Chart Section */}
+          {/* Portfolio Chart */}
           <section id="strategies">
             <PortfolioChart data={chartData.length > 0 ? chartData : [
               { date: 'Jul 21', value: 1000, yield: 0 },
@@ -137,39 +131,39 @@ export default function DashboardPage() {
             ]} />
           </section>
 
-          {/* Transaction History & WhatsApp Banner */}
+          {/* History + WhatsApp */}
           <section id="history" className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="lg:col-span-2">
               <TransactionHistory transactions={transactions} />
             </div>
 
-            {/* WhatsApp Integration Callout Card */}
+            {/* WhatsApp Card */}
             <div id="whatsapp" className="glass-panel-interactive rounded-2xl p-6 relative overflow-hidden flex flex-col justify-between border border-emerald-500/20">
               <div>
                 <div className="flex items-center justify-between mb-4">
                   <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-                    <MessageSquare size={14} className="text-emerald-400" /> WhatsApp Integration
+                    <MessageSquare size={14} className="text-emerald-400" /> {tWhatsApp('title')}
                   </span>
                   <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
-                    Live Bot
+                    {tWhatsApp('live')}
                   </span>
                 </div>
 
                 <h3 className="text-lg font-bold text-white mb-2">
-                  Interact via WhatsApp Chat
+                  {tWhatsApp('heading')}
                 </h3>
                 <p className="text-xs text-slate-300 leading-relaxed mb-4">
-                  No browser or wallet needed! Simply text our Twilio bot to verify with OTP, check balance, deposit, or withdraw on the go.
+                  {tWhatsApp('description')}
                 </p>
 
                 <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 font-mono text-xs text-emerald-400 space-y-1 mb-4">
-                  <div>User: deposit 100 USDC</div>
-                  <div className="text-slate-300">Agent: Got it! Deposited 100 USDC into Balanced strategy. ✅</div>
+                  <div>{tWhatsApp('demoUser')}</div>
+                  <div className="text-slate-300">{tWhatsApp('demoAgent')}</div>
                 </div>
               </div>
 
               <div className="pt-4 border-t border-slate-800">
-                <span className="text-xs text-slate-400 block mb-2">Webhook URL:</span>
+                <span className="text-xs text-slate-400 block mb-2">{tWhatsApp('webhookLabel')}</span>
                 <code className="text-[11px] bg-slate-900 px-2 py-1 rounded border border-slate-800 text-slate-300 block truncate">
                   /api/whatsapp/webhook
                 </code>
@@ -194,13 +188,19 @@ export default function DashboardPage() {
         <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-4">
           <div className="flex items-center gap-2">
             <Bot size={16} className="text-emerald-400" />
-            <span className="font-semibold text-slate-300">NeuroWealth AI Vault</span>
-            <span>— Soroban Smart Contract Architecture</span>
+            <span className="font-semibold text-slate-300">{tFooter('brand')}</span>
+            <span>— {tFooter('architecture')}</span>
           </div>
           <div className="flex items-center gap-6">
-            <a href="https://stellar.org" target="_blank" rel="noreferrer" className="hover:text-emerald-400 transition-colors">Stellar Network</a>
-            <a href="https://soroban.stellar.org" target="_blank" rel="noreferrer" className="hover:text-emerald-400 transition-colors">Soroban SDK</a>
-            <a href="https://freighter.app" target="_blank" rel="noreferrer" className="hover:text-emerald-400 transition-colors">Freighter Wallet</a>
+            <a href="https://stellar.org" target="_blank" rel="noreferrer" className="hover:text-emerald-400 transition-colors">
+              {tFooter('stellar')}
+            </a>
+            <a href="https://soroban.stellar.org" target="_blank" rel="noreferrer" className="hover:text-emerald-400 transition-colors">
+              {tFooter('soroban')}
+            </a>
+            <a href="https://freighter.app" target="_blank" rel="noreferrer" className="hover:text-emerald-400 transition-colors">
+              {tFooter('freighter')}
+            </a>
           </div>
         </div>
       </footer>

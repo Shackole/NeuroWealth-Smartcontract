@@ -1,8 +1,114 @@
 {
   "Index": {
-    "title": "NeuroWealth | AIを活用したDeFi利回りプラットフォーム",
-    "description": "スマートコントラクトの利回り戦略を管理する自律型AI投資エージェント。",
-    "getStarted": "はじめる",
+    "title": "NeuroWealth | AI搭載DeFiイールドプラットフォーム",
+    "description": "スマートコントラクトのイールド戦略を管理する自律型AI投資エージェント。",
+    "getStarted": "始める",
     "language": "言語"
+  },
+  "Header": {
+    "tagline": "StellarにおけるDeFi自律イールド",
+    "nav": {
+      "dashboard": "ダッシュボード",
+      "strategies": "戦略",
+      "transactions": "取引履歴",
+      "whatsapp": "WhatsAppボット"
+    }
+  },
+  "Hero": {
+    "badge": "AI搭載の自律イールドエンジン"
+  },
+  "BalanceCard": {
+    "title": "ポートフォリオ総額",
+    "protected": "Soroban Vault保護済み",
+    "usdLabel": "USD",
+    "rateLabel": "レート",
+    "deposit": "入金",
+    "withdraw": "出金"
+  },
+  "EarningsCard": {
+    "title": "イールド収益",
+    "autoCompounded": "自動複利",
+    "yieldNote": "AIエージェント戦略によって自律的に生成された収益",
+    "today": "今日",
+    "week": "7日間",
+    "month": "30日間"
+  },
+  "StrategyBadge": {
+    "title": "現在の戦略",
+    "apyLabel": "純APY",
+    "weeklyGain": "今週+0.4%",
+    "optimiseQuestion": "リスクを最適化しますか？",
+    "conservative": "保守的",
+    "balanced": "バランス",
+    "growth": "成長",
+    "descriptions": {
+      "conservative": "Blendのステーブルコイン貸付（低リスク）",
+      "balanced": "最適な貸付+DEX流動性ミックス（推奨）",
+      "growth": "マルチプロトコルDEX LPデプロイ（高収益）"
+    }
+  },
+  "TransactionHistory": {
+    "title": "取引履歴",
+    "noTransactions": "まだ取引がありません",
+    "deposit": "入金",
+    "withdraw": "出金",
+    "rebalance": "リバランス",
+    "harvest": "ハーベスト"
+  },
+  "WhatsAppCard": {
+    "title": "WhatsApp連携",
+    "live": "ライブボット",
+    "heading": "WhatsAppチャットで操作",
+    "description": "ブラウザやウォレット不要！TwilioボットにメッセージしてOTP認証、残高確認、入金、出金がどこでもできます。",
+    "webhookLabel": "WebhookのURL：",
+    "demoUser": "ユーザー：100 USDCを入金",
+    "demoAgent": "エージェント：了解！バランス戦略に100 USDCを入金しました。✅"
+  },
+  "ActionModal": {
+    "depositTitle": "USDCを入金",
+    "withdrawTitle": "USDCを出金",
+    "depositSubtitle": "Soroban vaultでシェアをミント",
+    "withdrawSubtitle": "シェアを焼却してUSDCを出金",
+    "amountLabel": "金額（USDC）",
+    "available": "利用可能",
+    "max": "最大",
+    "exchangeRate": "交換レート",
+    "estimatedShares": "推定シェア数",
+    "networkFee": "ネットワーク手数料",
+    "signingWith": "Freighterで署名中…",
+    "confirmDeposit": "入金を確認",
+    "confirmWithdraw": "出金を確認",
+    "depositSuccess": "入金成功！",
+    "withdrawSuccess": "出金成功！",
+    "txHashLabel": "トランザクションハッシュ：",
+    "confirmedIn": "Stellarで約3.8秒で確認",
+    "done": "完了"
+  },
+  "WalletConnect": {
+    "connect": "ウォレットを接続",
+    "disconnect": "切断",
+    "connected": "接続済み",
+    "address": "アドレス"
+  },
+  "Footer": {
+    "brand": "NeuroWealth AI Vault",
+    "architecture": "Sorobanスマートコントラクトアーキテクチャ",
+    "stellar": "Stellarネットワーク",
+    "soroban": "Soroban SDK",
+    "freighter": "Freighterウォレット"
+  },
+  "LanguageSwitcher": {
+    "label": "言語"
+  },
+  "Onboarding": {
+    "skip": "スキップ",
+    "next": "次へ",
+    "finish": "完了",
+    "step1Title": "NeuroWealthへようこそ",
+    "step1Body": "Stellar上の自律型AIイールドエージェント。ウォレットを接続して始めましょう。",
+    "step2Title": "USDCを入金",
+    "step2Body": "USDCを入金して、AIエージェントに最適なイールド戦略を見つけてもらいましょう。",
+    "step3Title": "自動で稼ぐ",
+    "step3Body": "あなたの資金はBlendとDEX流動性プールに24時間365日デプロイされています。"
   }
 }
