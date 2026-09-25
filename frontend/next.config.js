@@ -7,7 +7,7 @@ const withNextIntl = createNextIntlPlugin(
 
 const nextConfig = {
   reactStrictMode: true,
-  transpilePackages: ['@stellar/stellar-sdk', '@stellar/freighter-api'],
+  transpilePackages: ['@stellar/stellar-sdk', '@stellar/freighter-api', 'msw', '@mswjs/interceptors', 'rettime', 'until-async', '@open-draft/deferred-promise'],
 };
 
 module.exports = withNextIntl(nextConfig);
