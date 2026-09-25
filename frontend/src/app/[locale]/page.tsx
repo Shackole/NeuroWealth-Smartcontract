@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Header } from '@/components/Header';
 import { BalanceCard } from '@/components/BalanceCard';
 import { EarningsCard } from '@/components/EarningsCard';
@@ -8,6 +8,8 @@ import { StrategyBadge } from '@/components/StrategyBadge';
 import { PortfolioChart } from '@/components/PortfolioChart';
 import { TransactionHistory } from '@/components/TransactionHistory';
 import { ActionModal } from '@/components/ActionModal';
+import { DepositForm } from '@/components/DepositForm';
+import { ToastContainer, useToast } from '@/components/Toast';
 import { MessageSquare, Bot, ArrowRight, ShieldCheck, Zap, Layers } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { connectFreighterWallet } from '@/lib/freighter';
@@ -23,6 +25,7 @@ import {
 
 export default function DashboardPage() {
   const t = useTranslations('Index');
+  const { toasts, dismiss, success: toastSuccess, error: toastError } = useToast();
   const [publicKey, setPublicKey] = useState<string | null>(null);
   const [vaultState, setVaultState] = useState<VaultState>({
     balance: 0,
@@ -34,9 +37,12 @@ export default function DashboardPage() {
   const [chartData, setChartData] = useState<ChartDataPoint[]>([]);
   const [transactions, setTransactions] = useState<TransactionRecord[]>([]);
 
-  // Modal State
+  // Deposit form state (new full-featured form)
+  const [isDepositFormOpen, setIsDepositFormOpen] = useState<boolean>(false);
+
+  // Legacy withdraw modal state
   const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
-  const [modalType, setModalType] = useState<'deposit' | 'withdraw'>('deposit');
+  const [modalType, setModalType] = useState<'deposit' | 'withdraw'>('withdraw');
 
   const handleConnect = async () => {
     const key = await connectFreighterWallet();
@@ -49,33 +55,47 @@ export default function DashboardPage() {
     setPublicKey(null);
   };
 
-  useEffect(() => {
-    async function loadData() {
-      if (publicKey) {
-        const state = await fetchVaultState(publicKey);
-        setVaultState(state);
+  const loadData = useCallback(async () => {
+    if (publicKey) {
+      const state = await fetchVaultState(publicKey);
+      setVaultState(state);
 
-        const earnData = await getEarningsSummary(publicKey);
-        setEarnings(earnData);
+      const earnData = await getEarningsSummary(publicKey);
+      setEarnings(earnData);
 
-        const chart = await getPortfolioValueHistory(publicKey);
-        setChartData(chart);
+      const chart = await getPortfolioValueHistory(publicKey);
+      setChartData(chart);
 
-        const txs = await getRecentTransactions(publicKey);
-        setTransactions(txs);
-      } else {
-        setVaultState({ balance: 0, strategy: 'Balanced', exchangeRate: 1.042, apy: 8.4 });
-        setEarnings({ today: 0, week: 0, month: 0 });
-        setChartData([]);
-        setTransactions([]);
-      }
+      const txs = await getRecentTransactions(publicKey);
+      setTransactions(txs);
+    } else {
+      setVaultState({ balance: 0, strategy: 'Balanced', exchangeRate: 1.042, apy: 8.4 });
+      setEarnings({ today: 0, week: 0, month: 0 });
+      setChartData([]);
+      setTransactions([]);
     }
-    loadData();
   }, [publicKey]);
 
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
+
   const openModal = (type: 'deposit' | 'withdraw') => {
-    setModalType(type);
-    setIsModalOpen(true);
+    if (type === 'deposit') {
+      setIsDepositFormOpen(true);
+    } else {
+      setModalType('withdraw');
+      setIsModalOpen(true);
+    }
+  };
+
+  const handleDepositSuccess = () => {
+    // Refresh vault state after a successful deposit
+    loadData();
+    toastSuccess(
+      'Deposit Successful! 🎉',
+      'Your USDC has been deposited into the vault. Earnings are now accumulating.',
+    );
   };
 
   return (
@@ -179,7 +199,17 @@ export default function DashboardPage() {
         </main>
       </div>
 
-      {/* Action Modal */}
+      {/* Deposit Form (new full-featured component for issue #4) */}
+      {publicKey && (
+        <DepositForm
+          isOpen={isDepositFormOpen}
+          onClose={() => setIsDepositFormOpen(false)}
+          userPublicKey={publicKey}
+          onDepositSuccess={handleDepositSuccess}
+        />
+      )}
+
+      {/* Legacy Action Modal — used for Withdraw only */}
       <ActionModal
         isOpen={isModalOpen}
         onClose={() => setIsModalOpen(false)}
@@ -188,6 +218,9 @@ export default function DashboardPage() {
         balance={vaultState.balance}
         exchangeRate={vaultState.exchangeRate}
       />
+
+      {/* Global toast notifications */}
+      <ToastContainer toasts={toasts} onDismiss={dismiss} />
 
       {/* Footer */}
       <footer className="border-t border-slate-800/80 bg-[#06080e] py-6 mt-12 text-center text-xs text-slate-400">

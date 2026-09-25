@@ -9,6 +9,7 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@hookform/resolvers": "^3.4.2",
     "@stellar/freighter-api": "^2.0.0",
     "@stellar/stellar-sdk": "^13.0.0",
     "clsx": "^2.1.1",
@@ -17,8 +18,10 @@
     "next-intl": "^4.13.7",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "react-hook-form": "^7.51.5",
     "recharts": "^2.12.7",
-    "tailwind-merge": "^2.3.0"
+    "tailwind-merge": "^2.3.0",
+    "zod": "^3.23.8"
   },
   "devDependencies": {
     "@types/node": "^20.12.7",
