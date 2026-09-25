@@ -2,6 +2,7 @@
 
 import React from 'react';
 import { DollarSign, ArrowUpRight, ArrowDownLeft, ShieldCheck } from 'lucide-react';
+import { useTranslations } from 'next-intl';
 
 interface BalanceCardProps {
   balance: number;
@@ -20,29 +21,31 @@ export const BalanceCard: React.FC<BalanceCardProps> = ({
   onOpenWithdraw,
   isConnected
 }) => {
+  const t = useTranslations('BalanceCard');
+
   return (
     <div className="glass-panel-interactive rounded-2xl p-6 relative overflow-hidden">
       <div className="absolute top-0 right-0 w-48 h-48 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none" />
-      
+
       <div className="flex items-center justify-between mb-4">
         <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-          <DollarSign size={14} className="text-emerald-400" /> Total Portfolio Value
+          <DollarSign size={14} className="text-emerald-400" /> {t('title')}
         </span>
         <span className="text-xs font-medium text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded-full border border-emerald-500/20 flex items-center gap-1">
-          <ShieldCheck size={12} /> Soroban Vault Protected
+          <ShieldCheck size={12} /> {t('protected')}
         </span>
       </div>
 
       <div className="mb-6">
         <div className="flex items-baseline gap-2">
           <span className="text-4xl font-extrabold tracking-tight text-white font-mono">
-            {isConnected ? balance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00'}
+            {isConnected ? balance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00'}
           </span>
           <span className="text-lg font-bold text-emerald-400">USDC</span>
         </div>
         <p className="text-sm text-slate-400 mt-1 font-mono">
-          ≈ ${isConnected ? usdEquivalent.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00'} USD
-          <span className="ml-3 text-xs text-slate-500">Rate: {exchangeRate.toFixed(4)} USDC/Share</span>
+          ≈ ${isConnected ? usdEquivalent.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00'} {t('usdLabel')}
+          <span className="ml-3 text-xs text-slate-500">{t('rateLabel')}: {exchangeRate.toFixed(4)} USDC/Share</span>
         </p>
       </div>
 
@@ -53,7 +56,7 @@ export const BalanceCard: React.FC<BalanceCardProps> = ({
           className="flex items-center justify-center gap-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold py-3 px-4 rounded-xl transition-all shadow-glow-emerald disabled:opacity-40 disabled:cursor-not-allowed"
         >
           <ArrowDownLeft size={18} />
-          <span>Deposit</span>
+          <span>{t('deposit')}</span>
         </button>
 
         <button
@@ -62,7 +65,7 @@ export const BalanceCard: React.FC<BalanceCardProps> = ({
           className="flex items-center justify-center gap-2 bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold py-3 px-4 rounded-xl border border-slate-700 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
         >
           <ArrowUpRight size={18} />
-          <span>Withdraw</span>
+          <span>{t('withdraw')}</span>
         </button>
       </div>
     </div>

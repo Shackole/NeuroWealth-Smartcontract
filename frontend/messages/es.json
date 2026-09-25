@@ -4,5 +4,111 @@
     "description": "Agente de inversión autónomo de IA que gestiona estrategias de rendimiento de contratos inteligentes.",
     "getStarted": "Empezar",
     "language": "Idioma"
+  },
+  "Header": {
+    "tagline": "Rendimiento DeFi autónomo en Stellar",
+    "nav": {
+      "dashboard": "Panel",
+      "strategies": "Estrategias",
+      "transactions": "Transacciones",
+      "whatsapp": "Bot de WhatsApp"
+    }
+  },
+  "Hero": {
+    "badge": "Motor de rendimiento autónomo impulsado por IA"
+  },
+  "BalanceCard": {
+    "title": "Valor total del portafolio",
+    "protected": "Protegido por Soroban Vault",
+    "usdLabel": "USD",
+    "rateLabel": "Tasa",
+    "deposit": "Depositar",
+    "withdraw": "Retirar"
+  },
+  "EarningsCard": {
+    "title": "Ganancias por rendimiento",
+    "autoCompounded": "Auto-compuesto",
+    "yieldNote": "Rendimiento generado de forma autónoma por la estrategia del agente IA",
+    "today": "Hoy",
+    "week": "7 días",
+    "month": "30 días"
+  },
+  "StrategyBadge": {
+    "title": "Estrategia actual",
+    "apyLabel": "TAE neta",
+    "weeklyGain": "+0,4% esta semana",
+    "optimiseQuestion": "¿Quieres optimizar el riesgo?",
+    "conservative": "Conservador",
+    "balanced": "Equilibrado",
+    "growth": "Crecimiento",
+    "descriptions": {
+      "conservative": "Préstamos en stablecoins en Blend (Bajo riesgo)",
+      "balanced": "Combinación óptima de préstamos + liquidez DEX (Recomendado)",
+      "growth": "Despliegue multi-protocolo DEX LP (Mayor rendimiento)"
+    }
+  },
+  "TransactionHistory": {
+    "title": "Historial de transacciones",
+    "noTransactions": "Aún no hay transacciones",
+    "deposit": "Depósito",
+    "withdraw": "Retiro",
+    "rebalance": "Reequilibrio",
+    "harvest": "Cosecha"
+  },
+  "WhatsAppCard": {
+    "title": "Integración con WhatsApp",
+    "live": "Bot en vivo",
+    "heading": "Interactúa por chat de WhatsApp",
+    "description": "¡No necesitas navegador ni billetera! Simplemente envía un mensaje a nuestro bot de Twilio para verificar con OTP, consultar saldo, depositar o retirar.",
+    "webhookLabel": "URL del webhook:",
+    "demoUser": "Usuario: depositar 100 USDC",
+    "demoAgent": "Agente: ¡Listo! Depositados 100 USDC en estrategia Equilibrada. ✅"
+  },
+  "ActionModal": {
+    "depositTitle": "Depositar USDC",
+    "withdrawTitle": "Retirar USDC",
+    "depositSubtitle": "Acuñar participaciones en el vault Soroban",
+    "withdrawSubtitle": "Quemar participaciones y retirar USDC",
+    "amountLabel": "Monto (USDC)",
+    "available": "Disponible",
+    "max": "MÁX",
+    "exchangeRate": "Tasa de cambio",
+    "estimatedShares": "Participaciones estimadas",
+    "networkFee": "Comisión de red",
+    "signingWith": "Firmando con Freighter…",
+    "confirmDeposit": "Confirmar depósito",
+    "confirmWithdraw": "Confirmar retiro",
+    "depositSuccess": "¡Depósito exitoso!",
+    "withdrawSuccess": "¡Retiro exitoso!",
+    "txHashLabel": "Hash de transacción:",
+    "confirmedIn": "Confirmado en ~3,8 segundos en Stellar",
+    "done": "Listo"
+  },
+  "WalletConnect": {
+    "connect": "Conectar billetera",
+    "disconnect": "Desconectar",
+    "connected": "Conectada",
+    "address": "Dirección"
+  },
+  "Footer": {
+    "brand": "NeuroWealth AI Vault",
+    "architecture": "Arquitectura de contratos inteligentes Soroban",
+    "stellar": "Red Stellar",
+    "soroban": "SDK Soroban",
+    "freighter": "Billetera Freighter"
+  },
+  "LanguageSwitcher": {
+    "label": "Idioma"
+  },
+  "Onboarding": {
+    "skip": "Omitir",
+    "next": "Siguiente",
+    "finish": "Finalizar",
+    "step1Title": "Bienvenido a NeuroWealth",
+    "step1Body": "Tu agente autónomo de rendimiento IA en Stellar. Conecta tu billetera para comenzar.",
+    "step2Title": "Deposita USDC",
+    "step2Body": "Deposita USDC y deja que el agente IA encuentre las mejores estrategias de rendimiento.",
+    "step3Title": "Gana automáticamente",
+    "step3Body": "Tus fondos se despliegan 24/7 en Blend y pools de liquidez DEX."
   }
 }

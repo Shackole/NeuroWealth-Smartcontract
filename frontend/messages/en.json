@@ -4,5 +4,111 @@
     "description": "Autonomous AI investment agent managing smart contract yield strategies.",
     "getStarted": "Get Started",
     "language": "Language"
+  },
+  "Header": {
+    "tagline": "Autonomous DeFi Yield on Stellar",
+    "nav": {
+      "dashboard": "Dashboard",
+      "strategies": "Strategies",
+      "transactions": "Transactions",
+      "whatsapp": "WhatsApp Bot"
+    }
+  },
+  "Hero": {
+    "badge": "AI-Powered Autonomous Yield Engine"
+  },
+  "BalanceCard": {
+    "title": "Total Portfolio Value",
+    "protected": "Soroban Vault Protected",
+    "usdLabel": "USD",
+    "rateLabel": "Rate",
+    "deposit": "Deposit",
+    "withdraw": "Withdraw"
+  },
+  "EarningsCard": {
+    "title": "Yield Earnings",
+    "autoCompounded": "Auto-Compounded",
+    "yieldNote": "Yield generated autonomously by AI agent strategy",
+    "today": "Today",
+    "week": "7 Days",
+    "month": "30 Days"
+  },
+  "StrategyBadge": {
+    "title": "Current Strategy",
+    "apyLabel": "Net APY",
+    "weeklyGain": "+0.4% this week",
+    "optimiseQuestion": "Want to optimise risk?",
+    "conservative": "Conservative",
+    "balanced": "Balanced",
+    "growth": "Growth",
+    "descriptions": {
+      "conservative": "Blend stablecoin lending (Low risk)",
+      "balanced": "Optimal lending + DEX liquidity mix (Recommended)",
+      "growth": "Multi-protocol DEX LP deployment (Higher yield)"
+    }
+  },
+  "TransactionHistory": {
+    "title": "Transaction History",
+    "noTransactions": "No transactions yet",
+    "deposit": "Deposit",
+    "withdraw": "Withdrawal",
+    "rebalance": "Rebalance",
+    "harvest": "Harvest"
+  },
+  "WhatsAppCard": {
+    "title": "WhatsApp Integration",
+    "live": "Live Bot",
+    "heading": "Interact via WhatsApp Chat",
+    "description": "No browser or wallet needed! Simply text our Twilio bot to verify with OTP, check balance, deposit, or withdraw on the go.",
+    "webhookLabel": "Webhook URL:",
+    "demoUser": "User: deposit 100 USDC",
+    "demoAgent": "Agent: Got it! Deposited 100 USDC into Balanced strategy. ✅"
+  },
+  "ActionModal": {
+    "depositTitle": "Deposit USDC",
+    "withdrawTitle": "Withdraw USDC",
+    "depositSubtitle": "Mint shares in Soroban vault",
+    "withdrawSubtitle": "Burn shares & withdraw USDC",
+    "amountLabel": "Amount (USDC)",
+    "available": "Available",
+    "max": "MAX",
+    "exchangeRate": "Exchange Rate",
+    "estimatedShares": "Estimated Shares",
+    "networkFee": "Network Fee",
+    "signingWith": "Signing with Freighter…",
+    "confirmDeposit": "Confirm Deposit",
+    "confirmWithdraw": "Confirm Withdrawal",
+    "depositSuccess": "Deposit Successful!",
+    "withdrawSuccess": "Withdrawal Successful!",
+    "txHashLabel": "Transaction Hash:",
+    "confirmedIn": "Confirmed in ~3.8 seconds on Stellar",
+    "done": "Done"
+  },
+  "WalletConnect": {
+    "connect": "Connect Wallet",
+    "disconnect": "Disconnect",
+    "connected": "Connected",
+    "address": "Address"
+  },
+  "Footer": {
+    "brand": "NeuroWealth AI Vault",
+    "architecture": "Soroban Smart Contract Architecture",
+    "stellar": "Stellar Network",
+    "soroban": "Soroban SDK",
+    "freighter": "Freighter Wallet"
+  },
+  "LanguageSwitcher": {
+    "label": "Language"
+  },
+  "Onboarding": {
+    "skip": "Skip",
+    "next": "Next",
+    "finish": "Finish",
+    "step1Title": "Welcome to NeuroWealth",
+    "step1Body": "Your autonomous AI yield agent on Stellar. Connect your wallet to get started.",
+    "step2Title": "Deposit USDC",
+    "step2Body": "Deposit USDC and let the AI agent find the best yield strategies for you.",
+    "step3Title": "Earn Automatically",
+    "step3Body": "Your funds are deployed 24/7 across Blend and DEX liquidity pools."
   }
 }

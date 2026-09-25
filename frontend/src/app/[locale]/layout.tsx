@@ -12,6 +12,17 @@ export const metadata: Metadata = {
   description: 'Autonomous AI investment agent managing smart contract yield strategies on the Stellar blockchain with 24/7 rebalancing.',
 };
 
+/**
+ * RTL-ready locale direction map.
+ * Add RTL locale codes here when they are introduced (e.g. 'ar', 'he', 'fa').
+ * All current locales (en, es, fr, pt, zh, ja) are LTR.
+ */
+const RTL_LOCALES: string[] = [];
+
+function getTextDirection(locale: string): 'ltr' | 'rtl' {
+  return RTL_LOCALES.includes(locale) ? 'rtl' : 'ltr';
+}
+
 export default async function RootLayout({
   children,
   params
@@ -21,11 +32,12 @@ export default async function RootLayout({
 }) {
   const { locale } = await params;
   if (!locales.includes(locale as any)) notFound();
-  
+
   const messages = await getMessages();
+  const dir = getTextDirection(locale);
 
   return (
-    <html lang={locale} suppressHydrationWarning>
+    <html lang={locale} dir={dir} suppressHydrationWarning>
       <body className="antialiased bg-white dark:bg-[#080b11] text-slate-900 dark:text-slate-100 selection:bg-emerald-500 selection:text-black transition-colors duration-300">
         <NextIntlClientProvider messages={messages}>
           <ThemeProvider>
