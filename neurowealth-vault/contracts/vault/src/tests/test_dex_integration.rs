@@ -45,6 +45,12 @@ fn test_dex_integration_supply_via_rebalance() {
     assert_eq!(dex_sup_events.len(), 1);
     let proto_chg_events = find_events_by_topic(events, &env, Symbol::new(&env, "proto_chg"));
     assert_eq!(proto_chg_events.len(), 1);
+    let rebalanced_events = find_events_by_topic(
+        env.events().all(),
+        &env,
+        Symbol::new(&env, "rebal"),
+    );
+    assert_eq!(rebalanced_events.len(), 1);
 }
 
 #[test]

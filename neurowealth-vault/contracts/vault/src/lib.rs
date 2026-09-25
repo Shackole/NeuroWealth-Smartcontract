@@ -813,7 +813,7 @@ pub struct WithdrawEvent {
 /// - `SymbolShort("rebalance")` (`TOPIC_REBALANCE`) - Event identifier
 #[contracttype]
 pub struct RebalanceEvent {
-    /// The target protocol (supported: "blend", "none")
+    /// The target protocol (supported: "blend", "dex", "none")
     pub protocol: Symbol,
     /// Expected APY in basis points (e.g., 850 = 8.5%)
     pub expected_apy: i128,
@@ -827,6 +827,20 @@ pub struct RebalanceEvent {
     pub amount_supplied: i128,
     /// Amount withdrawn from the current protocol
     pub amount_withdrawn: i128,
+}
+
+/// Emitted after a successful protocol rebalance with the requested route and
+/// slippage floor, including no-op rebalances.
+#[contracttype]
+pub struct RebalancedEvent {
+    /// Protocol held before the rebalance.
+    pub from: Symbol,
+    /// Requested destination protocol.
+    pub to: Symbol,
+    /// Total amount moved during the rebalance.
+    pub amount: i128,
+    /// Minimum accepted amount for each protocol leg.
+    pub min_out: i128,
 }
 
 /// Emitted when accrued yield is harvested and compounded.
@@ -2002,7 +2016,7 @@ use topics::{
     TOPIC_MIGRATION_TARGET_UPDATED, TOPIC_OWNERSHIP_CANCELLED, TOPIC_OWNERSHIP_INITIATED,
     TOPIC_OWNERSHIP_TRANSFERRED, TOPIC_PAUSED, TOPIC_PROTOCOL_CHANGED,
     TOPIC_RATE_LIMIT_CONFIG_UPDATED, TOPIC_RATE_LIMIT_HIT, TOPIC_REBALANCE,
-    TOPIC_REBALANCE_COOLDOWN_UPDATED, TOPIC_REBALANCE_FAILED, TOPIC_SHARES_LOCKED,
+    TOPIC_REBALANCED, TOPIC_REBALANCE_COOLDOWN_UPDATED, TOPIC_REBALANCE_FAILED, TOPIC_SHARES_LOCKED,
     TOPIC_SHARES_UNLOCKED, TOPIC_SUPPORTED_ASSETS_UPDATED, TOPIC_STANDBY_AGENT_UPDATED,
     TOPIC_TVL_CAP_UPDATED, TOPIC_UNPAUSED, TOPIC_UPGRADED,
     TOPIC_UPGRADE_CANCELLED, TOPIC_UPGRADE_SCHEDULED, TOPIC_USER_CAP_UPDATED,
@@ -2473,8 +2487,6 @@ impl NeuroWealthVault {
 
         let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
         let token_client = token::Client::new(&env, &usdc_token);
-        token_client.transfer(&user, &env.current_contract_address(), &amount);
-
         let total: i128 = env
             .storage()
             .instance()
@@ -2590,6 +2602,9 @@ impl NeuroWealthVault {
             &env.ledger().sequence(),
         );
 
+        // Commit the share/accounting effects before the external token call.
+        // Soroban rolls these writes back if the transfer fails.
+        token_client.transfer(&user, &env.current_contract_address(), &amount);
 
         env.events().publish(
             (TOPIC_DEPOSIT, user.clone()),
@@ -2668,13 +2683,6 @@ impl NeuroWealthVault {
             Self::require_within_tvl_cap(&env, total_amount);
         }
 
-        // Second pass: execute transfers.
-        let token_client = token::Client::new(&env, &usdc_token);
-        for i in 0..total_entries {
-            let (_token, amount) = entries.get(i).unwrap();
-            token_client.transfer(&user, &env.current_contract_address(), &amount);
-        }
-
         // Update total deposits and mint shares once for the aggregate.
         let total: i128 = env
             .storage()
@@ -2738,6 +2746,22 @@ impl NeuroWealthVault {
                 .checked_add(shares_to_mint)
                 .expect("batch_deposit: total shares overflow")),
         );
+
+        let total_assets = Self::get_total_assets_internal(&env);
+        env.storage().instance().set(
+            &DataKey::TotalAssets,
+            &(total_assets
+                .checked_add(total_amount)
+                .expect("batch_deposit: total assets overflow")),
+        );
+
+        // Execute external token calls only after all aggregate accounting
+        // effects. A failed transfer reverts the entire Soroban invocation.
+        let token_client = token::Client::new(&env, &usdc_token);
+        for i in 0..total_entries {
+            let (_token, amount) = entries.get(i).unwrap();
+            token_client.transfer(&user, &env.current_contract_address(), &amount);
+        }
 
         for i in 0..total_entries {
             let (_token, amount) = entries.get(i).unwrap();
@@ -3902,6 +3926,7 @@ impl NeuroWealthVault {
     ///
     /// Emits:
     /// - `RebalanceEvent`
+    /// - `RebalancedEvent` after a completed rebalance
     /// - `ProtocolChangedEvent`
     /// - `RebalanceFailedEvent` (if exit fails)
     /// - `BlendWithdrawEvent` / `BlendSupplyEvent` (Blend legs)
@@ -4051,7 +4076,7 @@ impl NeuroWealthVault {
             env.events().publish(
                 (TOPIC_REBALANCE,),
                 RebalanceEvent {
-                    protocol,
+                    protocol: protocol.clone(),
                     expected_apy,
                     status: status.clone(),
                     amount_attempted,
@@ -4096,7 +4121,7 @@ impl NeuroWealthVault {
             env.events().publish(
                 (TOPIC_REBALANCE,),
                 RebalanceEvent {
-                    protocol,
+                    protocol: protocol.clone(),
                     expected_apy,
                     status: status.clone(),
                     amount_attempted,
@@ -4142,7 +4167,7 @@ impl NeuroWealthVault {
             env.events().publish(
                 (TOPIC_REBALANCE,),
                 RebalanceEvent {
-                    protocol,
+                    protocol: protocol.clone(),
                     expected_apy,
                     status: status.clone(),
                     amount_attempted,
@@ -4167,6 +4192,16 @@ impl NeuroWealthVault {
         // single-protocol mode, so the multi-protocol getters are always
         // truthful regardless of which path last moved funds.
         Self::sync_deployed_split(&env);
+
+        env.events().publish(
+            (TOPIC_REBALANCED,),
+            RebalancedEvent {
+                from: current_protocol.clone(),
+                to: protocol,
+                amount: amount_moved,
+                min_out,
+            },
+        );
     }
 
     // ==========================================================================
