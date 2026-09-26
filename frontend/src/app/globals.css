@@ -7,6 +7,30 @@
 :root {
   --font-outfit: 'Outfit', sans-serif;
   --font-space: 'Space Grotesk', sans-serif;
+
+  /* ── CVD-safe status colours (WCAG SC 1.4.1) ──────────────────────────────
+   * Each colour is paired with a distinct icon/shape so that colour is never
+   * the sole differentiator of meaning (deuteranopia + protanopia safe).
+   * Simulation validated with Color Oracle (https://www.color-oracle.org/).
+   * -------------------------------------------------------------------------
+   * cvd-success → Blue   #2563eb  (paired with ✓ CheckCircle icon)
+   * cvd-warning → Amber  #d97706  (paired with △ AlertTriangle icon)
+   * cvd-error   → Red    #dc2626  (paired with ✕ XCircle icon)
+   * cvd-info    → Teal   #0891b2  (paired with ℹ Info icon)
+   * ── Chart colours (blue/orange — maximally CVD-safe pairing) ─────────────
+   * chart-a     → Blue   #2563eb  (Portfolio Value)
+   * chart-b     → Amber  #d97706  (Accrued Yield)
+   * chart-c     → Teal   #0891b2  (reserved)
+   * chart-d     → Violet #7c3aed  (reserved)
+   */
+  --color-cvd-success: #2563eb;
+  --color-cvd-warning: #d97706;
+  --color-cvd-error:   #dc2626;
+  --color-cvd-info:    #0891b2;
+  --color-chart-a:     #2563eb;
+  --color-chart-b:     #d97706;
+  --color-chart-c:     #0891b2;
+  --color-chart-d:     #7c3aed;
 }
 
 body {
