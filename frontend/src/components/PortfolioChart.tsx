@@ -16,37 +16,68 @@ interface PortfolioChartProps {
   data: ChartDataPoint[];
 }
 
+/*
+ * Chart colours follow the CVD-safe blue/amber pairing (WCAG SC 1.4.1).
+ * Blue (#2563eb) and amber (#d97706) are distinguishable for both
+ * deuteranopia and protanopia. The legend also uses distinct shapes
+ * (square vs. circle) so colour is never the sole differentiator.
+ *
+ * Reference: docs/CVD_PALETTE.md
+ */
+const CHART_A = '#2563eb'; // Blue  — Portfolio Value
+const CHART_B = '#d97706'; // Amber — Accrued Yield
+
 export const PortfolioChart: React.FC<PortfolioChartProps> = ({ data }) => {
   return (
     <div className="glass-panel rounded-2xl p-6 relative">
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h3 className="text-lg font-bold text-white tracking-tight">Portfolio Growth & Yield</h3>
+          <h3 className="text-lg font-bold text-white tracking-tight">Portfolio Growth &amp; Yield</h3>
           <p className="text-xs text-slate-400">Autonomous Soroban vault growth over time</p>
         </div>
-        <div className="flex items-center gap-4 text-xs">
-          <div className="flex items-center gap-1.5">
-            <span className="h-2.5 w-2.5 rounded-full bg-emerald-500" />
+
+        {/* Legend — shape + colour for CVD safety (WCAG SC 1.4.1) */}
+        <div
+          className="flex items-center gap-4 text-xs"
+          role="list"
+          aria-label="Chart legend"
+        >
+          <div className="flex items-center gap-1.5" role="listitem">
+            {/* Square shape (distinct from circle below) */}
+            <span
+              className="h-2.5 w-2.5 rounded-sm"
+              style={{ backgroundColor: CHART_A }}
+              aria-hidden="true"
+            />
             <span className="text-slate-300">Portfolio Value (USDC)</span>
           </div>
-          <div className="flex items-center gap-1.5">
-            <span className="h-2.5 w-2.5 rounded-full bg-indigo-500" />
+          <div className="flex items-center gap-1.5" role="listitem">
+            {/* Circle shape */}
+            <span
+              className="h-2.5 w-2.5 rounded-full"
+              style={{ backgroundColor: CHART_B }}
+              aria-hidden="true"
+            />
             <span className="text-slate-300">Accrued Yield</span>
           </div>
         </div>
       </div>
 
-      <div className="h-72 w-full">
+      <div
+        className="h-72 w-full"
+        aria-label="Area chart showing portfolio value and accrued yield over time"
+        role="img"
+      >
         <ResponsiveContainer width="100%" height="100%">
           <AreaChart data={data} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
             <defs>
               <linearGradient id="colorValue" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor="#10b981" stopOpacity={0.4} />
-                <stop offset="95%" stopColor="#10b981" stopOpacity={0.0} />
+                <stop offset="5%" stopColor={CHART_A} stopOpacity={0.4} />
+                <stop offset="95%" stopColor={CHART_A} stopOpacity={0.0} />
               </linearGradient>
               <linearGradient id="colorYield" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor="#6366f1" stopOpacity={0.3} />
-                <stop offset="95%" stopColor="#6366f1" stopOpacity={0.0} />
+                <stop offset="5%" stopColor={CHART_B} stopOpacity={0.3} />
+                <stop offset="95%" stopColor={CHART_B} stopOpacity={0.0} />
               </linearGradient>
             </defs>
             <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
@@ -65,7 +96,7 @@ export const PortfolioChart: React.FC<PortfolioChartProps> = ({ data }) => {
             <Area
               type="monotone"
               dataKey="value"
-              stroke="#10b981"
+              stroke={CHART_A}
               strokeWidth={3}
               fillOpacity={1}
               fill="url(#colorValue)"
@@ -74,7 +105,7 @@ export const PortfolioChart: React.FC<PortfolioChartProps> = ({ data }) => {
             <Area
               type="monotone"
               dataKey="yield"
-              stroke="#6366f1"
+              stroke={CHART_B}
               strokeWidth={2}
               fillOpacity={1}
               fill="url(#colorYield)"
