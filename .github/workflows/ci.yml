@@ -644,3 +644,37 @@ jobs:
         run: bash scripts/check_arithmetic.sh
 
       # Summary is written to the GitHub Actions step summary by the script.
+
+  ci-gate:
+    name: CI Gate (all checks passed)
+    runs-on: ubuntu-latest
+    needs:
+      - secret-scan
+      - ci-matrix
+      - cargo-deny
+      - readme-check
+      - security-audit
+    if: always()
+    steps:
+      - name: Check all required jobs passed
+        run: |
+          set -euo pipefail
+          STATUS_SECRET='${{ needs.secret-scan.result }}'
+          STATUS_MATRIX='${{ needs.ci-matrix.result }}'
+          STATUS_DENY='${{ needs.cargo-deny.result }}'
+          STATUS_README='${{ needs.readme-check.result }}'
+          STATUS_SECURITY='${{ needs.security-audit.result }}'
+
+          echo "secret-scan:    $STATUS_SECRET"
+          echo "ci-matrix:      $STATUS_MATRIX"
+          echo "cargo-deny:     $STATUS_DENY"
+          echo "readme-check:   $STATUS_README"
+          echo "security-audit: $STATUS_SECURITY"
+
+          for STATUS in "$STATUS_SECRET" "$STATUS_MATRIX" "$STATUS_DENY" "$STATUS_README" "$STATUS_SECURITY"; do
+            if [ "$STATUS" != "success" ] && [ "$STATUS" != "skipped" ]; then
+              echo "::error::One or more required CI jobs did not pass (got: $STATUS)."
+              exit 1
+            fi
+          done
+          echo "All CI gates passed. ✅"
