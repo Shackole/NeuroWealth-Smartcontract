@@ -6,7 +6,7 @@ import healthRouter, { configureHealthChecks } from './health';
 import logger from './logger';
 import { initializeTracing } from './tracing';
 
-import { ipRateLimiter, userRateLimiter } from './rateLimiter';
+import { globalRateLimitStack, transactionLimiter } from './rateLimiter';
 
 // Initialize OpenTelemetry tracing
 initializeTracing();
@@ -15,9 +15,19 @@ const app = express();
 const PORT = parseInt(process.env.PORT || '3001', 10);
 
 app.use(express.json());
-app.use(ipRateLimiter);
-app.use(userRateLimiter);
+
+// Apply burst guard → global IP limit → per-user authenticated limit
+app.use(...globalRateLimitStack);
+
 app.use(healthRouter);
+
+// Transaction routes: additional 10 req/min per-user limit
+app.post('/deposit', transactionLimiter, (_req, res) => {
+  res.status(501).json({ error: 'Not implemented' });
+});
+app.post('/withdraw', transactionLimiter, (_req, res) => {
+  res.status(501).json({ error: 'Not implemented' });
+});
 
 let decisionInterval: ReturnType<typeof setInterval> | null = null;
 
