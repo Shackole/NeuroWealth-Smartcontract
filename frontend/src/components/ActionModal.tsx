@@ -64,8 +64,8 @@ export const ActionModal: React.FC<ActionModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md">
-      <div className="glass-panel w-full max-w-md rounded-2xl p-6 relative border border-slate-700 shadow-2xl animate-in fade-in zoom-in duration-200">
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-slate-950/80 backdrop-blur-md">
+      <div className="glass-panel w-full sm:max-w-md rounded-t-2xl sm:rounded-2xl p-5 sm:p-6 relative border border-slate-700 shadow-2xl animate-in fade-in slide-in-from-bottom sm:zoom-in duration-200 max-h-[90vh] overflow-y-auto">
         <button
           onClick={handleResetAndClose}
           className="absolute top-4 right-4 text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800"
@@ -161,7 +161,7 @@ export const ActionModal: React.FC<ActionModalProps> = ({
             <button
               type="submit"
               disabled={loading || numAmount <= 0}
-              className="w-full flex items-center justify-center gap-2 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-slate-950 font-bold py-3.5 rounded-xl transition-all shadow-glow-emerald disabled:opacity-50 disabled:cursor-not-allowed"
+              className="w-full flex items-center justify-center gap-2 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-slate-950 font-bold py-3.5 min-h-[44px] rounded-xl transition-all shadow-glow-emerald disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {loading ? (
                 <>

@@ -144,7 +144,7 @@ export default function AdminDashboard() {
       {/* Header */}
       <header className="glass-effect border-b sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-          <div className="flex items-center justify-between">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
             <div>
               <h1 className="text-3xl font-bold gradient-text flex items-center gap-2">
                 <Settings size={32} />
@@ -227,7 +227,7 @@ export default function AdminDashboard() {
               <h2 className="text-2xl font-bold mb-4 text-emerald-400">
                 Configuration
               </h2>
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                 <CapsConfiguration
                   client={client}
                   signer={StellarSdk.Keypair.random()}
@@ -243,7 +243,7 @@ export default function AdminDashboard() {
               <h2 className="text-2xl font-bold mb-4 text-emerald-400">
                 Operational Settings
               </h2>
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                 <RebalanceCooldown
                   client={client}
                   signer={StellarSdk.Keypair.random()}
@@ -273,7 +273,7 @@ export default function AdminDashboard() {
               <h2 className="text-2xl font-bold mb-4 text-emerald-400">
                 Advanced Management
               </h2>
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                 <AgentManagement
                   client={client}
                   signer={StellarSdk.Keypair.random()}

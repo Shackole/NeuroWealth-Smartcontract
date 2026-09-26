@@ -50,7 +50,7 @@ export const BalanceCard: React.FC<BalanceCardProps> = ({
         <button
           onClick={onOpenDeposit}
           disabled={!isConnected}
-          className="flex items-center justify-center gap-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold py-3 px-4 rounded-xl transition-all shadow-glow-emerald disabled:opacity-40 disabled:cursor-not-allowed"
+          className="flex items-center justify-center gap-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold py-3 px-4 min-h-[44px] rounded-xl transition-all shadow-glow-emerald disabled:opacity-40 disabled:cursor-not-allowed"
         >
           <ArrowDownLeft size={18} />
           <span>Deposit</span>
@@ -59,7 +59,7 @@ export const BalanceCard: React.FC<BalanceCardProps> = ({
         <button
           onClick={onOpenWithdraw}
           disabled={!isConnected}
-          className="flex items-center justify-center gap-2 bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold py-3 px-4 rounded-xl border border-slate-700 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+          className="flex items-center justify-center gap-2 bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold py-3 px-4 min-h-[44px] rounded-xl border border-slate-700 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
         >
           <ArrowUpRight size={18} />
           <span>Withdraw</span>
