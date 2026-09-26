@@ -210,3 +210,12 @@ pub const TOPIC_BATCH_TTL_TOUCHED: Symbol = symbol_short!("batch_ttl");
 /// Topic for `GuardianSetEvent`, published by `set_guardian` and
 /// `remove_guardian` when the guardian key changes.
 pub const TOPIC_GUARDIAN_SET: Symbol = symbol_short!("guard_set");
+
+// ============================================================================
+// Batch deposit (#42)
+// ============================================================================
+
+/// Topic for `BatchDepositedEvent`, published by `batch_deposit` after all
+/// entries are processed. The agent address is published as an indexed topic
+/// so indexers can filter batch deposits by agent without scanning payloads.
+pub const TOPIC_BATCH_DEPOSITED: Symbol = symbol_short!("batch_dep2");
