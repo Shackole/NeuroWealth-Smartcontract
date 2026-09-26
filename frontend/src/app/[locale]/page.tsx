@@ -8,7 +8,7 @@ import { StrategyBadge } from '@/components/StrategyBadge';
 import { PortfolioChart } from '@/components/PortfolioChart';
 import { TransactionHistory } from '@/components/TransactionHistory';
 import { ActionModal } from '@/components/ActionModal';
-import { MessageSquare, Bot, ArrowRight, ShieldCheck, Zap, Layers } from 'lucide-react';
+import { MessageSquare, Bot, ArrowRight, Zap, ChevronDown, BookOpen } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { connectFreighterWallet } from '@/lib/freighter';
 import { fetchVaultState, VaultState } from '@/lib/stellar';
@@ -34,9 +34,9 @@ export default function DashboardPage() {
   const [chartData, setChartData] = useState<ChartDataPoint[]>([]);
   const [transactions, setTransactions] = useState<TransactionRecord[]>([]);
 
-  // Modal State
   const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
   const [modalType, setModalType] = useState<'deposit' | 'withdraw'>('deposit');
+  const [aiExpanded, setAiExpanded] = useState<boolean>(false);
 
   const handleConnect = async () => {
     const key = await connectFreighterWallet();
@@ -135,6 +135,51 @@ export default function DashboardPage() {
               { date: 'Jul 24', value: 1200, yield: 15 },
               { date: 'Jul 28', value: 1450, yield: 45 }
             ]} />
+          </section>
+
+          {/* How does the AI manage my money? */}
+          <section>
+            <div className="glass-panel rounded-2xl border border-slate-700/60 overflow-hidden">
+              <button
+                type="button"
+                aria-expanded={aiExpanded}
+                aria-controls="ai-explanation-content"
+                onClick={() => setAiExpanded(!aiExpanded)}
+                className="w-full flex items-center justify-between p-5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-inset"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="h-8 w-8 rounded-lg bg-emerald-500/10 text-emerald-400 flex items-center justify-center border border-emerald-500/20 flex-shrink-0">
+                    <Bot size={16} aria-hidden="true" />
+                  </div>
+                  <span className="font-semibold text-white text-sm sm:text-base">
+                    How does the AI manage my money?
+                  </span>
+                </div>
+                <ChevronDown
+                  size={18}
+                  className={`text-slate-400 transition-transform duration-200 flex-shrink-0 ${aiExpanded ? 'rotate-180' : ''}`}
+                  aria-hidden="true"
+                />
+              </button>
+
+              {aiExpanded && (
+                <div id="ai-explanation-content" className="px-5 pb-5 space-y-3 border-t border-slate-800/60">
+                  <p className="text-sm text-slate-300 leading-relaxed pt-4">
+                    When you deposit USDC, NeuroWealth mints <strong className="text-white">shares</strong> representing your ownership inside an audited Soroban smart contract. The AI agent monitors yield rates across Stellar DeFi protocols every hour and automatically moves the pooled funds to whichever protocol offers the best return.
+                  </p>
+                  <p className="text-sm text-slate-300 leading-relaxed">
+                    You can withdraw your funds at any time — no lock-up periods. The AI never holds your private keys; it can only call specific vault functions (rebalance, harvest) and cannot send funds to arbitrary addresses.
+                  </p>
+                  <a
+                    href="/learn"
+                    className="inline-flex items-center gap-2 text-sm font-medium text-emerald-400 hover:text-emerald-300 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 rounded"
+                  >
+                    <BookOpen size={15} aria-hidden="true" />
+                    Visit the DeFi Glossary to learn key terms →
+                  </a>
+                </div>
+              )}
+            </div>
           </section>
 
           {/* Transaction History & WhatsApp Banner */}
