@@ -33,10 +33,14 @@ Proving `share-math` therefore proves the on-chain formulas.
 | P3 | Exchange rate `total_assets / total_shares` is monotonically non-decreasing when yield accrues | `proof_exchange_rate_non_decreasing_with_yield` | `test_exchange_rate.rs` |
 | P4 | Deposit then redeem of the minted shares returns `≤` the deposited assets (rounding tolerance: the floor dust) | `proof_deposit_withdraw_round_trip_within_tolerance` | `test_share_conversion_proptest.rs` (a, f, h) |
 | P5 | Rounding always favours the vault: ceil-burn ≥ floor-mint (gap ≤ 1) and floor-redeem never pays extra | `proof_rounding_always_favours_the_vault` | `test_share_conversion_proptest.rs` (b, c, g) |
+| P6 | Deposit never mints more shares than `floor(deposit_amount × total_shares / total_assets)` | `proof_deposit_never_mints_more_than_formula` | `test_share_conversion_proptest.rs` (a) |
+| P7 | Withdraw never transfers more assets than `floor(shares_burned × total_assets / total_shares)` | `proof_withdraw_never_returns_more_than_formula` | `test_rounding_small_amounts.rs` |
+| P8 | Exchange rate `total_assets / total_shares` is monotonically non-decreasing after each deposit | `proof_exchange_rate_non_decreasing_after_deposit` | `test_exchange_rate.rs` |
+| P9 | `total_deposits` never exceeds the configured TVL cap after any sequence of accepted deposits | `proof_total_deposits_never_exceeds_tvl_cap` | `test_tvl_cap_stress.rs`, `test_tvl_cap_serial.rs` |
 
 An additional sanity proof, `proof_zero_input_zero_output`, locks the zero-input clause of the spec.
 
-P1/P2 are proved against a two-user `VaultModel` that applies the same floor/ceil/floor helpers the contract uses. P3–P5 are proved directly on those helpers. Kani inputs are bounded to `1..=64` so CBMC finishes in CI; `proptest` reuses the same helpers up to `10^12`.
+P1/P2 are proved against a two-user `VaultModel` that applies the same floor/ceil/floor helpers the contract uses. P3–P5 are proved directly on those helpers. P6–P9 (Issue #45) extend the `VaultModel` with `total_deposits` and `tvl_cap` fields to prove deposit-cap enforcement. Kani inputs are bounded to `1..=64` so CBMC finishes in CI; `proptest` reuses the same helpers up to `10^12`.
 
 ## Running the proofs
 
