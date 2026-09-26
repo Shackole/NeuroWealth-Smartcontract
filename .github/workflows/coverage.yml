@@ -1,0 +1,190 @@
+name: Coverage
+
+on:
+  push:
+    branches: ["main", "develop", "feat/**"]
+  pull_request:
+    branches: ["main", "develop"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # ─── Rust / Soroban coverage via cargo-llvm-cov ─────────────────────────────
+  rust-coverage:
+    name: Rust Coverage (cargo-llvm-cov)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: neurowealth-vault
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+
+      - name: Generate coverage (LCOV + HTML)
+        working-directory: neurowealth-vault
+        run: |
+          cargo llvm-cov \
+            --workspace \
+            --exclude share-math \
+            --lcov --output-path lcov.info \
+            --html --output-dir coverage-html \
+            -- --test-threads=1
+
+      - name: Check minimum 80% line coverage
+        working-directory: neurowealth-vault
+        run: |
+          # Extract line coverage percentage from the LCOV summary
+          LINES_HIT=$(grep -E "^LH:" lcov.info | awk -F: '{sum+=$2} END{print sum}')
+          LINES_FOUND=$(grep -E "^LF:" lcov.info | awk -F: '{sum+=$2} END{print sum}')
+
+          if [ -z "$LINES_FOUND" ] || [ "$LINES_FOUND" -eq 0 ]; then
+            echo "::warning::Could not compute Rust coverage — no line data found."
+            exit 0
+          fi
+
+          PCT=$(awk "BEGIN { printf \"%.1f\", ($LINES_HIT / $LINES_FOUND) * 100 }")
+          echo "Rust line coverage: ${PCT}% (${LINES_HIT}/${LINES_FOUND} lines)"
+
+          {
+            echo "## Rust Coverage Report"
+            echo ""
+            echo "| Metric | Value |"
+            echo "|--------|-------|"
+            echo "| Lines hit | ${LINES_HIT} |"
+            echo "| Lines found | ${LINES_FOUND} |"
+            echo "| Line coverage | **${PCT}%** |"
+            echo "| Threshold | 80% |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          PASS=$(awk "BEGIN { print ($LINES_HIT / $LINES_FOUND) >= 0.80 ? \"yes\" : \"no\" }")
+          if [ "$PASS" = "no" ]; then
+            echo "| Status | :x: BELOW THRESHOLD |" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::Rust line coverage is ${PCT}%, which is below the 80% threshold."
+            exit 1
+          else
+            echo "| Status | :white_check_mark: OK |" >> "$GITHUB_STEP_SUMMARY"
+            echo "Rust line coverage ${PCT}% — threshold met."
+          fi
+
+      - name: Upload Rust HTML coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-coverage-html
+          path: neurowealth-vault/coverage-html/
+          retention-days: 14
+
+  # ─── Node.js agent coverage via Jest ────────────────────────────────────────
+  agent-coverage:
+    name: Agent Coverage (Jest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: agent/package-lock.json
+
+      - name: Install dependencies
+        working-directory: agent
+        run: npm ci
+
+      - name: Run Jest with coverage
+        working-directory: agent
+        run: npm run test:coverage -- --ci
+
+      - name: Write coverage summary
+        working-directory: agent
+        run: |
+          {
+            echo "## Agent (Node.js) Coverage Report"
+            echo ""
+            echo "Coverage threshold: **80% lines and functions**"
+            echo ""
+            if [ -f coverage/coverage-summary.json ]; then
+              LINES=$(node -e "const s=require('./coverage/coverage-summary.json'); console.log(s.total.lines.pct)")
+              FUNCS=$(node -e "const s=require('./coverage/coverage-summary.json'); console.log(s.total.functions.pct)")
+              echo "| Metric | Value |"
+              echo "|--------|-------|"
+              echo "| Line coverage | **${LINES}%** |"
+              echo "| Function coverage | **${FUNCS}%** |"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload agent HTML coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-coverage-html
+          path: agent/coverage/
+          retention-days: 14
+
+  # ─── Next.js frontend coverage via Vitest ───────────────────────────────────
+  frontend-coverage:
+    name: Frontend Coverage (Vitest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Run Vitest with coverage
+        working-directory: frontend
+        run: npm run test:coverage
+
+      - name: Write coverage summary
+        working-directory: frontend
+        run: |
+          {
+            echo "## Frontend (Next.js) Coverage Report"
+            echo ""
+            echo "Coverage threshold: **80% lines and functions**"
+            echo ""
+            if [ -f coverage/coverage-summary.json ]; then
+              LINES=$(node -e "const s=require('./coverage/coverage-summary.json'); console.log(s.total.lines.pct)")
+              FUNCS=$(node -e "const s=require('./coverage/coverage-summary.json'); console.log(s.total.functions.pct)")
+              echo "| Metric | Value |"
+              echo "|--------|-------|"
+              echo "| Line coverage | **${LINES}%** |"
+              echo "| Function coverage | **${FUNCS}%** |"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload frontend HTML coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-coverage-html
+          path: frontend/coverage/
+          retention-days: 14
