@@ -113,7 +113,7 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({ transact
         </div>
         <button
           onClick={() => exportToCSV(transactions)}
-          className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 rounded-lg transition-colors"
+          className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
         >
           <Download size={14} />
           Export CSV
@@ -126,7 +126,7 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({ transact
           <select
             value={typeFilter}
             onChange={(e) => setTypeFilter(e.target.value as FilterType)}
-            className="bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-xs text-slate-200 focus:outline-none focus:border-emerald-500"
+            className="bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-xs text-slate-200 focus:outline-none focus:border-emerald-500 focus-visible:ring-2 focus-visible:ring-emerald-500"
           >
             <option value="all">All Types</option>
             <option value="deposit">Deposits</option>
@@ -144,7 +144,7 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({ transact
               setSortField(field as SortField);
               setSortDirection(dir as SortDirection);
             }}
-            className="bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-xs text-slate-200 focus:outline-none focus:border-emerald-500"
+            className="bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-xs text-slate-200 focus:outline-none focus:border-emerald-500 focus-visible:ring-2 focus-visible:ring-emerald-500"
           >
             <option value="timestamp-desc">Newest First</option>
             <option value="timestamp-asc">Oldest First</option>
@@ -158,7 +158,7 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({ transact
           <select
             value={earningsPeriod}
             onChange={(e) => setEarningsPeriod(e.target.value as EarningsPeriod)}
-            className="bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-xs text-slate-200 focus:outline-none focus:border-emerald-500"
+            className="bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-xs text-slate-200 focus:outline-none focus:border-emerald-500 focus-visible:ring-2 focus-visible:ring-emerald-500"
           >
             <option value="daily">24h</option>
             <option value="weekly">7d</option>
