@@ -2,6 +2,8 @@
 
 import React from 'react';
 import { Zap, TrendingUp, ShieldCheck, Flame } from 'lucide-react';
+import { TooltipInfo } from './TooltipInfo';
+import { StrategyPopover } from './StrategyPopover';
 
 interface StrategyBadgeProps {
   strategy: 'Conservative' | 'Balanced' | 'Growth';
@@ -56,12 +58,21 @@ export const StrategyBadge: React.FC<StrategyBadgeProps> = ({ strategy, apy, onS
         </div>
 
         <div className="mb-4">
-          <div className="flex items-baseline gap-2">
+          <div className="flex items-baseline gap-2 flex-wrap">
             <span className="text-4xl font-extrabold tracking-tight text-white font-mono">
               {apy.toFixed(1)}%
             </span>
-            <span className="text-sm font-semibold text-slate-400 uppercase tracking-wider">
+            <span className="flex items-center gap-1.5 text-sm font-semibold text-slate-400 uppercase tracking-wider">
               Net APY
+              <TooltipInfo
+                label="What is APY?"
+                content={
+                  <span>
+                    <strong className="text-white">Annual Percentage Yield (APY)</strong> is how much your deposit grows over a full year, including compounding. At 8% APY, 1,000 USDC becomes roughly 1,080 USDC in 12 months.{' '}
+                    <a href="/learn" className="text-emerald-400 underline hover:text-emerald-300">Learn more →</a>
+                  </span>
+                }
+              />
             </span>
             <span className="text-xs font-medium text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20 flex items-center gap-1 ml-auto">
               <TrendingUp size={12} /> +0.4% this week
@@ -71,21 +82,24 @@ export const StrategyBadge: React.FC<StrategyBadgeProps> = ({ strategy, apy, onS
         </div>
       </div>
 
-      <div className="pt-4 border-t border-slate-800/80 flex items-center justify-between">
+      <div className="pt-4 border-t border-slate-800/80 flex items-center justify-between flex-wrap gap-2">
         <span className="text-xs text-slate-400">Want to optimize risk?</span>
-        <div className="flex gap-1.5">
+        <div className="flex gap-1.5 flex-wrap">
           {(['Conservative', 'Balanced', 'Growth'] as const).map((st) => (
-            <button
-              key={st}
-              onClick={() => onSelectStrategy && onSelectStrategy(st)}
-              className={`text-xs px-2.5 py-1 rounded-md border transition-all ${
-                strategy === st
-                  ? 'bg-slate-800 text-white border-slate-600 font-medium'
-                  : 'bg-slate-900/50 text-slate-400 border-slate-800 hover:text-white'
-              }`}
-            >
-              {st}
-            </button>
+            <span key={st} className="flex items-center gap-0.5">
+              <button
+                onClick={() => onSelectStrategy && onSelectStrategy(st)}
+                className={`text-xs px-2.5 py-1 min-h-[44px] flex items-center rounded-md border transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 ${
+                  strategy === st
+                    ? 'bg-slate-800 text-white border-slate-600 font-medium'
+                    : 'bg-slate-900/50 text-slate-400 border-slate-800 hover:text-white'
+                }`}
+                aria-pressed={strategy === st}
+              >
+                {st}
+              </button>
+              <StrategyPopover strategy={st} />
+            </span>
           ))}
         </div>
       </div>
