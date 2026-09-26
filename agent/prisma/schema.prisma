@@ -1,0 +1,152 @@
+// Prisma schema for NeuroWealth backend
+// Issue #25: User position tracking database schema and ORM models
+//
+// Supabase PostgreSQL as the managed database.
+// Run `prisma migrate dev` to apply migrations.
+// Run `prisma generate` to regenerate the TypeScript client.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ─────────────────────────────────────────────
+// USERS
+// Maps a Stellar address to an optional hashed
+// phone number (WhatsApp custodial users) and a
+// yield strategy preference.
+// ─────────────────────────────────────────────
+model User {
+  id               String        @id @default(uuid()) @db.Uuid
+  stellarAddress   String        @unique @map("stellar_address")
+  /// SHA-256 salted hash of the user's phone number.
+  /// Never store the raw phone number.
+  phoneHash        String?       @unique @map("phone_hash")
+  /// Encrypted Stellar secret key (AES-256-GCM + KMS envelope).
+  /// null for self-custodial users who sign via Freighter.
+  encryptedSecret  String?       @map("encrypted_secret")
+  strategy         Strategy      @default(balanced)
+  createdAt        DateTime      @default(now()) @map("created_at")
+  updatedAt        DateTime      @updatedAt @map("updated_at")
+
+  transactions Transaction[]
+  auditLogs    AuditLog[]
+
+  @@index([stellarAddress])
+  @@index([phoneHash])
+  @@map("users")
+}
+
+enum Strategy {
+  conservative
+  balanced
+  growth
+}
+
+// ─────────────────────────────────────────────
+// TRANSACTIONS
+// Unified log of deposits and withdrawals with
+// on-chain anchoring (tx_hash + ledger sequence).
+// ─────────────────────────────────────────────
+model Transaction {
+  id        String            @id @default(uuid()) @db.Uuid
+  userId    String            @map("user_id") @db.Uuid
+  type      TransactionType
+  /// Amount in USDC stroops (7 decimal places)
+  amount    Decimal           @db.Decimal(30, 7)
+  txHash    String            @unique @map("tx_hash")
+  ledger    Int
+  status    TransactionStatus @default(pending)
+  createdAt DateTime          @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([txHash])
+  @@index([status])
+  @@map("transactions")
+}
+
+enum TransactionType {
+  deposit
+  withdrawal
+}
+
+enum TransactionStatus {
+  pending
+  confirmed
+  failed
+}
+
+// ─────────────────────────────────────────────
+// REBALANCES
+// Agent decisions: records each protocol switch
+// with before/after APY and on-chain proof.
+// ─────────────────────────────────────────────
+model Rebalance {
+  id           String   @id @default(uuid()) @db.Uuid
+  fromProtocol Protocol @map("from_protocol")
+  toProtocol   Protocol @map("to_protocol")
+  /// Amount moved in USDC stroops
+  amount       Decimal  @db.Decimal(30, 7)
+  /// Expected APY at the time of rebalance decision (BPS)
+  expectedApy  Int      @map("expected_apy")
+  /// Actual APY measured after the rebalance settled (BPS, nullable until confirmed)
+  actualApy    Int?     @map("actual_apy")
+  txHash       String   @unique @map("tx_hash")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@index([createdAt(sort: Desc)])
+  @@index([fromProtocol, toProtocol])
+  @@map("rebalances")
+}
+
+enum Protocol {
+  blend
+  dex
+  none
+}
+
+// ─────────────────────────────────────────────
+// APY SNAPSHOTS
+// Time-series of on-chain APY measurements for
+// each supported protocol, stored in BPS.
+// ─────────────────────────────────────────────
+model ApySnapshot {
+  id         String   @id @default(uuid()) @db.Uuid
+  protocol   Protocol
+  /// APY in basis points (e.g. 850 = 8.50%)
+  apyBps     Int      @map("apy_bps")
+  recordedAt DateTime @default(now()) @map("recorded_at")
+
+  @@index([protocol, recordedAt(sort: Desc)])
+  @@map("apy_snapshots")
+}
+
+// ─────────────────────────────────────────────
+// AUDIT LOGS
+// Immutable append-only audit trail, written
+// every time a custodial secret key is decrypted
+// or a sensitive action is performed.
+// ─────────────────────────────────────────────
+model AuditLog {
+  id        String   @id @default(uuid()) @db.Uuid
+  /// nullable — some events are system-level, not user-level
+  userId    String?  @map("user_id") @db.Uuid
+  action    String
+  /// JSON payload — never include plaintext secret keys
+  details   Json?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([action])
+  @@index([createdAt(sort: Desc)])
+  @@map("audit_logs")
+}
