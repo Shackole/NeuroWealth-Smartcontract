@@ -19,7 +19,7 @@ export const Header: React.FC<HeaderProps> = ({ publicKey, onConnect, onDisconne
         <div className="flex items-center gap-3">
           <div className="h-10 w-10 rounded-xl bg-gradient-to-tr from-emerald-500 to-indigo-600 p-0.5 shadow-glow-emerald flex items-center justify-center">
             <div className="h-full w-full bg-slate-950 rounded-[10px] flex items-center justify-center">
-              <Bot className="text-emerald-400" size={22} />
+              <Bot className="text-emerald-400" size={22} aria-hidden="true" />
             </div>
           </div>
           <div>
@@ -28,7 +28,7 @@ export const Header: React.FC<HeaderProps> = ({ publicKey, onConnect, onDisconne
                 NeuroWealth
               </span>
               <span className="text-[10px] font-semibold tracking-wider uppercase px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center gap-1">
-                <Sparkles size={10} /> AI Agent
+                <Sparkles size={10} aria-hidden="true" /> AI Agent
               </span>
             </div>
             <p className="text-xs text-slate-400">Autonomous DeFi Yield on Stellar</p>
@@ -36,11 +36,11 @@ export const Header: React.FC<HeaderProps> = ({ publicKey, onConnect, onDisconne
         </div>
 
         {/* Navigation */}
-        <nav className="hidden md:flex items-center gap-8 text-sm font-medium text-slate-300">
-          <a href="#dashboard" className="text-emerald-400 hover:text-emerald-300 transition-colors">Dashboard</a>
-          <a href="#strategies" className="hover:text-emerald-400 transition-colors">Strategies</a>
-          <a href="#history" className="hover:text-emerald-400 transition-colors">Transactions</a>
-          <a href="#whatsapp" className="hover:text-emerald-400 transition-colors">WhatsApp Bot</a>
+        <nav className="hidden md:flex items-center gap-8 text-sm font-medium text-slate-300" aria-label="Main navigation">
+          <a href="#dashboard" className="text-emerald-400 hover:text-emerald-300 transition-colors rounded px-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500">Dashboard</a>
+          <a href="#strategies" className="hover:text-emerald-400 transition-colors rounded px-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500">Strategies</a>
+          <a href="#history" className="hover:text-emerald-400 transition-colors rounded px-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500">Transactions</a>
+          <a href="#whatsapp" className="hover:text-emerald-400 transition-colors rounded px-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500">WhatsApp Bot</a>
         </nav>
 
         {/* Wallet Connection & Language */}

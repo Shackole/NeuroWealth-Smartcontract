@@ -50,18 +50,18 @@ export const BalanceCard: React.FC<BalanceCardProps> = ({
         <button
           onClick={onOpenDeposit}
           disabled={!isConnected}
-          className="flex items-center justify-center gap-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold py-3 px-4 rounded-xl transition-all shadow-glow-emerald disabled:opacity-40 disabled:cursor-not-allowed"
+          className="flex items-center justify-center gap-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold py-3 px-4 min-h-[44px] rounded-xl transition-all shadow-glow-emerald disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950"
         >
-          <ArrowDownLeft size={18} />
+          <ArrowDownLeft size={18} aria-hidden="true" />
           <span>Deposit</span>
         </button>
 
         <button
           onClick={onOpenWithdraw}
           disabled={!isConnected}
-          className="flex items-center justify-center gap-2 bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold py-3 px-4 rounded-xl border border-slate-700 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+          className="flex items-center justify-center gap-2 bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold py-3 px-4 min-h-[44px] rounded-xl border border-slate-700 transition-all disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950"
         >
-          <ArrowUpRight size={18} />
+          <ArrowUpRight size={18} aria-hidden="true" />
           <span>Withdraw</span>
         </button>
       </div>
