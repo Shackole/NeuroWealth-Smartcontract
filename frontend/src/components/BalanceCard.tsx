@@ -35,7 +35,7 @@ export const BalanceCard: React.FC<BalanceCardProps> = ({
 
       <div className="mb-6">
         <div className="flex items-baseline gap-2">
-          <span className="text-4xl font-extrabold tracking-tight text-white font-mono">
+          <span className="text-4xl font-extrabold tracking-tight text-white font-mono" data-testid="total-balance">
             {isConnected ? balance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00'}
           </span>
           <span className="text-lg font-bold text-emerald-400">USDC</span>
@@ -50,6 +50,7 @@ export const BalanceCard: React.FC<BalanceCardProps> = ({
         <button
           onClick={onOpenDeposit}
           disabled={!isConnected}
+          data-testid="deposit-button"
           className="flex items-center justify-center gap-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold py-3 px-4 rounded-xl transition-all shadow-glow-emerald disabled:opacity-40 disabled:cursor-not-allowed"
         >
           <ArrowDownLeft size={18} />
@@ -59,6 +60,7 @@ export const BalanceCard: React.FC<BalanceCardProps> = ({
         <button
           onClick={onOpenWithdraw}
           disabled={!isConnected}
+          data-testid="withdraw-button"
           className="flex items-center justify-center gap-2 bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold py-3 px-4 rounded-xl border border-slate-700 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
         >
           <ArrowUpRight size={18} />

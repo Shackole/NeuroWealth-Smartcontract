@@ -183,9 +183,9 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({ transact
               <th className="py-3 px-4 text-right">Status</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-800/60 font-mono text-xs">
+          <tbody className="divide-y divide-slate-800/60 font-mono text-xs" data-testid="transaction-history-table">
             {filteredTransactions.map((tx) => (
-              <tr key={tx.id} className="hover:bg-slate-900/40 transition-colors">
+              <tr key={tx.id} data-testid="transaction-row" data-tx-type={tx.type} className="hover:bg-slate-900/40 transition-colors">
                 <td className="py-3 px-4">
                   <div className="flex items-center gap-2">
                     {tx.type === 'deposit' && (
@@ -203,13 +203,13 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({ transact
                         <RefreshCw size={14} />
                       </span>
                     )}
-                    <span className="capitalize font-sans font-medium text-slate-200">{tx.type}</span>
+                    <span className="capitalize font-sans font-medium text-slate-200" data-testid="tx-type">{tx.type}</span>
                   </div>
                 </td>
-                <td className="py-3 px-4 font-semibold text-white">
+                <td className="py-3 px-4 font-semibold text-white" data-testid="tx-amount">
                   {tx.amount.toLocaleString()} USDC
                 </td>
-                <td className="py-3 px-4 text-slate-400">
+                <td className="py-3 px-4 text-slate-400" data-testid="tx-hash">
                   <a
                     href={`https://stellar.expert/explorer/testnet/tx/${tx.txHash}`}
                     target="_blank"
@@ -222,7 +222,7 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({ transact
                 </td>
                 <td className="py-3 px-4 text-slate-400">{tx.timestamp}</td>
                 <td className="py-3 px-4 text-right">
-                  <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                  <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20" data-testid="tx-status">
                     {tx.status}
                   </span>
                 </td>

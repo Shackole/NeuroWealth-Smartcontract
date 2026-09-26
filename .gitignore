@@ -64,6 +64,8 @@ Thumbs.db
 # Coverage reports
 coverage/
 lcov.info
+playwright-report/
+test-results/
 
 # Logs
 *.log
