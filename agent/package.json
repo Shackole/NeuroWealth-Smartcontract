@@ -5,11 +5,18 @@
   "main": "index.js",
   "scripts": {
     "build": "tsc",
-    "test": "ts-node --transpile-only src/openAiKeyManager.test.ts && ts-node --transpile-only src/rateLimiter.test.ts && ts-node --transpile-only src/db.test.ts"
+    "test": "ts-node --transpile-only src/openAiKeyManager.test.ts && ts-node --transpile-only src/rateLimiter.test.ts && ts-node --transpile-only src/db.test.ts",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "db:seed": "ts-node prisma/seed.ts",
+    "db:studio": "prisma studio"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
+  "prisma": {
+    "seed": "ts-node prisma/seed.ts"
+  },
   "dependencies": {
     "@opentelemetry/api": "^1.7.0",
     "@opentelemetry/exporter-jaeger": "^1.24.0",
@@ -19,10 +26,12 @@
     "@opentelemetry/resources": "^1.18.1",
     "@opentelemetry/sdk-trace-node": "^1.18.1",
     "@opentelemetry/semantic-conventions": "^1.18.1",
+    "@prisma/client": "^5.22.0",
     "@stellar/stellar-sdk": "^16.1.0",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "express-rate-limit": "^7.5.0",
+    "ioredis": "^5.4.2",
     "openai": "^7.0.0",
     "pg": "^8.22.0",
     "pino": "^9.6.0"
@@ -32,6 +41,7 @@
     "@types/mocha": "^10.0.10",
     "@types/node": "^26.1.2",
     "@types/pg": "^8.20.0",
+    "prisma": "^5.22.0",
     "ts-node": "^10.9.2",
     "typescript": "^5.7.0"
   }
