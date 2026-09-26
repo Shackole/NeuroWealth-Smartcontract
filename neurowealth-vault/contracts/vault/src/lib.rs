@@ -1942,6 +1942,12 @@ pub const RATE_LIMIT_TOUCH_TTL: Symbol = symbol_short!("touch_ttl");
 pub const RATE_LIMIT_PREVIEW: Symbol = symbol_short!("preview");
 /// Rate-limit category for `batch_deposit` calls.
 pub const RATE_LIMIT_BATCH_DEPOSIT: Symbol = symbol_short!("batch_dep");
+/// Rate-limit category for global agent `harvest` calls (Issue #46).
+///
+/// Unlike `rebalance`, `harvest` has its own independent global bucket so
+/// the owner can configure harvest frequency separately from rebalance
+/// frequency.  Both still share the rebalance cooldown guard.
+pub const RATE_LIMIT_HARVEST: Symbol = symbol_short!("harvest");
 
 /// Default single-user deposit allowance: 100 calls per 720 ledgers (~1 hour).
 const DEFAULT_DEPOSIT_RATE_LIMIT_MAX_CALLS: u32 = 100;
@@ -1965,6 +1971,11 @@ const DEFAULT_PREVIEW_RATE_LIMIT_WINDOW: u32 = 1;
 /// Default per-user batch-deposit allowance: 100 calls per 720 ledgers.
 const DEFAULT_BATCH_DEPOSIT_RATE_LIMIT_MAX_CALLS: u32 = 100;
 const DEFAULT_BATCH_DEPOSIT_RATE_LIMIT_WINDOW: u32 = 720;
+/// Default global harvest allowance: 100 calls per 720 ledgers (~1 hour).
+/// Deliberately generous to remain backwards-compatible; owners of production
+/// deployments should tighten this to match their harvest schedule (Issue #46).
+const DEFAULT_HARVEST_RATE_LIMIT_MAX_CALLS: u32 = 100;
+const DEFAULT_HARVEST_RATE_LIMIT_WINDOW: u32 = 720;
 /// Maximum number of `(token, amount)` entries accepted by `batch_deposit` by default.
 const DEFAULT_MAX_BATCH_SIZE: u32 = 50;
 
@@ -4684,10 +4695,11 @@ impl NeuroWealthVault {
             panic_with_error!(&env, VaultError::UnsupportedProtocol);
         }
 
-        // Harvest also performs an external protocol round-trip. Reuse the
-        // global rebalance bucket so it cannot bypass the frequency guard by
-        // alternating between `rebalance` and `harvest`.
-        Self::enforce_global_rate_limit(&env, RATE_LIMIT_REBALANCE);
+        // Harvest uses its own dedicated global bucket (RATE_LIMIT_HARVEST)
+        // so the owner can configure harvest and rebalance frequencies
+        // independently (Issue #46). Both operations still respect the
+        // shared rebalance cooldown guard.
+        Self::enforce_global_rate_limit(&env, RATE_LIMIT_HARVEST);
 
         let withdrawn = Self::withdraw_from_protocol(&env, &current_protocol, min_out);
 
@@ -4925,10 +4937,11 @@ impl NeuroWealthVault {
             panic_with_error!(&env, VaultError::UnsupportedProtocol);
         }
 
-        // Harvest also performs an external protocol round-trip. Reuse the
-        // global rebalance bucket so it cannot bypass the frequency guard by
-        // alternating between `rebalance` and `harvest`.
-        Self::enforce_global_rate_limit(&env, RATE_LIMIT_REBALANCE);
+        // Harvest uses its own dedicated global bucket (RATE_LIMIT_HARVEST)
+        // so the owner can configure harvest and rebalance frequencies
+        // independently (Issue #46). Both operations still respect the
+        // shared rebalance cooldown guard.
+        Self::enforce_global_rate_limit(&env, RATE_LIMIT_HARVEST);
 
         let withdrawn = Self::withdraw_from_protocol(&env, &current_protocol, min_out);
 
@@ -5571,7 +5584,10 @@ impl NeuroWealthVault {
         // expires, which prevents a caller from bypassing a newly tightened
         // policy by relying on a stale reset. Avoid an unnecessary storage
         // operation for per-user categories.
-        if category == RATE_LIMIT_REBALANCE || category == RATE_LIMIT_PREVIEW {
+        if category == RATE_LIMIT_REBALANCE
+            || category == RATE_LIMIT_PREVIEW
+            || category == RATE_LIMIT_HARVEST
+        {
             env.storage()
                 .instance()
                 .remove(&DataKey::RateLimitGlobalState(category.clone()));
@@ -9370,6 +9386,15 @@ impl NeuroWealthVault {
                 window_ledgers: DEFAULT_BATCH_DEPOSIT_RATE_LIMIT_WINDOW,
             },
         );
+        // Issue #46: Harvest bucket — independent of the rebalance bucket so
+        // the owner can tune their frequencies separately.
+        env.storage().instance().set(
+            &DataKey::RateLimitConfig(RATE_LIMIT_HARVEST),
+            &RateLimitConfig {
+                max_calls: DEFAULT_HARVEST_RATE_LIMIT_MAX_CALLS,
+                window_ledgers: DEFAULT_HARVEST_RATE_LIMIT_WINDOW,
+            },
+        );
         env.storage()
             .instance()
             .set(&DataKey::MaxBatchSize, &DEFAULT_MAX_BATCH_SIZE);
@@ -9384,6 +9409,7 @@ impl NeuroWealthVault {
             || category == &RATE_LIMIT_TOUCH_TTL
             || category == &RATE_LIMIT_PREVIEW
             || category == &RATE_LIMIT_BATCH_DEPOSIT
+            || category == &RATE_LIMIT_HARVEST
     }
 
     /// Rejects unknown category symbols before they can create arbitrary
@@ -9425,6 +9451,11 @@ impl NeuroWealthVault {
             RateLimitConfig {
                 max_calls: DEFAULT_PREVIEW_RATE_LIMIT_MAX_CALLS,
                 window_ledgers: DEFAULT_PREVIEW_RATE_LIMIT_WINDOW,
+            }
+        } else if category == &RATE_LIMIT_HARVEST {
+            RateLimitConfig {
+                max_calls: DEFAULT_HARVEST_RATE_LIMIT_MAX_CALLS,
+                window_ledgers: DEFAULT_HARVEST_RATE_LIMIT_WINDOW,
             }
         } else {
             RateLimitConfig {
