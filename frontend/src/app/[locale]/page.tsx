@@ -8,10 +8,12 @@ import { StrategyBadge } from '@/components/StrategyBadge';
 import { PortfolioChart } from '@/components/PortfolioChart';
 import { TransactionHistory } from '@/components/TransactionHistory';
 import { ActionModal } from '@/components/ActionModal';
-import { MessageSquare, Bot, ArrowRight, ShieldCheck, Zap, Layers } from 'lucide-react';
+import { BottomSheet } from '@/components/BottomSheet';
+import { MessageSquare, Bot, ArrowRight, Zap } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { connectFreighterWallet } from '@/lib/freighter';
 import { fetchVaultState, VaultState } from '@/lib/stellar';
+import { useIsMobile } from '@/lib/useWindowSize';
 import {
   getEarningsSummary,
   getPortfolioValueHistory,
@@ -37,6 +39,7 @@ export default function DashboardPage() {
   // Modal State
   const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
   const [modalType, setModalType] = useState<'deposit' | 'withdraw'>('deposit');
+  const isMobile = useIsMobile();
 
   const handleConnect = async () => {
     const key = await connectFreighterWallet();
@@ -179,15 +182,33 @@ export default function DashboardPage() {
         </main>
       </div>
 
-      {/* Action Modal */}
-      <ActionModal
-        isOpen={isModalOpen}
-        onClose={() => setIsModalOpen(false)}
-        type={modalType}
-        userPublicKey={publicKey}
-        balance={vaultState.balance}
-        exchangeRate={vaultState.exchangeRate}
-      />
+      {/* Action Modal (desktop) / Bottom Sheet (mobile) */}
+      {isMobile ? (
+        <BottomSheet
+          isOpen={isModalOpen}
+          onClose={() => setIsModalOpen(false)}
+          ariaLabel={modalType === 'deposit' ? 'Deposit USDC' : 'Withdraw USDC'}
+        >
+          <ActionModal
+            isOpen={isModalOpen}
+            onClose={() => setIsModalOpen(false)}
+            type={modalType}
+            userPublicKey={publicKey}
+            balance={vaultState.balance}
+            exchangeRate={vaultState.exchangeRate}
+            embedded
+          />
+        </BottomSheet>
+      ) : (
+        <ActionModal
+          isOpen={isModalOpen}
+          onClose={() => setIsModalOpen(false)}
+          type={modalType}
+          userPublicKey={publicKey}
+          balance={vaultState.balance}
+          exchangeRate={vaultState.exchangeRate}
+        />
+      )}
 
       {/* Footer */}
       <footer className="border-t border-slate-800/80 bg-[#06080e] py-6 mt-12 text-center text-xs text-slate-400">
