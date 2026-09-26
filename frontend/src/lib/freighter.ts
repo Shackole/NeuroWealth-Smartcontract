@@ -11,10 +11,17 @@ export interface FreighterWalletState {
 }
 
 /**
- * Checks if Freighter extension is installed in the user's browser.
+ * Checks if Freighter extension (or mock) is installed in the user's browser.
  */
 export async function isFreighterInstalled(): Promise<boolean> {
   try {
+    if (typeof window !== 'undefined' && (window as any).freighter) {
+      const f = (window as any).freighter;
+      if (typeof f.isConnected === 'function') {
+        return Boolean(await f.isConnected());
+      }
+      return true;
+    }
     return await checkFreighterConnected();
   } catch (err) {
     return false;
@@ -29,8 +36,22 @@ export async function connectFreighterWallet(): Promise<string | null> {
   try {
     const installed = await isFreighterInstalled();
     if (!installed) {
-      alert('Freighter wallet extension is not installed. Please install Freighter to connect.');
+      if (typeof window !== 'undefined' && typeof window.alert === 'function') {
+        alert('Freighter wallet extension is not installed. Please install Freighter to connect.');
+      }
       return null;
+    }
+
+    if (typeof window !== 'undefined' && (window as any).freighter) {
+      const f = (window as any).freighter;
+      if (typeof f.getPublicKey === 'function') {
+        const key = await f.getPublicKey();
+        if (key) return key;
+      }
+      if (typeof f.requestAccess === 'function') {
+        const key = await f.requestAccess();
+        if (key) return key;
+      }
     }
 
     const key = await getFreighterPublicKey();
@@ -46,6 +67,16 @@ export async function connectFreighterWallet(): Promise<string | null> {
  */
 export async function signWithFreighter(xdr: string, networkPassphrase?: string): Promise<string | null> {
   try {
+    if (typeof window !== 'undefined' && (window as any).freighter) {
+      const f = (window as any).freighter;
+      if (typeof f.signTransaction === 'function') {
+        const signed = await f.signTransaction(xdr, {
+          networkPassphrase: networkPassphrase || 'Test SDF Network ; September 2015'
+        });
+        if (signed) return signed;
+      }
+    }
+
     const signedXdr = await signFreighterTx(xdr, {
       networkPassphrase: networkPassphrase || 'Test SDF Network ; September 2015'
     });

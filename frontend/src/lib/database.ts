@@ -14,6 +14,7 @@ export interface TransactionRecord {
   id: string;
   type: 'deposit' | 'withdrawal' | 'rebalance';
   amount: number;
+  asset?: string;
   txHash: string;
   timestamp: string;
   status: 'confirmed' | 'pending';
