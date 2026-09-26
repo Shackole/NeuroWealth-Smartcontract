@@ -39,7 +39,16 @@ module.exports = {
       boxShadow: {
         'glow-emerald': '0 0 25px -5px rgba(16, 185, 129, 0.3)',
         'glow-indigo': '0 0 25px -5px rgba(99, 102, 241, 0.3)',
-      }
+      },
+      keyframes: {
+        fadeIn: {
+          '0%':   { opacity: '0', transform: 'translateY(6px)' },
+          '100%': { opacity: '1', transform: 'translateY(0)' },
+        },
+      },
+      animation: {
+        fadeIn: 'fadeIn 200ms ease-in-out',
+      },
     },
   },
   plugins: [],
