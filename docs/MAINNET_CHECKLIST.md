@@ -1,6 +1,14 @@
 # NeuroWealth Mainnet Deployment Checklist
 
-This document outlines the mandatory formal verification steps, configuration parameters, and emergency readiness checks that must be successfully executed before and during the deployment of the `NeuroWealthVault` smart contract to the Stellar Mainnet.
+This document outlines the mandatory formal verification steps, configuration
+parameters, and emergency readiness checks that must be successfully executed
+before and during the deployment of the `NeuroWealthVault` smart contract to
+the Stellar Mainnet.
+
+> **Sign-off policy:** Every checkbox in this document must be ticked and
+> countersigned by a named team member before any
+> `./scripts/deploy.sh --network mainnet` invocation is permitted. Items marked
+> **CRITICAL** are hard blockers — the deployment must not proceed without them.
 
 ---
 
@@ -14,34 +22,57 @@ This document outlines the mandatory formal verification steps, configuration pa
 6. [Emergency Procedures & Pause Drill Runbook](#6-emergency-procedures--pause-drill-runbook)
 7. [Upgrade & Governance Multisig Plan](#7-upgrade--governance-multisig-plan)
 8. [Third-Party Security Audit & Formal Sign-off](#8-third-party-security-audit--formal-sign-off)
+9. [Harvest Cooldown & Circuit-Breaker Configuration](#9-harvest-cooldown--circuit-breaker-configuration)
+10. [Secret Scanning & Secrets Hygiene](#10-secret-scanning--secrets-hygiene)
+11. [Emergency Contact List & On-Call Roster](#11-emergency-contact-list--on-call-roster)
 
 ---
 
 ## 1. Key Management Setup (Separate Owner & Agent Keys)
 
-To uphold the principle of least privilege and prevent single points of failure, **the Owner and Agent keys must be completely separate and generated independently**.
+**CRITICAL — hard blocker.** The Owner and Agent keys must be completely
+separate and generated independently.
 
 ### 🔍 Security Context
 
-- **Owner (Cold/Multisig):** Holds sensitive administrative capabilities like contract pausing, unpausing, TVL/cap changes, and contract upgrades. This key represents a high-value target and should be kept securely offline (e.g., hardware wallet or multi-signature account setup).
-- **AI Agent (Hot):** Used by the automated backend system to submit frequent rebalancing signals and assets updates (`rebalance` and `update_total_assets`). Since it lives in a hot environment (server memory), it faces a higher compromise risk.
-- **The Risk:** If the Owner and Agent keys are the same, a compromise of the AI agent backend would immediately compromise the ownership and control of the entire contract, enabling an attacker to upgrade the contract or block users from withdrawing.
+- **Owner (Cold / Multisig):** Holds administrative capabilities —
+  pausing, unpausing, TVL/cap changes, contract upgrades. Must be kept
+  securely offline (hardware wallet or Stellar multisig account).
+- **AI Agent (Hot):** Used by the automated backend for frequent
+  `rebalance` and `update_total_assets` calls. Lives in a hot environment
+  (server memory) and faces a higher compromise risk.
+- **Risk of key reuse:** A compromised AI agent backend would immediately
+  compromise ownership and allow an attacker to upgrade the contract or
+  block withdrawals.
 
 ### 📝 Actionable Checklist
 
-- [ ] **Generate Independent Keypairs:** Ensure that the Owner address ($G_{owner}$) and Agent address ($G_{agent}$) are completely separate and do not share any key material.
-- [ ] **Establish Key Storage Environments:**
-  - Owner private key: Saved in a secure offline HSM, multi-sig hardware wallet, or Stellar Multisig account.
-  - Agent private key: Stored in a secure environment variables vault (e.g., AWS Secrets Manager, Vault, Supabase Vault) with restricted read access.
-- [ ] **Pre-Launch Address Verification:**
-  - Query testnet/mainnet deploy keys:
-    ```bash
-    owner_addr=$(stellar contract invoke --id $VAULT_CONTRACT_ID --network mainnet -- get_owner)
-    agent_addr=$(stellar contract invoke --id $VAULT_CONTRACT_ID --network mainnet -- get_agent)
-    ```
-  - Verify that `$owner_addr` != `$agent_addr`.
+- [ ] **Generate independent keypairs:** Owner address ($G_{owner}$) and
+  Agent address ($G_{agent}$) must be completely separate with no shared
+  key material.
+  - **Signed off by:** _____________________________ Date: ___________
+- [ ] **Establish key storage environments:**
+  - Owner private key: offline HSM, hardware wallet (e.g. Ledger), or
+    Stellar Multisig account.
+  - Agent private key: secrets vault (e.g., AWS Secrets Manager, HashiCorp
+    Vault, Supabase Vault) with restricted read access.
+  - **Signed off by:** _____________________________ Date: ___________
+- [ ] **Pre-launch address verification — confirm owner ≠ agent:**
 
-> **Automated check** — `scripts/verify-deployment.sh` asserts owner address, agent address, and owner ≠ agent separation in one command:
+  ```bash
+  owner_addr=$(stellar contract invoke \
+    --id $VAULT_CONTRACT_ID --network mainnet -- get_owner)
+  agent_addr=$(stellar contract invoke \
+    --id $VAULT_CONTRACT_ID --network mainnet -- get_agent)
+  echo "Owner: $owner_addr"
+  echo "Agent: $agent_addr"
+  # Must print different addresses
+  ```
+
+  - **Signed off by:** _____________________________ Date: ___________
+
+> **Automated check** — `scripts/verify-deployment.sh` asserts owner
+> address, agent address, and owner ≠ agent separation in one command:
 >
 > ```bash
 > VAULT_CONTRACT_ID=C... NETWORK=mainnet \
@@ -54,24 +85,41 @@ To uphold the principle of least privilege and prevent single points of failure,
 
 ## 2. Initialization Parameters & Deployment Verification
 
-Initialization of the `NeuroWealthVault` uses a cryptographic commitment to protect against front-running. The deployer key must immediately call `initialize` after deployment.
+**CRITICAL — hard blocker.** Use the anti-front-running deployment flow.
 
 ### 🔍 Security Context
 
-- The contract verifies that the `deployer` address combined with the deployed `salt` cryptographically reproduces the contract address and requires deployer's authentication (`deployer.require_auth()`).
-- After successful initialization, the temporary deployer key has no administrative powers.
+The contract verifies that the `deployer` address combined with the chosen
+`salt` cryptographically reproduces the contract address, and requires the
+deployer's live authorization signature (`deployer.require_auth()`). After
+successful initialization the temporary deployer key has no further
+privileged role.
 
 ### 📝 Actionable Checklist
 
-- [ ] **Deployer Key Separation:** Generate a clean, single-use `deployer` keypair. Fund it with enough native XLM to cover deployment fees.
-- [ ] **Parameter Configuration Verification:** Double-check the mainnet initialization arguments before submitting the transaction:
-  - `--deployer`: Address of the temporary deployer key.
-  - `--owner`: Verified cold/multisig owner address.
-  - `--agent`: Verified AI agent address.
-  - `--usdc_token`: Official Stellar Mainnet USDC Token address (`GBBD67VQMKA676776SGXN6776...` - verify on Stellar Expert).
-  - `--salt`: A securely generated 32-byte hash.
-- [ ] **Execute and Discard Deployer Key:**
+- [ ] **Deployer key separation:** Generate a clean, single-use `deployer`
+  keypair. Fund it with enough XLM to cover deployment fees.
+  - **Signed off by:** _____________________________ Date: ___________
+- [ ] **Verify initialization parameters before submitting:**
+  - `--deployer`: Address of the temporary deployer key
+  - `--owner`: Verified cold/multisig owner address
+  - `--agent`: Verified AI agent address
+  - `--usdc_token`: Official Stellar Mainnet USDC contract address
+    (verify on [StellarExpert](https://stellar.expert))
+  - `--salt`: Securely generated 32-byte hex salt
+  - **Signed off by:** _____________________________ Date: ___________
+- [ ] **Execute deployment and `initialize()` in sequence:**
+
   ```bash
+  # Step 1: Deploy
+  stellar contract deploy \
+    --wasm target/wasm32-unknown-unknown/release/neurowealth_vault.wasm \
+    --source deployer \
+    --network mainnet \
+    --salt $SALT
+  # Save the output as VAULT_CONTRACT_ID
+
+  # Step 2: Initialize immediately (same deployer key, same salt)
   stellar contract invoke \
     --id $VAULT_CONTRACT_ID \
     --source deployer \
@@ -79,34 +127,41 @@ Initialization of the `NeuroWealthVault` uses a cryptographic commitment to prot
     -- \
     initialize \
     --deployer $DEPLOYER_ADDRESS \
-    --owner $OWNER_ADDRESS \
-    --agent $AGENT_ADDRESS \
+    --owner  $OWNER_ADDRESS \
+    --agent  $AGENT_ADDRESS \
     --usdc_token $USDC_TOKEN_ADDRESS \
-    --salt $SALT
+    --salt   $SALT
   ```
-- [ ] **Post-Init Read Verification:**
-  - Run `get_owner` to confirm it returns `$OWNER_ADDRESS`.
-  - Run `get_agent` to confirm it returns `$AGENT_ADDRESS`.
-  - Run `get_usdc_token` to confirm it returns `$USDC_TOKEN_ADDRESS`.
-- [ ] **Discard Deployer Key:** Erase/discard the temporary deployer key. It should never be reused.
+
+  - **Signed off by:** _____________________________ Date: ___________
+- [ ] **Post-init read verification:**
+  - `get_owner` returns `$OWNER_ADDRESS` ✓
+  - `get_agent` returns `$AGENT_ADDRESS` ✓
+  - `get_usdc_token` returns `$USDC_TOKEN_ADDRESS` ✓
+  - **Signed off by:** _____________________________ Date: ___________
+- [ ] **Deployer key erased / discarded** (no further role after init).
+  - **Signed off by:** _____________________________ Date: ___________
 
 ---
 
 ## 3. Administrative Caps & Deposit Limits Configuration
 
-To limit financial risk and systemic exposure during the initial stages of launch, safety caps must be configured.
+**CRITICAL — hard blocker.** Conservative initial caps must be set before
+any user deposits are accepted.
 
 ### 🔍 Security Context
 
-- **TVL Cap:** Prevents the vault from accepting more than a specific aggregate deposit, limiting the overall capital at risk.
-- **User Deposit Cap:** Limits exposure per single user, preventing whales from dominating the pool and mitigating risks of heavy individual exposure.
-- **Deposit Limits (Min/Max):** Enforces transaction thresholds (minimum of 1 USDC to protect against dust attacks and first-depositor inflation attacks).
+- **TVL Cap:** Limits aggregate capital at risk during the launch phase.
+- **User Deposit Cap:** Limits whale exposure and first-depositor inflation
+  attacks.
+- **Deposit Limits (Min/Max):** The 1 USDC floor protects against dust
+  attacks.
 
 ### 📝 Actionable Checklist
 
-- [ ] **Initial TVL Cap Setup:** Determine the conservative launch phase TVL cap (e.g., $100,000 USD represented as `100000000000` base units - 7 decimals).
-- [ ] **Initial User Deposit Cap Setup:** Determine the initial limit per user (e.g., $5,000 USD represented as `5000000000` base units).
-- [ ] **Enforce Caps:** Call `set_caps` via the Owner key:
+- [ ] **Initial TVL cap:** Conservative launch-phase value.
+  Recommended: **50,000 USDC** (`50000000000` in 7-decimal raw units).
+
   ```bash
   stellar contract invoke \
     --id $VAULT_CONTRACT_ID \
@@ -115,9 +170,13 @@ To limit financial risk and systemic exposure during the initial stages of launc
     -- \
     set_caps \
     --user_deposit_cap 5000000000 \
-    --tvl_cap 100000000000
+    --tvl_cap 50000000000
   ```
-- [ ] **Set Transaction Limits:** Call `set_deposit_limits` (e.g., min 1 USDC, max 5,000 USDC):
+
+  - Chosen TVL cap value: _____________________________
+  - **Signed off by:** _____________________________ Date: ___________
+- [ ] **Transaction deposit limits** (1 USDC min, 5,000 USDC max):
+
   ```bash
   stellar contract invoke \
     --id $VAULT_CONTRACT_ID \
@@ -128,42 +187,63 @@ To limit financial risk and systemic exposure during the initial stages of launc
     --min 1000000 \
     --max 5000000000
   ```
-- [ ] **Verify Settings:** Query getters `get_tvl_cap`, `get_user_deposit_cap`, `get_min_deposit`, and `get_max_deposit` to verify correctness.
 
-> **Automated check** — `scripts/verify-deployment.sh` fetches all four caps and compares them against your declared expected values:
+  - **Signed off by:** _____________________________ Date: ___________
+- [ ] **Verify all four caps on-chain:**
+
+  ```bash
+  stellar contract invoke --id $VAULT_CONTRACT_ID --network mainnet \
+    --send=no -- get_tvl_cap
+  stellar contract invoke --id $VAULT_CONTRACT_ID --network mainnet \
+    --send=no -- get_user_deposit_cap
+  stellar contract invoke --id $VAULT_CONTRACT_ID --network mainnet \
+    --send=no -- get_min_deposit
+  stellar contract invoke --id $VAULT_CONTRACT_ID --network mainnet \
+    --send=no -- get_max_deposit
+  ```
+
+  - All four values confirmed correct: ✓
+  - **Signed off by:** _____________________________ Date: ___________
+
+> **Automated check** — pass expected values to `verify-deployment.sh`:
 >
 > ```bash
 > VAULT_CONTRACT_ID=C... NETWORK=mainnet \
 >   OWNER_ADDRESS=G... AGENT_ADDRESS=G... AGENT_SECRET_KEY=S... \
 >   USDC_TOKEN_ADDRESS=G... \
->   EXPECTED_TVL_CAP=100000000000 \
+>   EXPECTED_TVL_CAP=50000000000 \
 >   EXPECTED_USER_DEPOSIT_CAP=5000000000 \
 >   EXPECTED_MIN_DEPOSIT=1000000 \
 >   EXPECTED_MAX_DEPOSIT=5000000000 \
 >   ./scripts/verify-deployment.sh
 > ```
->
-> The script exits non-zero if any cap does not match or if an `EXPECTED_*` variable is missing.
 
 ---
 
 ## 4. Blend Pool Integration & Address Verification
 
-The NeuroWealth AI agent deploys assets into Blend lending pools. Registering the correct, verified mainnet contract address for Blend is critical.
+**CRITICAL — hard blocker.** Deploying to an incorrect pool can cause
+instant loss of principal.
 
 ### 🔍 Security Context
 
-- Deploying to an incorrect or malicious pool address can lead to instant loss of principal funds.
-- While the contract's `set_blend_pool` method performs interface probing by calling `balance()` to confirm the contract conforms to the expected Blend pool structure, this does not guarantee the address belongs to the genuine Blend protocol.
+`set_blend_pool` performs interface probing via `balance()` but this does
+not confirm the address belongs to the genuine Blend protocol. Manual
+cross-referencing against official registries is mandatory.
 
 ### 📝 Actionable Checklist
 
-- [ ] **Retrieve Official Blend Registries:** Match the Blend mainnet pool address against:
-  - Official Blend Protocol documentation.
-  - Verified GitHub repository resources or Blend UI configurations.
-  - The verified on-chain deployment logs on a block explorer (Stellar Expert).
-- [ ] **Perform Interface/State Verification:** Call the pool's read methods directly on the mainnet RPC to check pool parameters.
-- [ ] **Register Verified Blend Pool:** Call `set_blend_pool` using the Owner key:
+- [ ] **Retrieve the official Blend mainnet pool address from:**
+  - Official Blend Protocol documentation
+  - Verified Blend GitHub repository
+  - On-chain deployment logs on [StellarExpert](https://stellar.expert)
+  - Verified Blend pool address: _____________________________
+  - **Signed off by:** _____________________________ Date: ___________
+- [ ] **Interface / state verification:** Call the pool's read methods
+  directly on mainnet RPC to confirm pool parameters are sane.
+  - **Signed off by:** _____________________________ Date: ___________
+- [ ] **Register verified Blend pool:**
+
   ```bash
   stellar contract invoke \
     --id $VAULT_CONTRACT_ID \
@@ -174,34 +254,32 @@ The NeuroWealth AI agent deploys assets into Blend lending pools. Registering th
     --owner $OWNER_ADDRESS \
     --pool_address $VERIFIED_BLEND_POOL_ADDRESS
   ```
-- [ ] **Read Verification:** Query `get_blend_pool` on the vault to confirm the registered address matches the verified Blend pool address.
 
-> **Automated check** — set `BLEND_POOL_ADDRESS` and `scripts/verify-deployment.sh` will assert that `get_blend_pool()` returns that exact address (not null):
->
-> ```bash
-> VAULT_CONTRACT_ID=C... NETWORK=mainnet \
->   OWNER_ADDRESS=G... AGENT_ADDRESS=G... AGENT_SECRET_KEY=S... \
->   USDC_TOKEN_ADDRESS=G... \
->   BLEND_POOL_ADDRESS=C... \
->   ./scripts/verify-deployment.sh
-> ```
+  - **Signed off by:** _____________________________ Date: ___________
+- [ ] **Read verification:** `get_blend_pool` returns the exact verified
+  address (not null).
+  - **Signed off by:** _____________________________ Date: ___________
+
+> **Automated check** — set `BLEND_POOL_ADDRESS` in `verify-deployment.sh`.
 
 ---
 
 ## 5. DEX Pool Integration & Address Verification
 
-The NeuroWealth AI agent deploys assets into DEX liquidity pools for active trading strategies. Registering the correct, verified mainnet contract address for the target DEX pool is critical.
-
-### 🔍 Security Context
-
-- Deploying to an incorrect, unverified, or malicious pool address could result in permanent loss of funds or slippage exploitation.
-- Interface validation alone does not confirm that the DEX pool is genuine or safe. Address verification against trusted registries is mandatory before deployment.
+**CRITICAL — hard blocker.** Same risks as Blend pool; address
+verification against trusted registries is mandatory.
 
 ### 📝 Actionable Checklist
 
-- [ ] **Retrieve Official DEX Registries:** Match the DEX pool mainnet address against official protocol documentation and verified on-chain deployment logs.
-- [ ] **Perform Interface/State Verification:** Verify DEX pool parameters and liquidity depth.
-- [ ] **Register Verified DEX Pool:** Call `set_dex_pool` using the Owner key:
+- [ ] **Retrieve official DEX pool address** from protocol documentation
+  and verified on-chain deployment logs.
+  - Verified DEX pool address: _____________________________
+  - **Signed off by:** _____________________________ Date: ___________
+- [ ] **Interface / state verification:** Verify DEX pool parameters and
+  liquidity depth are within expected ranges.
+  - **Signed off by:** _____________________________ Date: ___________
+- [ ] **Register verified DEX pool:**
+
   ```bash
   stellar contract invoke \
     --id $VAULT_CONTRACT_ID \
@@ -212,241 +290,247 @@ The NeuroWealth AI agent deploys assets into DEX liquidity pools for active trad
     --owner $OWNER_ADDRESS \
     --pool_address $VERIFIED_DEX_POOL_ADDRESS
   ```
-- [ ] **Read Verification:** Query `get_dex_pool` on the vault to confirm the registered address matches the verified DEX pool address.
 
-> **Automated check** — set `DEX_POOL_ADDRESS` and `scripts/verify-deployment.sh` will assert that `get_dex_pool()` returns that exact address (not null):
->
-> ```bash
-> VAULT_CONTRACT_ID=C... NETWORK=mainnet \
->   OWNER_ADDRESS=G... AGENT_ADDRESS=G... AGENT_SECRET_KEY=S... \
->   USDC_TOKEN_ADDRESS=G... \
->   DEX_POOL_ADDRESS=C... \
->   ./scripts/verify-deployment.sh
-> ```
+  - **Signed off by:** _____________________________ Date: ___________
+- [ ] **Read verification:** `get_dex_pool` returns the exact verified
+  address (not null).
+  - **Signed off by:** _____________________________ Date: ___________
 
 ---
 
 ## 6. Emergency Procedures & Pause Drill Runbook
 
-Before deploying to Mainnet, the team must run an on-chain Pause Drill on Testnet to guarantee emergency mechanisms function as intended and operators are trained in execution.
-
-For detailed incident response procedures, refer to:
-- [Owner-Compromise Response Runbook](../SECURITY.md#owner-compromise-response-runbook)
-- [Agent-Key Compromise Runbook](AGENT_KEY_COMPROMISE_RUNBOOK.md) - Detection, timelock rotation, and user communication for agent-key incidents
+**CRITICAL — hard blocker.** A pause drill on testnet must pass before
+mainnet deployment is permitted.
 
 ### 🔍 Security Context
 
-- The `pause` function blocks all deposits, withdrawals, and rebalances during an active hack, protocol compromise, or market emergency.
-- Operators must be familiar with the latency, transaction structure, and consequences of pausing/unpausing the contract.
+The `pause` function blocks all deposits, withdrawals, and rebalances
+during an active hack or market emergency. Operators must be trained in
+using it under time pressure.
 
-### 📝 Execution Plan (Pause Drill Runbook)
+For incident response details, see:
+- [Owner-Compromise Response Runbook](../SECURITY.md#owner-compromise-response-runbook)
+- [`AGENT_KEY_COMPROMISE_RUNBOOK.md`](AGENT_KEY_COMPROMISE_RUNBOOK.md)
 
-1. **Trigger Emergency Pause:** Owner invokes `pause` on testnet.
+### 📝 Basic Pause Drill (Testnet)
+
+1. **Pause the vault (owner key):**
    ```bash
-   stellar contract invoke --id $TESTNET_VAULT_CONTRACT_ID --source owner --network testnet -- pause --owner $OWNER_ADDRESS
+   stellar contract invoke --id $TESTNET_VAULT_CONTRACT_ID \
+     --source owner --network testnet -- pause --owner $OWNER_ADDRESS
    ```
-2. **Verify State Updates:** Confirm `is_paused()` returns `true`.
-3. **Verify Security Invariants (Deposits):** Attempt a test deposit.
-   - _Expected Result:_ The transaction MUST fail and revert with `VaultError::Paused` (Error Code `35`).
-4. **Verify Security Invariants (Withdrawals):** Attempt a test withdrawal.
-   - _Expected Result:_ The transaction MUST fail and revert with `VaultError::Paused` (Error Code `35`).
-5. **Verify Security Invariants (Rebalances):** Attempt an AI agent rebalance trigger.
-   - _Expected Result:_ The transaction MUST fail and revert with `VaultError::Paused` (Error Code `35`).
-6. **Trigger Resume (Unpause):** Owner invokes `unpause`.
+2. **Verify `is_paused()` returns `true`.**
+3. **Attempt a test deposit** — must fail with `VaultError::Paused` (code 35).
+4. **Attempt a test withdrawal** — must fail with `VaultError::Paused` (code 35).
+5. **Attempt a test rebalance** — must fail with `VaultError::Paused` (code 35).
+6. **Unpause:**
    ```bash
-   stellar contract invoke --id $TESTNET_VAULT_CONTRACT_ID --source owner --network testnet -- unpause --owner $OWNER_ADDRESS
+   stellar contract invoke --id $TESTNET_VAULT_CONTRACT_ID \
+     --source owner --network testnet -- unpause --owner $OWNER_ADDRESS
    ```
-7. **Verify Resumed Operation:** Verify that `is_paused()` returns `false`, and normal deposits, withdrawals, and rebalances execute successfully.
+7. **Verify normal operation resumes:** `is_paused()` returns `false`, deposit succeeds.
 
-- [ ] **Testnet Drill Completed successfully:** Sign off on the drill.
+- [ ] **Basic testnet drill completed successfully.**
+  - **Signed off by:** _____________________________ Date: ___________
 
-### 📝 Game-Day Drill: Alert-to-Pause RTO Measurement (Devnet)
+### 📝 Game-Day Alert-to-Pause RTO Drill (Devnet)
 
-The pause drill above proves the mechanism works; this drill measures how fast
-the *organization* can use it. It exercises the full detection → response
-chain — monitoring alert fires, on-call is paged, `emergency_pause` lands
-on-chain — and records the elapsed time as the incident Recovery Time
-Objective (RTO) baseline for mainnet.
+This drill measures how fast the organisation can use the pause mechanism.
+It exercises the full detection → response chain and records the elapsed
+time as the incident Recovery Time Objective (RTO) baseline for mainnet.
 
-**Cadence:** run once before mainnet launch, then quarterly. Rotate which
+**Cadence:** Run once before mainnet launch, then quarterly. Rotate which
 operator is on-call so every keyholder has executed a pause under time
 pressure at least once.
 
 **Roles:**
-
-- **Drill conductor** — injects the signal, keeps the timestamp log, does not
+- **Drill conductor** — injects the signal, keeps timestamps, does not
   assist the responder.
-- **On-call responder** — receives the page and executes the runbook exactly
-  as they would in a real incident (no pre-warming of CLI sessions or keys).
+- **On-call responder** — receives the page and follows the runbook
+  exactly as in a real incident (no pre-warming of CLI sessions or keys).
 
-**Procedure (all timestamps in UTC, captured by the conductor):**
+**Procedure (timestamps in UTC, captured by conductor):**
 
-1. **T0 — Inject simulated exploit signal.** Without pre-announcing the exact
-   time, the conductor triggers one of the monitoring alerts from
-   [monitoring.md](monitoring.md) against the devnet deployment — e.g. submit
-   transactions that trip `withdrawal_spike`, or fire the alert rule directly
-   in the monitoring stack with a `[DRILL]` prefix.
-2. **T1 — Alert fired.** Timestamp when the monitoring system actually emits
-   the page/notification.
-3. **T2 — Responder acknowledged.** Timestamp when the on-call operator acks
-   the page.
-4. **T3 — `emergency_pause` submitted.** Responder runs, from the standard
-   runbook (no shortcuts):
+1. **T0 — Inject simulated exploit signal.** Conductor triggers a
+   monitoring alert from [`docs/monitoring.md`](monitoring.md) against the
+   devnet deployment (e.g. trip the `withdrawal_spike` rule, or fire the
+   alert with a `[DRILL]` prefix).
+2. **T1 — Alert fired.** Timestamp when the monitoring system emits the
+   page/notification.
+3. **T2 — Responder acknowledged.** Timestamp when the on-call operator
+   acks the page.
+4. **T3 — `emergency_pause` submitted.** Responder runs:
    ```bash
-   stellar contract invoke --id $DEVNET_VAULT_CONTRACT_ID --source owner --network testnet -- emergency_pause --owner $OWNER_ADDRESS
+   stellar contract invoke --id $DEVNET_VAULT_CONTRACT_ID \
+     --source owner --network testnet -- emergency_pause \
+     --owner $OWNER_ADDRESS
    ```
-5. **T4 — Pause confirmed on-chain.** Timestamp of the ledger that includes
-   the transaction; verify `is_paused()` returns `true` and the
-   `EmergencyPausedEvent` was emitted.
-6. **Debrief.** Compute `RTO = T4 − T0`. Record every blocker encountered
-   (key retrieval friction, missing docs, RPC issues, alert routing delays)
-   and file an issue for each. Unpause the devnet vault and confirm normal
-   operation resumes.
+5. **T4 — Pause confirmed on-chain.** Ledger timestamp; verify
+   `is_paused()` returns `true` and `EmergencyPausedEvent` was emitted.
+6. **Debrief.** Compute `RTO = T4 − T0`. Record every blocker and file
+   an issue for each. Unpause the devnet vault.
 
-**RTO target (mainnet): `T4 − T0 ≤ 15 minutes`, with `T3 − T2 ≤ 5 minutes`.**
-A drill exceeding the target must be re-run after the identified blockers are
-fixed; do not sign off mainnet readiness on a failed drill.
+**RTO target: `T4 − T0 ≤ 15 minutes`, with `T3 − T2 ≤ 5 minutes`.**
+A drill exceeding the target must be re-run after identified blockers are
+fixed. Do not sign off mainnet readiness on a failed drill.
 
-**Drill log** (append one row per drill; keep raw timestamp notes in the
-incident-response log):
+**Drill log** (append one row per drill):
 
 | Date (UTC) | Responder | T0 signal | T1 alert | T2 ack | T3 submitted | T4 confirmed | RTO (T4−T0) | Target met | Blockers / follow-ups |
-| ---------- | --------- | --------- | -------- | ------ | ------------ | ------------ | ----------- | ---------- | --------------------- |
-|            |           |           |          |        |              |              |             |            |                       |
+|---|---|---|---|---|---|---|---|---|---|
+| | | | | | | | | | |
 
-- [ ] **Game-day drill executed in devnet** with all five timestamps captured in the log above.
-- [ ] **Measured RTO recorded and ≤ 15-minute target** (re-run after fixes if not).
-- [ ] **Blockers filed as issues** and assigned owners.
+- [ ] **Game-day drill executed in devnet** with all five timestamps
+  captured in the log above.
+  - **Signed off by:** _____________________________ Date: ___________
+- [ ] **Measured RTO ≤ 15-minute target.** (Re-run after fixes if not.)
+  - Measured RTO: _____________________________
+  - **Signed off by:** _____________________________ Date: ___________
+- [ ] **All blockers filed as issues** and assigned owners.
+  - **Signed off by:** _____________________________ Date: ___________
 
 ---
 
 ## 7. Upgrade & Governance Multisig Plan
 
-The Owner key holds upgrade privileges. To secure the contract against single-key compromise or loss, the owner account should be configured with multi-signature security.
+**CRITICAL — hard blocker.** The owner account must be configured with
+multi-signature security before mainnet deployment.
 
 ### 🔍 Security Context
 
-- Soroban allows upgrading contract code. An attacker possessing the owner key could upload a malicious WASM binary to hijack user funds.
-- The instant `upgrade()` entrypoint has been replaced by a two-step timelocked flow (Issue #316): `schedule_upgrade` → wait `UPGRADE_TIMELOCK_LEDGERS` (17,280 ledgers ≈ 24 h) → `execute_upgrade`, with `cancel_upgrade` as the escape hatch. The timelock is the last line of defence if the multisig itself is compromised — it converts an instant code swap into a 24-hour, publicly observable event.
-- Stellar natively supports multi-signature operations directly at the account level through account signer thresholds and weights.
+The instant `upgrade()` entrypoint has been replaced by a two-step,
+timelocked flow (Issue #316): `schedule_upgrade` → wait ~24 h
+(`UPGRADE_TIMELOCK_LEDGERS = 17,280`) → `execute_upgrade`, with
+`cancel_upgrade` as the escape hatch. The timelock converts an instant
+code swap into a 24-hour, publicly observable event.
 
-### 📝 Actionable Checklist
+### 📝 WASM Hash Verification Gate
 
-- [ ] **WASM Hash Verification Gate:** Before calling `schedule_upgrade` on mainnet, the WASM hash **must match** a CI-published hash from a signed git tag release build.
-  - Verify CI workflow ran on the intended release tag (e.g., `v2.1.0`).
-  - Confirm the CI build artifact WASM hash is recorded in `CHANGELOG.md` under that version.
-  - Run `stellar contract install` on mainnet and verify the returned hash **byte-for-byte matches** the CI-published hash.
-  - Record the matching hash and CI job URL in the release ticket for audit trail.
-  - _Rationale:_ This gate ensures the exact bytecode deployed to mainnet was built from a tagged, reviewable commit in git and is not locally-modified or compromised.
-- [ ] **Configure Owner Multisig Account:** Configure the mainnet Owner address with multiple signers (e.g., 2-of-3 or 3-of-5 setup).
-  - **Threshold Settings:**
-    - Low threshold (e.g., 1): For triggering simple operations or `pause()` (allows fast emergency response with a single hot trigger key).
-    - Medium threshold (e.g., 2 or 3): For configuring caps, setting Blend pools, and `unpause()`.
-    - High threshold (e.g., 3): For calling `schedule_upgrade()` and `execute_upgrade()` (requires multi-party consensus to push new code).
-  - Keep `cancel_upgrade()` reachable at a **low** threshold. It is the escape hatch during the timelock window and must not be blocked by an unavailable co-signer.
-- [ ] **Document Signer Distribution:** Ensure keys are distributed securely across key parties using hardware wallets (e.g., Ledger).
-- [ ] **Upgrade Verification Procedure:** Ensure any future WASM upgrades are:
-  - Built inside a deterministic environment (e.g., Docker container with exact Rust toolchain versions).
-  - Checked against WASM size limits using standard optimization tools (`wasm-opt -Oz`).
-  - Signatures collected offline from all co-signers before broadcast.
+Before calling `schedule_upgrade` on mainnet, the WASM hash **must
+match** a CI-published hash from a signed git tag release build.
+
+- [ ] **Verify CI workflow** ran on the intended release tag (e.g. `v2.1.0`).
+  - CI run URL: _____________________________
+  - **Signed off by:** _____________________________ Date: ___________
+- [ ] **Confirm the CI-published WASM hash** is recorded in `CHANGELOG.md`
+  under that version.
+  - WASM hash: _____________________________
+  - **Signed off by:** _____________________________ Date: ___________
+- [ ] **Install on mainnet and verify byte-for-byte:**
+  ```bash
+  stellar contract install \
+    --wasm target/wasm32-unknown-unknown/release/neurowealth_vault.wasm \
+    --source owner \
+    --network mainnet
+  # Hash returned must match the CI-published hash exactly
+  ```
+  - Installed hash matches CI hash: ✓
+  - **Signed off by:** _____________________________ Date: ___________
+
+### 📝 Owner Multisig Configuration
+
+- [ ] **Configure owner multisig account** (e.g. 2-of-3 or 3-of-5 setup):
+  - Low threshold (e.g. 1): `pause()` and `cancel_upgrade()` (fast
+    emergency path — must not require unavailable co-signers).
+  - Medium threshold (e.g. 2): cap changes, Blend/DEX pool updates,
+    `unpause()`.
+  - High threshold (e.g. 3): `schedule_upgrade()` and `execute_upgrade()`.
+  - **Signed off by:** _____________________________ Date: ___________
+- [ ] **Document signer distribution:** Keys distributed across parties
+  using hardware wallets (e.g. Ledger). No single party holds a majority.
+  - **Signed off by:** _____________________________ Date: ___________
+- [ ] **Single-sig interim plan documented** (if multisig is not ready
+  for initial launch): documented rationale and timeline for migration to
+  multisig.
+  - **Signed off by:** _____________________________ Date: ___________
 
 ### 📝 Timelocked Upgrade Verification Drill (Testnet)
 
-The timelock must be exercised end-to-end on testnet before mainnet deployment. The unit tests in `neurowealth-vault/contracts/vault/src/tests/test_upgrade_timelock.rs` cover the gates by advancing the simulated ledger, but they cannot verify the WASM swap or the `Version` bump — the dummy hash they schedule is not installed on-chain. Only a real network run proves the full cycle.
-
-Set `TESTNET_VAULT_CONTRACT_ID`, `OWNER_ADDRESS`, and `NEW_WASM_HASH` (the hex hash returned by `stellar contract install`) before starting.
+The timelock must be exercised end-to-end on testnet. Unit tests advance a
+simulated ledger and cannot verify the WASM swap or the `Version` bump.
+Only a real network run proves the full cycle.
 
 **Part A — `get_pending_upgrade` returns the correct hash and expiry**
 
-- [ ] **A1. Confirm a clean starting state:** with nothing scheduled, the getter must return `null`.
-  ```bash
-  stellar contract invoke --id $TESTNET_VAULT_CONTRACT_ID --source owner --network testnet -- get_pending_upgrade
-  ```
-- [ ] **A2. Record the current ledger sequence** from RPC (`getLatestLedger`) — call it `L`.
-- [ ] **A3. Schedule the upgrade.**
-  ```bash
-  stellar contract invoke --id $TESTNET_VAULT_CONTRACT_ID --source owner --network testnet -- schedule_upgrade --owner $OWNER_ADDRESS --new_wasm_hash $NEW_WASM_HASH
-  ```
+- [ ] **A1.** `get_pending_upgrade` returns `null` before scheduling.
+- [ ] **A2.** Record current ledger sequence `L`.
+- [ ] **A3.** `schedule_upgrade` succeeds; `UpgradeScheduledEvent` emitted.
+- [ ] **A4.** `get_pending_upgrade` returns `(hash, L + 17280)`.
+- [ ] **A5.** Second `schedule_upgrade` fails with `TimelockAlreadyPending` (code 48).
+- [ ] **A6.** `execute_upgrade` before expiry fails with `TimelockNotExpired` (code 50).
 
-  - _Expected Result:_ Success, and an `UpgradeScheduledEvent` (topic `upg_sched`) carrying `new_wasm_hash` and `effective_ledger`.
-- [ ] **A4. Verify the pending state:** re-run `get_pending_upgrade`.
-  - _Expected Result:_ `(wasm_hash, effective_ledger)` where `wasm_hash` byte-for-byte equals `$NEW_WASM_HASH` and `effective_ledger ≈ L + 17280`. Confirm the delta is exactly `UPGRADE_TIMELOCK_LEDGERS`, not a shortened test value.
-- [ ] **A5. Verify the "only one pending" guard:** call `schedule_upgrade` again with any hash.
-  - _Expected Result:_ MUST fail with `VaultError::TimelockAlreadyPending` (Error Code `48`).
-- [ ] **A6. Verify the execute gate holds before expiry:** call `execute_upgrade` immediately.
-  ```bash
-  stellar contract invoke --id $TESTNET_VAULT_CONTRACT_ID --source owner --network testnet -- execute_upgrade --owner $OWNER_ADDRESS
-  ```
+**Part B — `cancel_upgrade` clears pending state**
 
-  - _Expected Result:_ MUST fail with `VaultError::TimelockNotExpired` (Error Code `50`). Confirm `get_version()` is unchanged and the deployed code still behaves as the old build — a pending proposal must have no effect on the running contract.
+- [ ] **B1.** `cancel_upgrade` succeeds; `UpgradeCancelledEvent` emitted.
+- [ ] **B2.** `get_pending_upgrade` returns `null` after cancel.
+- [ ] **B3.** Second `cancel_upgrade` fails with `NoTimelockPending` (code 49).
+- [ ] **B4.** `execute_upgrade` after cancel fails with `NoTimelockPending` (code 49).
+- [ ] **B5.** `cancel_upgrade` succeeds even while paused (escape hatch intact).
 
-**Part B — `cancel_upgrade` clears the pending state**
+**Part C — Full cycle: schedule → wait → execute → verify version bump**
 
-- [ ] **B1. Cancel the proposal scheduled in Part A.**
-  ```bash
-  stellar contract invoke --id $TESTNET_VAULT_CONTRACT_ID --source owner --network testnet -- cancel_upgrade --owner $OWNER_ADDRESS
-  ```
+- [ ] **C1.** Record `get_version()` = V.
+- [ ] **C2.** Install new WASM on testnet; capture hash.
+- [ ] **C3.** `schedule_upgrade` with that hash; note `effective_ledger`.
+- [ ] **C4.** Wait 17,280 ledgers (~24 h). Do not shorten the constant.
+- [ ] **C5.** `execute_upgrade` once `current_ledger >= effective_ledger`; `UpgradedEvent` emitted.
+- [ ] **C6.** `get_version()` returns V + 1.
+- [ ] **C7.** `get_pending_upgrade` returns `null` after execution.
+- [ ] **C8.** Storage survived: `get_total_assets()`, `get_total_shares()`, `get_owner()`, `get_agent()`, sample `get_shares(user)` match pre-upgrade values.
+- [ ] **C9.** Migration entrypoint run if shipped (current contract has none).
+- [ ] **C10.** Ledger numbers, WASM hashes, and TX hashes recorded in release ticket.
 
-  - _Expected Result:_ Success, and an `UpgradeCancelledEvent` (topic `upg_cncl`) carrying the cancelled hash.
-- [ ] **B2. Verify both storage keys are cleared:** `get_pending_upgrade` MUST return `null` (`PendingUpgradeHash` and `UpgradeTimelockExpiry` are both removed).
-- [ ] **B3. Verify cancel is idempotency-guarded:** call `cancel_upgrade` again.
-  - _Expected Result:_ MUST fail with `VaultError::NoTimelockPending` (Error Code `49`).
-- [ ] **B4. Verify `execute_upgrade` is also blocked after cancel.**
-  - _Expected Result:_ MUST fail with `VaultError::NoTimelockPending` (Error Code `49`).
-- [ ] **B5. Verify the escape hatch survives a pause:** schedule again, `pause()` the vault, then call `cancel_upgrade`.
-  - _Expected Result:_ `schedule_upgrade` and `execute_upgrade` are pause-gated and MUST fail with `VaultError::Paused` (Error Code `35`), but `cancel_upgrade` MUST succeed. Unpause afterwards.
+- [ ] **Full upgrade timelock drill completed on testnet.**
+  - **Signed off by:** _____________________________ Date: ___________
 
-**Part C — full cycle: schedule → wait out the timelock → execute → verify version bump**
+---
 
-- [ ] **C1. Record `get_version()`** before starting — call it `V`.
-- [ ] **C2. Install the new WASM on testnet** and capture its hash.
-  ```bash
-  stellar contract install --wasm target/wasm32-unknown-unknown/release/neurowealth_vault.wasm --source owner --network testnet
-  ```
+## 8. Third-Party Security Audit & Formal Sign-off
 
-  - A hash that is not installed on-chain will trap at `execute_upgrade` time, _after_ the 24-hour wait. Verify installation before scheduling.
-- [ ] **C3. Schedule the upgrade** with that hash and note `effective_ledger` from `get_pending_upgrade`.
-- [ ] **C4. Wait out the real timelock.** Testnet has no ledger fast-forward: the 17,280 ledgers take ≈ 24 hours of wall-clock time. **Do not** shorten `UPGRADE_TIMELOCK_LEDGERS` for this drill — the point is to confirm the mainnet constant. Poll `get_pending_upgrade` during the window and confirm the hash never changes.
-- [ ] **C5. Execute once the current ledger sequence `>= effective_ledger`.**
-  ```bash
-  stellar contract invoke --id $TESTNET_VAULT_CONTRACT_ID --source owner --network testnet -- execute_upgrade --owner $OWNER_ADDRESS
-  ```
+**CRITICAL — hard blocker.** No mainnet deployment without an independent
+professional audit.
 
-  - _Expected Result:_ Success, and an `UpgradedEvent` (topic `upgraded`) with `old_version` = `V` and `new_version` = `V + 1`.
-- [ ] **C6. Verify the version bump:** `get_version()` MUST return `V + 1`.
-- [ ] **C7. Verify the pending state was cleared by execution:** `get_pending_upgrade` MUST return `null`, and a fresh `schedule_upgrade` MUST be accepted (no leftover `TimelockAlreadyPending`).
-- [ ] **C8. Verify storage survived the upgrade:** re-check `get_total_assets()`, `get_total_shares()`, `get_owner()`, `get_agent()`, and a sample `get_shares(user)` against the values recorded before C5.
-- [ ] **C9. Run the release's migration entrypoint** if it ships one, then re-run the state checks in C8. The current contract has no `migrate()`; see [UPGRADE_MIGRATION.md](UPGRADE_MIGRATION.md) for the pattern a future release would follow.
-- [ ] **C10. Sign off:** record the drill's ledger numbers, WASM hashes, and transaction hashes in the release ticket.
+### 📝 Actionable Checklist
 
-> **Note:** operational runbooks for scheduling, monitoring, and executing a _production_ upgrade live in [UPGRADE_MIGRATION.md](UPGRADE_MIGRATION.md). This drill is the pre-mainnet verification that the timelock itself behaves correctly. The agent-rotation timelock (Issue #317) follows the same shape — see the _Agent Update Timelock_ section of [ARCHITECTURE.md](../ARCHITECTURE.md).
+- [ ] **Pre-audit scans completed:**
+  - `cargo test` passes with 100% success across all comprehensive tests.
+  - `cargo clippy --all-targets --all-features -- -D warnings` passes.
+  - `cargo deny check` passes with no unresolved advisories.
+  - **Signed off by:** _____________________________ Date: ___________
+- [ ] **Third-party professional audit engaged:**
+  - Auditing firm: _____________________________
+  - Audit report URL: _____________________________
+  - All High and Critical findings resolved.
+  - All Medium findings resolved or formally accepted with documented rationale.
+  - **Signed off by:** _____________________________ Date: ___________
+- [ ] **Audit findings verified in codebase:**
+  - Critical fixes (e.g. `withdraw_all()` balance protection,
+    `update_total_assets` balance checks) confirmed compile-ready and active.
+  - **Signed off by:** _____________________________ Date: ___________
+- [ ] **Final sign-off obtained from:**
+  - Lead developer: _____________________________ Date: ___________
+  - Security auditor: _____________________________ Date: ___________
+  - Product lead: _____________________________ Date: ___________
 
 ---
 
 ## 9. Harvest Cooldown & Circuit-Breaker Configuration
 
-The `harvest()` entry-point reuses the same `MinRebalanceInterval` / `LastRebalanceLedger`
-cooldown mechanism as `rebalance()`. An incorrectly set cooldown can either allow runaway
-harvesting (too low) or lock the AI agent out of yield compounding (too high). The
-circuit-breaker (`MaxConsecutiveFailures`) automatically suspends the agent when the configured
-threshold of consecutive protocol failures is reached, preventing a stuck external pool from
-draining gas indefinitely.
-
 ### 🔍 Security Context
 
-- **Harvest cooldown** — `harvest()` checks `LastRebalanceLedger` before executing. If the
-  elapsed ledgers since the last rebalance or harvest is below `MinRebalanceInterval`, the call
-  panics with `VaultError::RebalanceCooldownActive` (Error Code `43`). A zero interval disables
-  the guard entirely.
-- **Circuit-breaker** — after `MaxConsecutiveFailures` successive protocol errors the agent is
-  suspended. The default (`DEFAULT_MAX_CONSECUTIVE_FAILURES`) is applied when the vault was
-  initialized before the circuit-breaker feature shipped. Setting the threshold to `0` disables
-  the breaker (not recommended in production).
+- **Harvest cooldown** — `harvest()` checks `LastRebalanceLedger`. If
+  fewer ledgers have elapsed than `MinRebalanceInterval`, the call reverts
+  with `VaultError::RebalanceCooldownActive` (code 43). A zero interval
+  disables the guard.
+- **Circuit-breaker** — after `MaxConsecutiveFailures` successive protocol
+  errors the agent is suspended. Setting threshold to `0` disables the
+  breaker (not recommended in production).
 
 ### 📝 Actionable Checklist
 
-- [ ] **Choose a harvest cooldown interval.** A typical starting point is 720 ledgers (≈ 1 hour).
-      Set it with:
+- [ ] **Set harvest cooldown** (recommended: 720 ledgers ≈ 1 hour):
+
   ```bash
   stellar contract invoke \
     --id $VAULT_CONTRACT_ID \
@@ -456,17 +540,21 @@ draining gas indefinitely.
     set_rebalance_cooldown \
     --interval 720
   ```
-- [ ] **Verify the cooldown is stored correctly:**
+
+  - Chosen cooldown: _____________________________ ledgers
+  - **Signed off by:** _____________________________ Date: ___________
+- [ ] **Verify cooldown is stored correctly:**
   ```bash
-  stellar contract invoke --id $VAULT_CONTRACT_ID --network mainnet -- get_rebalance_cooldown
-  # Expected: 720 (or whatever value you configured)
+  stellar contract invoke --id $VAULT_CONTRACT_ID \
+    --network mainnet --send=no -- get_rebalance_cooldown
+  # Expected: 720 (or your configured value)
   ```
-- [ ] **Verify `harvest()` respects the cooldown.** Immediately after a harvest, attempt a second
-      call from the agent key.
-  - _Expected Result:_ MUST fail with `VaultError::RebalanceCooldownActive` (Error Code `43`).
-- [ ] **Choose a circuit-breaker threshold.** A value of `3`–`5` is recommended; this trips
-      automatic suspension after that many consecutive protocol failures without blocking normal
-      operations during transient outages.
+  - **Signed off by:** _____________________________ Date: ___________
+- [ ] **Verify `harvest()` respects the cooldown:** Immediately after a
+  harvest, second call must fail with `VaultError::RebalanceCooldownActive` (code 43).
+  - **Signed off by:** _____________________________ Date: ___________
+- [ ] **Set circuit-breaker threshold** (recommended: 3–5):
+
   ```bash
   stellar contract invoke \
     --id $VAULT_CONTRACT_ID \
@@ -476,40 +564,108 @@ draining gas indefinitely.
     set_max_consecutive_failures \
     --threshold 5
   ```
-- [ ] **Verify the circuit-breaker threshold:**
-  ```bash
-  stellar contract invoke --id $VAULT_CONTRACT_ID --network mainnet -- get_max_consecutive_failures
-  # Expected: 5
-  ```
-- [ ] **Confirm the circuit-breaker trips correctly on testnet.** Simulate consecutive harvest
-      failures (e.g., by draining the Blend pool mock) and confirm that after `threshold` failures the
-      agent is suspended and subsequent calls revert.
 
-> **Automated check** — add `EXPECTED_REBALANCE_COOLDOWN` and `EXPECTED_MAX_CONSECUTIVE_FAILURES`
-> to the `verify-deployment.sh` invocation to assert both values in one step:
->
-> ```bash
-> VAULT_CONTRACT_ID=C... NETWORK=mainnet \
->   OWNER_ADDRESS=G... AGENT_ADDRESS=G... AGENT_SECRET_KEY=S... \
->   USDC_TOKEN_ADDRESS=G... \
->   EXPECTED_REBALANCE_COOLDOWN=720 \
->   EXPECTED_MAX_CONSECUTIVE_FAILURES=5 \
->   ./scripts/verify-deployment.sh
-> ```
+  - Chosen threshold: _____________________________
+  - **Signed off by:** _____________________________ Date: ___________
+- [ ] **Verify circuit-breaker on testnet:** Simulate consecutive harvest
+  failures; confirm agent suspension after `threshold` failures.
+  - **Signed off by:** _____________________________ Date: ___________
 
 ---
 
-## 8. Third-Party Security Audit & Formal Sign-off
+## 10. Secret Scanning & Secrets Hygiene
 
-No smart contract should be deployed on-chain without an independent security audit and formal sign-off.
+**CRITICAL — hard blocker.** No secrets committed to the repository.
+See [`docs/SECRETS_HYGIENE.md`](SECRETS_HYGIENE.md) for the full policy,
+pre-commit hook setup, and CI enforcement details.
 
 ### 📝 Actionable Checklist
 
-- [ ] **Run Pre-Audit Scans & Tests:** Confirm all unit tests pass locally:
-  - Run `cargo test` and verify 100% success rate on comprehensive tests.
-- [ ] **Complete Third-Party Professional Audit:**
-  - Secure a professional smart contract auditing firm (e.g., CertiK, Zellic, OpenZeppelin, Halborn).
-  - Resolve and fix any identified vulnerabilities (High, Medium, Low, Informational).
-  - Receive final audit sign-off documentation.
-- [ ] **Verify Findings In Codebase:** Verify that critical fixes (such as `withdraw_all()` balance protection, and `update_total_assets` balance checks) are compile-ready and active.
-- [ ] **Final Sign-Off:** Gather signatures from the lead developers, security auditors, and product leads before deploying the finalized bytecode.
+- [ ] **Full-history secret scan completed** using `gitleaks` or `truffleHog`:
+  ```bash
+  gitleaks detect --source . --report-path gitleaks-report.json
+  # Zero secrets detected in report
+  ```
+  - Scan tool: _____________________________
+  - Scan report location: _____________________________
+  - Zero secrets found in history: ✓
+  - **Signed off by:** _____________________________ Date: ___________
+- [ ] **Pre-commit hook installed** to prevent future secret commits:
+  ```bash
+  # See docs/SECRETS_HYGIENE.md for installation instructions
+  pre-commit install
+  ```
+  - **Signed off by:** _____________________________ Date: ___________
+- [ ] **CI secret-scanning workflow verified** to run on every push and PR.
+  - CI workflow name / URL: _____________________________
+  - **Signed off by:** _____________________________ Date: ___________
+- [ ] **All `.env*` files** verified to be in `.gitignore` and absent from
+  the repository history.
+  - **Signed off by:** _____________________________ Date: ___________
+- [ ] **Rotation plan confirmed:** Any secrets accidentally committed in the
+  past have been rotated and the old values invalidated.
+  - **Signed off by:** _____________________________ Date: ___________
+
+---
+
+## 11. Emergency Contact List & On-Call Roster
+
+**CRITICAL — hard blocker.** The team must be reachable 24/7 during and
+after mainnet launch. Response times must be defined and tested.
+
+### 📝 Actionable Checklist
+
+- [ ] **Emergency contact list compiled** and accessible to all keyholders
+  (not just in this document — also in the team's incident-response channel).
+
+  | Role | Name | Contact (encrypted/secure) | Response time target |
+  |---|---|---|---|
+  | Lead developer / on-call | _____ | _____ | 15 min (business hours), 30 min (off-hours) |
+  | Security lead | _____ | _____ | 30 min |
+  | Product lead | _____ | _____ | 1 hour |
+  | Owner keyholder #1 | _____ | _____ | 15 min |
+  | Owner keyholder #2 | _____ | _____ | 30 min |
+  | Owner keyholder #3 (backup) | _____ | _____ | 1 hour |
+
+  - **Signed off by:** _____________________________ Date: ___________
+- [ ] **On-call rotation schedule established** covering 24/7 for at least
+  the first 30 days post-mainnet.
+  - Schedule URL / document: _____________________________
+  - **Signed off by:** _____________________________ Date: ___________
+- [ ] **Incident communication channel set up** (e.g. Signal group, dedicated
+  Slack channel with all keyholders added).
+  - Channel name: _____________________________
+  - **Signed off by:** _____________________________ Date: ___________
+- [ ] **Escalation path documented:** Who is paged first, when to escalate,
+  and who has authority to declare a major incident and initiate pause.
+  - **Signed off by:** _____________________________ Date: ___________
+- [ ] **Contact list tested:** Each person on the list has confirmed receipt
+  of a test page within their stated response time.
+  - **Signed off by:** _____________________________ Date: ___________
+
+---
+
+## Final Pre-Launch Gate
+
+All items in this checklist must be signed off before any mainnet deployment
+command is run. Retain a copy of the signed checklist in the release ticket.
+
+| Section | Completed | Signed off by | Date |
+|---|---|---|---|
+| 1. Key management (separate owner & agent keys) | ☐ | | |
+| 2. Initialization parameters & deployment | ☐ | | |
+| 3. Administrative caps (TVL ≤ 50,000 USDC initial) | ☐ | | |
+| 4. Blend pool address verified | ☐ | | |
+| 5. DEX pool address verified | ☐ | | |
+| 6. Pause drill on testnet + game-day RTO drill | ☐ | | |
+| 7. Upgrade timelock drill on testnet + multisig plan | ☐ | | |
+| 8. Third-party security audit signed off | ☐ | | |
+| 9. Harvest cooldown & circuit-breaker configured | ☐ | | |
+| 10. Secret scanning completed (zero findings) | ☐ | | |
+| 11. Emergency contact list & on-call roster confirmed | ☐ | | |
+
+**Deployment approved by:**
+
+- _____________________________ (Lead developer) — Date: ___________
+- _____________________________ (Security auditor) — Date: ___________
+- _____________________________ (Product lead) — Date: ___________
