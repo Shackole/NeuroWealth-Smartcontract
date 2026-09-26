@@ -12,6 +12,7 @@ mod test_balance_shares_invariant;
 mod test_blend_devnet;
 mod test_blend_integration;
 mod test_budget;
+mod test_cap_edge_cases;
 mod test_checked_arithmetic;
 mod test_circuit_breaker;
 // Pre-existing compile failures (stale APIs / missing traits); not harvest coverage.
