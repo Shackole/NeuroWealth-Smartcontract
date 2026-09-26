@@ -78,7 +78,7 @@ export const StrategyBadge: React.FC<StrategyBadgeProps> = ({ strategy, apy, onS
             <button
               key={st}
               onClick={() => onSelectStrategy && onSelectStrategy(st)}
-              className={`text-xs px-2.5 py-1 rounded-md border transition-all ${
+              className={`text-xs px-2.5 py-1 min-h-[44px] flex items-center rounded-md border transition-all ${
                 strategy === st
                   ? 'bg-slate-800 text-white border-slate-600 font-medium'
                   : 'bg-slate-900/50 text-slate-400 border-slate-800 hover:text-white'

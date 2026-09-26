@@ -24,7 +24,7 @@ export const PortfolioChart: React.FC<PortfolioChartProps> = ({ data }) => {
           <h3 className="text-lg font-bold text-white tracking-tight">Portfolio Growth & Yield</h3>
           <p className="text-xs text-slate-400">Autonomous Soroban vault growth over time</p>
         </div>
-        <div className="flex items-center gap-4 text-xs">
+        <div className="flex items-center gap-4 text-xs hidden sm:flex">
           <div className="flex items-center gap-1.5">
             <span className="h-2.5 w-2.5 rounded-full bg-emerald-500" />
             <span className="text-slate-300">Portfolio Value (USDC)</span>
@@ -36,9 +36,9 @@ export const PortfolioChart: React.FC<PortfolioChartProps> = ({ data }) => {
         </div>
       </div>
 
-      <div className="h-72 w-full">
+      <div className="h-48 sm:h-64 md:h-72 w-full">
         <ResponsiveContainer width="100%" height="100%">
-          <AreaChart data={data} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+          <AreaChart data={data} margin={{ top: 10, right: 4, left: -28, bottom: 0 }}>
             <defs>
               <linearGradient id="colorValue" x1="0" y1="0" x2="0" y2="1">
                 <stop offset="5%" stopColor="#10b981" stopOpacity={0.4} />
@@ -50,8 +50,8 @@ export const PortfolioChart: React.FC<PortfolioChartProps> = ({ data }) => {
               </linearGradient>
             </defs>
             <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
-            <XAxis dataKey="date" stroke="#64748b" fontSize={12} tickLine={false} />
-            <YAxis stroke="#64748b" fontSize={12} tickLine={false} domain={['auto', 'auto']} />
+            <XAxis dataKey="date" stroke="#64748b" fontSize={11} tickLine={false} />
+            <YAxis stroke="#64748b" fontSize={11} tickLine={false} domain={['auto', 'auto']} width={48} />
             <Tooltip
               contentStyle={{
                 backgroundColor: '#0f172a',

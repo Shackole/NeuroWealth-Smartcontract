@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useMemo } from 'react';
-import { ArrowDownLeft, ArrowUpRight, RefreshCw, ExternalLink, Download, Filter, ChevronDown } from 'lucide-react';
+import { ArrowDownLeft, ArrowUpRight, RefreshCw, ExternalLink, Download, Filter } from 'lucide-react';
 import { TransactionRecord } from '@/lib/database';
 
 interface TransactionHistoryProps {
@@ -81,6 +81,28 @@ function exportToCSV(transactions: TransactionRecord[]): void {
   link.click();
 }
 
+function TxTypeIcon({ type }: { type: string }) {
+  if (type === 'deposit') {
+    return (
+      <span className="p-1.5 rounded-lg bg-emerald-500/10 text-emerald-400">
+        <ArrowDownLeft size={14} />
+      </span>
+    );
+  }
+  if (type === 'withdrawal') {
+    return (
+      <span className="p-1.5 rounded-lg bg-indigo-500/10 text-indigo-400">
+        <ArrowUpRight size={14} />
+      </span>
+    );
+  }
+  return (
+    <span className="p-1.5 rounded-lg bg-amber-500/10 text-amber-400">
+      <RefreshCw size={14} />
+    </span>
+  );
+}
+
 export const TransactionHistory: React.FC<TransactionHistoryProps> = ({ transactions }) => {
   const [typeFilter, setTypeFilter] = useState<FilterType>('all');
   const [sortField, setSortField] = useState<SortField>('timestamp');
@@ -105,7 +127,7 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({ transact
   }
 
   return (
-    <div className="glass-panel rounded-2xl p-6">
+    <div className="glass-panel rounded-2xl p-4 sm:p-6">
       <div className="flex items-center justify-between mb-4">
         <div>
           <h3 className="text-lg font-bold text-white tracking-tight">Transaction History</h3>
@@ -113,20 +135,21 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({ transact
         </div>
         <button
           onClick={() => exportToCSV(transactions)}
-          className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 rounded-lg transition-colors"
+          className="flex items-center gap-2 px-3 py-1.5 min-h-[44px] text-xs font-medium text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 rounded-lg transition-colors"
         >
           <Download size={14} />
-          Export CSV
+          <span className="hidden sm:inline">Export CSV</span>
         </button>
       </div>
 
-      <div className="flex flex-wrap items-center gap-3 mb-4 p-3 bg-slate-800/30 rounded-xl">
+      {/* Filter controls — stack on mobile */}
+      <div className="flex flex-wrap items-center gap-2 sm:gap-3 mb-4 p-3 bg-slate-800/30 rounded-xl">
         <div className="flex items-center gap-2">
-          <Filter size={14} className="text-slate-400" />
+          <Filter size={14} className="text-slate-400 flex-shrink-0" />
           <select
             value={typeFilter}
             onChange={(e) => setTypeFilter(e.target.value as FilterType)}
-            className="bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-xs text-slate-200 focus:outline-none focus:border-emerald-500"
+            className="bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-xs text-slate-200 focus:outline-none focus:border-emerald-500 min-h-[36px]"
           >
             <option value="all">All Types</option>
             <option value="deposit">Deposits</option>
@@ -144,7 +167,7 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({ transact
               setSortField(field as SortField);
               setSortDirection(dir as SortDirection);
             }}
-            className="bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-xs text-slate-200 focus:outline-none focus:border-emerald-500"
+            className="bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-xs text-slate-200 focus:outline-none focus:border-emerald-500 min-h-[36px]"
           >
             <option value="timestamp-desc">Newest First</option>
             <option value="timestamp-asc">Oldest First</option>
@@ -153,12 +176,12 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({ transact
           </select>
         </div>
 
-        <div className="ml-auto flex items-center gap-2">
+        <div className="flex items-center gap-2 ml-auto">
           <span className="text-xs text-slate-400">Earnings:</span>
           <select
             value={earningsPeriod}
             onChange={(e) => setEarningsPeriod(e.target.value as EarningsPeriod)}
-            className="bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-xs text-slate-200 focus:outline-none focus:border-emerald-500"
+            className="bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-xs text-slate-200 focus:outline-none focus:border-emerald-500 min-h-[36px]"
           >
             <option value="daily">24h</option>
             <option value="weekly">7d</option>
@@ -172,7 +195,8 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({ transact
         </div>
       </div>
 
-      <div className="overflow-x-auto">
+      {/* Desktop table — hidden on mobile */}
+      <div className="hidden sm:block overflow-x-auto">
         <table className="w-full text-left border-collapse text-sm">
           <thead>
             <tr className="border-b border-slate-800 text-xs font-semibold text-slate-400 uppercase tracking-wider">
@@ -188,36 +212,22 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({ transact
               <tr key={tx.id} className="hover:bg-slate-900/40 transition-colors">
                 <td className="py-3 px-4">
                   <div className="flex items-center gap-2">
-                    {tx.type === 'deposit' && (
-                      <span className="p-1.5 rounded-lg bg-emerald-500/10 text-emerald-400">
-                        <ArrowDownLeft size={14} />
-                      </span>
-                    )}
-                    {tx.type === 'withdrawal' && (
-                      <span className="p-1.5 rounded-lg bg-indigo-500/10 text-indigo-400">
-                        <ArrowUpRight size={14} />
-                      </span>
-                    )}
-                    {tx.type === 'rebalance' && (
-                      <span className="p-1.5 rounded-lg bg-amber-500/10 text-amber-400">
-                        <RefreshCw size={14} />
-                      </span>
-                    )}
+                    <TxTypeIcon type={tx.type} />
                     <span className="capitalize font-sans font-medium text-slate-200">{tx.type}</span>
                   </div>
                 </td>
                 <td className="py-3 px-4 font-semibold text-white">
                   {tx.amount.toLocaleString()} USDC
                 </td>
-                <td className="py-3 px-4 text-slate-400">
+                <td className="py-3 px-4 text-slate-400 max-w-[160px]">
                   <a
                     href={`https://stellar.expert/explorer/testnet/tx/${tx.txHash}`}
                     target="_blank"
                     rel="noreferrer"
                     className="flex items-center gap-1 hover:text-emerald-400 transition-colors"
                   >
-                    <span>{tx.txHash}</span>
-                    <ExternalLink size={12} />
+                    <span className="truncate">{tx.txHash}</span>
+                    <ExternalLink size={12} className="flex-shrink-0" />
                   </a>
                 </td>
                 <td className="py-3 px-4 text-slate-400">{tx.timestamp}</td>
@@ -230,6 +240,45 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({ transact
             ))}
           </tbody>
         </table>
+      </div>
+
+      {/* Mobile card layout — visible only on mobile */}
+      <div className="sm:hidden space-y-3">
+        {filteredTransactions.map((tx) => (
+          <div key={tx.id} className="bg-slate-900/60 rounded-xl p-4 border border-slate-800/80">
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <TxTypeIcon type={tx.type} />
+                <span className="capitalize font-medium text-slate-200 text-sm">{tx.type}</span>
+              </div>
+              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                {tx.status}
+              </span>
+            </div>
+            <div className="space-y-2 text-xs">
+              <div className="flex justify-between">
+                <span className="text-slate-400">Amount</span>
+                <span className="font-semibold text-white font-mono">{tx.amount.toLocaleString()} USDC</span>
+              </div>
+              <div className="flex justify-between items-center gap-2">
+                <span className="text-slate-400 flex-shrink-0">Tx Hash</span>
+                <a
+                  href={`https://stellar.expert/explorer/testnet/tx/${tx.txHash}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex items-center gap-1 text-emerald-400 hover:text-emerald-300 font-mono min-w-0"
+                >
+                  <span className="truncate max-w-[140px]">{tx.txHash}</span>
+                  <ExternalLink size={11} className="flex-shrink-0" />
+                </a>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">Date</span>
+                <span className="text-slate-300">{tx.timestamp}</span>
+              </div>
+            </div>
+          </div>
+        ))}
       </div>
 
       {filteredTransactions.length === 0 && (
