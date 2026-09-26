@@ -82,8 +82,8 @@ mod test_performance_fee;
 // (`crate::tests::` paths that can never resolve: lib.rs mounts this file as
 // `comprehensive_tests`), missing aux modules (`../insurance.rs`),
 // ANSI-escape-corrupted attributes, and rejected API references
-// (`BatchDepositItem`, `BelowMinimumWithdrawal`). Not harvested for coverage.
-// mod test_batch_deposit;
+// (`BelowMinimumWithdrawal`). Not harvested for coverage.
+mod test_batch_deposit;
 // mod test_insurance_fund;
 // mod test_min_withdraw;
 // mod test_min_withdrawal;
