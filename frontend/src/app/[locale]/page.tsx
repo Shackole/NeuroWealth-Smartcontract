@@ -5,7 +5,7 @@ import { Header } from '@/components/Header';
 import { BalanceCard } from '@/components/BalanceCard';
 import { EarningsCard } from '@/components/EarningsCard';
 import { StrategyBadge } from '@/components/StrategyBadge';
-import { PortfolioChart } from '@/components/PortfolioChart';
+import { LazyPortfolioChart } from '@/components/LazyPortfolioChart';
 import { TransactionHistory } from '@/components/TransactionHistory';
 import { ActionModal } from '@/components/ActionModal';
 import { MessageSquare, Bot, ArrowRight, ShieldCheck, Zap, Layers } from 'lucide-react';
@@ -130,7 +130,7 @@ export default function DashboardPage() {
 
           {/* Portfolio Chart Section */}
           <section id="strategies">
-            <PortfolioChart data={chartData.length > 0 ? chartData : [
+            <LazyPortfolioChart data={chartData.length > 0 ? chartData : [
               { date: 'Jul 21', value: 1000, yield: 0 },
               { date: 'Jul 24', value: 1200, yield: 15 },
               { date: 'Jul 28', value: 1450, yield: 45 }
