@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NeuroWealth - WhatsApp UI Mockup</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+      background: #111b21;
+      color: #e9edef;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 32px 16px;
+      gap: 48px;
+    }
+    h1 { font-size: 1.5rem; color: #00a884; margin-bottom: 8px; }
+    h2 {
+      font-size: 0.85rem;
+      color: #8696a0;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 16px;
+      text-align: center;
+    }
+    .phone {
+      width: 360px;
+      border-radius: 24px;
+      overflow: hidden;
+      border: 2px solid #2a3942;
+      box-shadow: 0 24px 64px rgba(0,0,0,0.6);
+      background: #0b141a;
+    }
+    .phone-header {
+      background: #202c33;
+      padding: 12px 16px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .avatar {
+      width: 40px; height: 40px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, #00a884, #025c4c);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 1.2rem; flex-shrink: 0;
+    }
+    .contact-info { flex: 1; }
+    .contact-name { font-size: 0.95rem; font-weight: 600; color: #e9edef; }
+    .contact-status { font-size: 0.75rem; color: #8696a0; }
+    .chat-bg {
+      background: #0b141a;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      min-height: 400px;
+    }
+    .date-divider { text-align: center; margin: 8px 0; }
+    .date-divider span {
+      background: #182229;
+      color: #8696a0;
+      font-size: 0.7rem;
+      padding: 4px 10px;
+      border-radius: 8px;
+    }
+    .msg {
+      display: flex;
+      flex-direction: column;
+      max-width: 78%;
+      margin-bottom: 2px;
+    }
+    .msg.user { align-self: flex-end; align-items: flex-end; }
+    .msg.bot  { align-self: flex-start; align-items: flex-start; }
+    .bubble {
+      padding: 8px 12px;
+      border-radius: 8px;
+      font-size: 0.875rem;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .msg.user .bubble {
+      background: #005c4b;
+      color: #e9edef;
+      border-bottom-right-radius: 2px;
+    }
+    .msg.bot .bubble {
+      background: #202c33;
+      color: #e9edef;
+      border-bottom-left-radius: 2px;
+    }
+    .meta {
+      font-size: 0.65rem;
+      color: #8696a0;
+      margin-top: 2px;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .ticks { color: #53bdeb; }
+  </style>
+</head>
+<body>
+
+  <div style="text-align:center">
+    <h1>&#x1F9E0; NeuroWealth WhatsApp UI</h1>
+    <p style="color:#8696a0;font-size:0.85rem">Reference mockup &mdash; all conversation flows</p>
+  </div>
+
+  <!-- FLOW 1: ONBOARDING -->
+  <div style="width:100%;max-width:400px">
+    <h2>Flow 1 &mdash; Onboarding</h2>
+    <div class="phone">
+      <div class="phone-header">
+        <div class="avatar">&#x1F9E0;</div>
+        <div class="contact-info">
+          <div class="contact-name">NeuroWealth AI</div>
+          <div class="contact-status">online</div>
+        </div>
+      </div>
+      <div class="chat-bg">
+        <div class="date-divider"><span>Today</span></div>
+        <div class="msg user">
+          <div class="bubble">hi</div>
+          <div class="meta">16:04 <span class="ticks">&#10003;&#10003;</span></div>
+        </div>
+        <div class="msg bot">
+          <div class="bubble">&#x1F44B; Welcome to *NeuroWealth*!&#10;&#10;I&#39;m your autonomous AI yield agent on Stellar. I can help you:&#10;&#10;&#x1F4B0; Deposit USDC&#10;&#x1F4CA; Check your balance&#10;&#x2B06;&#xFE0F; Withdraw anytime&#10;&#10;To get started, please share your phone number for verification.</div>
+          <div class="meta">16:04</div>
+        </div>
+        <div class="msg user">
+          <div class="bubble">+1 555 012 3456</div>
+          <div class="meta">16:05 <span class="ticks">&#10003;&#10003;</span></div>
+        </div>
+        <div class="msg bot">
+          <div class="bubble">&#x1F510; Your OTP is: *847 291*&#10;&#10;This expires in 5 minutes. Reply with the code to verify.</div>
+          <div class="meta">16:05</div>
+        </div>
+        <div class="msg user">
+          <div class="bubble">847291</div>
+          <div class="meta">16:05 <span class="ticks">&#10003;&#10003;</span></div>
+        </div>
+        <div class="msg bot">
+          <div class="bubble">&#x2705; Verified! Your NeuroWealth wallet is ready.&#10;&#10;Wallet: *GDRX...F4Q2*&#10;&#10;Send *help* anytime to see what I can do.</div>
+          <div class="meta">16:05</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- FLOW 2: DEPOSIT -->
+  <div style="width:100%;max-width:400px">
+    <h2>Flow 2 &mdash; Deposit</h2>
+    <div class="phone">
+      <div class="phone-header">
+        <div class="avatar">&#x1F9E0;</div>
+        <div class="contact-info">
+          <div class="contact-name">NeuroWealth AI</div>
+          <div class="contact-status">online</div>
+        </div>
+      </div>
+      <div class="chat-bg">
+        <div class="date-divider"><span>Today</span></div>
+        <div class="msg user">
+          <div class="bubble">deposit 100 USDC</div>
+          <div class="meta">16:10 <span class="ticks">&#10003;&#10003;</span></div>
+        </div>
+        <div class="msg bot">
+          <div class="bubble">Got it! Depositing *100 USDC* into your Balanced strategy.&#10;&#10;This should take about 5 seconds on Stellar... &#x23F3;</div>
+          <div class="meta">16:10</div>
+        </div>
+        <div class="msg bot">
+          <div class="bubble">&#x2705; *Deposit confirmed!*&#10;&#10;&#x1F4B0; Amount: 100.00 USDC&#10;&#x1F4C8; Strategy: Balanced&#10;&#x1F517; Tx: 0xabc...123&#10;&#10;You&#39;re now earning ~8.4% APY. I&#39;ll optimise automatically. &#x1F916;</div>
+          <div class="meta">16:10</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- FLOW 3: BALANCE CHECK -->
+  <div style="width:100%;max-width:400px">
+    <h2>Flow 3 &mdash; Balance Check</h2>
+    <div class="phone">
+      <div class="phone-header">
+        <div class="avatar">&#x1F9E0;</div>
+        <div class="contact-info">
+          <div class="contact-name">NeuroWealth AI</div>
+          <div class="contact-status">online</div>
+        </div>
+      </div>
+      <div class="chat-bg">
+        <div class="date-divider"><span>Today</span></div>
+        <div class="msg user">
+          <div class="bubble">what&#39;s my balance?</div>
+          <div class="meta">16:22 <span class="ticks">&#10003;&#10003;</span></div>
+        </div>
+        <div class="msg bot">
+          <div class="bubble">&#x1F4B0; *Your NeuroWealth Portfolio*&#10;&#x2501;&#x2501;&#x2501;&#x2501;&#x2501;&#x2501;&#x2501;&#x2501;&#x2501;&#x2501;&#10;Balance: *100.23 USDC*&#10;Earnings today: *+$0.23*&#10;Current APY: *8.4%*&#10;Strategy: *Balanced*&#10;&#x2501;&#x2501;&#x2501;&#x2501;&#x2501;&#x2501;&#x2501;&#x2501;&#x2501;&#x2501;&#10;_Updated just now_</div>
+          <div class="meta">16:22</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- FLOW 4: WITHDRAWAL -->
+  <div style="width:100%;max-width:400px">
+    <h2>Flow 4 &mdash; Withdrawal</h2>
+    <div class="phone">
+      <div class="phone-header">
+        <div class="avatar">&#x1F9E0;</div>
+        <div class="contact-info">
+          <div class="contact-name">NeuroWealth AI</div>
+          <div class="contact-status">online</div>
+        </div>
+      </div>
+      <div class="chat-bg">
+        <div class="date-divider"><span>Today</span></div>
+        <div class="msg user">
+          <div class="bubble">withdraw everything</div>
+          <div class="meta">17:01 <span class="ticks">&#10003;&#10003;</span></div>
+        </div>
+        <div class="msg bot">
+          <div class="bubble">Withdrawing *100.23 USDC*...&#10;&#10;&#x23F3; Pulling funds from Blend protocol...</div>
+          <div class="meta">17:01</div>
+        </div>
+        <div class="msg bot">
+          <div class="bubble">&#x2705; *Withdrawal complete!*&#10;&#10;&#x1F4B8; Sent: 100.23 USDC&#10;&#x1F517; Tx: 0xdef...456&#10;&#x26A1; Arrived in 4 seconds.&#10;&#10;Funds are in your wallet. Come back anytime! &#x1F44B;</div>
+          <div class="meta">17:01</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- FLOW 5: ERROR STATES -->
+  <div style="width:100%;max-width:400px">
+    <h2>Flow 5 &mdash; Error States</h2>
+    <div class="phone">
+      <div class="phone-header">
+        <div class="avatar">&#x1F9E0;</div>
+        <div class="contact-info">
+          <div class="contact-name">NeuroWealth AI</div>
+          <div class="contact-status">online</div>
+        </div>
+      </div>
+      <div class="chat-bg">
+        <div class="date-divider"><span>Today</span></div>
+        <div class="msg user">
+          <div class="bubble">withdraw 500 USDC</div>
+          <div class="meta">14:30 <span class="ticks">&#10003;&#10003;</span></div>
+        </div>
+        <div class="msg bot">
+          <div class="bubble">&#x26A0;&#xFE0F; *Insufficient balance*&#10;&#10;You requested 500.00 USDC but your balance is only *23.81 USDC*.&#10;&#10;Try: _withdraw 23 USDC_ or _withdraw everything_</div>
+          <div class="meta">14:30</div>
+        </div>
+        <div class="msg user">
+          <div class="bubble">deposit 50 USDC</div>
+          <div class="meta">14:35 <span class="ticks">&#10003;&#10003;</span></div>
+        </div>
+        <div class="msg bot">
+          <div class="bubble">&#x1F534; *Vault is paused*&#10;&#10;Deposits are temporarily suspended for a security review. Withdrawals are still available.&#10;&#10;_We&#39;ll notify you when the vault resumes. Your funds are safe._</div>
+          <div class="meta">14:35</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</body>
+</html>
