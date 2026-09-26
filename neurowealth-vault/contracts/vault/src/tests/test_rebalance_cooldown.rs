@@ -635,3 +635,156 @@ fn test_rebalance_allowed_after_unpause_and_cooldown_elapsed() {
     client.rebalance(&symbol_short!("none"), &0_i128, &0_i128);
     assert!(client.get_last_rebalance_ledger() >= last + interval);
 }
+
+// ============================================================================
+// Issue #93 — Acceptance criteria: explicit ledger-sequence cooldown tests
+// ============================================================================
+
+/// AC-1: Rebalance at ledger 100, then attempt at ledger 101 → CooldownNotElapsed (#43).
+/// Cooldown is set to 50 so ledger 101 is still well inside the window.
+#[test]
+#[should_panic(expected = "Error(Contract, #43)")]
+fn test_rebalance_ledger_100_then_101_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (contract_id, _agent, _owner) = setup_vault(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+
+    // Set ledger to 100 and configure a 50-ledger cooldown.
+    env.ledger().with_mut(|li| {
+        li.sequence_number = 100;
+    });
+    client.set_rebalance_cooldown(&50_u32);
+
+    // First rebalance at ledger 100 succeeds.
+    client.rebalance(&symbol_short!("none"), &0_i128, &0_i128);
+    assert_eq!(client.get_last_rebalance_ledger(), 100);
+
+    // Advance to ledger 101 — still inside the 50-ledger cooldown window.
+    env.ledger().with_mut(|li| {
+        li.sequence_number = 101;
+    });
+
+    // Must panic with CooldownNotElapsed (#43).
+    client.rebalance(&symbol_short!("none"), &0_i128, &0_i128);
+}
+
+/// AC-2: Rebalance at ledger 100, advance to ledger 100 + cooldown → succeeds.
+#[test]
+fn test_rebalance_ledger_100_advance_to_boundary_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (contract_id, _agent, _owner) = setup_vault(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+
+    let cooldown = 50_u32;
+
+    // Set ledger to 100.
+    env.ledger().with_mut(|li| {
+        li.sequence_number = 100;
+    });
+    client.set_rebalance_cooldown(&cooldown);
+
+    // First rebalance at ledger 100.
+    client.rebalance(&symbol_short!("none"), &0_i128, &0_i128);
+    assert_eq!(client.get_last_rebalance_ledger(), 100);
+
+    // Advance to exactly ledger 100 + cooldown = 150.
+    env.ledger().with_mut(|li| {
+        li.sequence_number = 100 + cooldown;
+    });
+
+    // Second rebalance at the boundary must succeed.
+    client.rebalance(&symbol_short!("none"), &0_i128, &0_i128);
+    assert_eq!(client.get_last_rebalance_ledger(), 100 + cooldown);
+}
+
+/// AC-3: set_rebalance_cooldown(0) disables cooldown — consecutive rebalances allowed.
+#[test]
+fn test_cooldown_zero_allows_consecutive_rebalances() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (contract_id, _agent, _owner) = setup_vault(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+
+    // Explicitly disable cooldown.
+    client.set_rebalance_cooldown(&0_u32);
+    assert_eq!(client.get_rebalance_cooldown(), 0);
+
+    // Three consecutive rebalances in the same ledger — all must succeed.
+    client.rebalance(&symbol_short!("none"), &0_i128, &0_i128);
+    client.rebalance(&symbol_short!("none"), &0_i128, &0_i128);
+    client.rebalance(&symbol_short!("none"), &0_i128, &0_i128);
+}
+
+/// AC-4: get_last_rebalance_ledger returns 0 before the first rebalance call.
+#[test]
+fn test_get_last_rebalance_ledger_zero_before_first_rebalance() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (contract_id, _agent, _owner) = setup_vault(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+
+    assert_eq!(
+        client.get_last_rebalance_ledger(),
+        0,
+        "LastRebalanceLedger must be 0 before the first rebalance"
+    );
+}
+
+/// AC-5: get_last_rebalance_ledger returns the correct ledger number after
+/// a successful rebalance.
+#[test]
+fn test_get_last_rebalance_ledger_correct_after_rebalance() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (contract_id, _agent, _owner) = setup_vault(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+
+    // Set a specific ledger sequence so the assertion is deterministic.
+    let target_ledger = 42_u32;
+    env.ledger().with_mut(|li| {
+        li.sequence_number = target_ledger;
+    });
+
+    client.rebalance(&symbol_short!("none"), &0_i128, &0_i128);
+
+    assert_eq!(
+        client.get_last_rebalance_ledger(),
+        target_ledger,
+        "LastRebalanceLedger must equal the ledger at which rebalance was called"
+    );
+}
+
+/// Boundary: rebalance one ledger short of the cooldown expiry must still fail.
+#[test]
+#[should_panic(expected = "Error(Contract, #43)")]
+fn test_rebalance_one_ledger_before_cooldown_expiry_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (contract_id, _agent, _owner) = setup_vault(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+
+    let cooldown = 100_u32;
+    let start_ledger = 1_000_u32;
+
+    env.ledger().with_mut(|li| {
+        li.sequence_number = start_ledger;
+    });
+    client.set_rebalance_cooldown(&cooldown);
+
+    client.rebalance(&symbol_short!("none"), &0_i128, &0_i128);
+
+    // One ledger before the boundary: start + cooldown - 1 = 1099.
+    env.ledger().with_mut(|li| {
+        li.sequence_number = start_ledger + cooldown - 1;
+    });
+
+    client.rebalance(&symbol_short!("none"), &0_i128, &0_i128);
+}
