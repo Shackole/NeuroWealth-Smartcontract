@@ -1,7 +1,7 @@
 import type { Metadata } from 'next';
 import './globals.css';
 import { ThemeProvider } from '@/components/ThemeProvider';
-import { OnboardingTutorial } from '@/components/OnboardingTutorial';
+import { OnboardingWizard } from '@/components/OnboardingWizard';
 import { NextIntlClientProvider } from 'next-intl';
 import { getMessages } from 'next-intl/server';
 import { notFound } from 'next/navigation';
@@ -29,7 +29,7 @@ export default async function RootLayout({
       <body className="antialiased bg-white dark:bg-[#080b11] text-slate-900 dark:text-slate-100 selection:bg-emerald-500 selection:text-black transition-colors duration-300">
         <NextIntlClientProvider messages={messages}>
           <ThemeProvider>
-            <OnboardingTutorial />
+            <OnboardingWizard />
             <div className="fixed inset-0 bg-[radial-gradient(ellipse_80%_80%_at_50%_-20%,rgba(16,185,129,0.15),rgba(255,255,255,0))] dark:bg-[radial-gradient(ellipse_80%_80%_at_50%_-20%,rgba(16,185,129,0.15),rgba(255,255,255,0))] pointer-events-none z-0" />
             <div className="relative z-10">
               {children}
