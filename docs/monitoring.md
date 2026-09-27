@@ -816,3 +816,331 @@ HAVING COUNT(*) > 4 * (SELECT COUNT(*) / 30.0 FROM events
 
 Tune the multipliers per deployment; record any changes to the band or rate
 policy in the incident-response log so alert history stays interpretable.
+
+---
+
+## 13. Key Metrics Reference — Sources and Thresholds
+
+> **Issue:** #74
+> This section consolidates all key metrics, their sources, alert thresholds, and justifications in one place.
+
+### 13.1 Metric Sources
+
+| Metric | Source | Collection method |
+|--------|--------|-------------------|
+| TVL (`total_assets`) | Soroban `get_total_assets()` | Stellar Horizon event indexer + periodic polling |
+| Share price (`exchange_rate`) | Soroban `get_exchange_rate()` | Periodic polling (every ledger window) |
+| Queue depth | Bull Redis queue | `prom-client` gauge via `bull-board` or custom Bull metrics middleware |
+| Rebalance latency | Agent process | `prom-client` histogram; start timer before `rebalance()` RPC call, observe on confirmation |
+| API p95 latency | Agent HTTP server | `prom-client` histogram `neurowealth_http_request_duration_ms` with labels `method`, `route`, `status` |
+| Error rate | Agent HTTP server | Counter `neurowealth_http_requests_total{status=~"5.."}` |
+| Rebalance count | `RebalanceEvent` stream | Soroban event indexer; `topic = 'rebalance'` |
+| Soroban event counts | Stellar Horizon `/events` API | Event indexer subscribing to vault contract ID |
+| Bull job failed count | Bull Redis queue | `prom-client` gauge `neurowealth_bull_queue_failed_total` |
+
+### 13.2 Alert Thresholds Summary
+
+| Metric | Warning threshold | Critical threshold | Justification |
+|--------|------------------|--------------------|---------------|
+| TVL drop (unexplained) | > 1% in 1 ledger (no WithdrawEvent) | > 5% in 1 ledger (no WithdrawEvent) | See `unexplained_tvl_drop_high` / `_critical` in §4.1 |
+| Queue depth (waiting jobs) | > 50 jobs | > 100 jobs | Backlog of 50+ indicates processing bottleneck; 100+ means jobs are accumulating faster than they are processed |
+| Rebalance latency | > 5 s | > 10 s | Rebalance involves 1 Stellar RPC call (~3–5 s typical); > 10 s indicates RPC congestion or agent bug |
+| API error rate | > 1% over 5 min | > 5% over 5 min | 1% errors warrant investigation; 5% indicates systemic failure |
+| API p95 latency | > 500 ms | > 1 000 ms | Stellar RPC p95 is ~200 ms; application overhead > 500 ms suggests a slow query or downstream timeout |
+| Rebalance frequency | > 6 in 24 h each near cooldown expiry | 24h count > 4× 30-day daily avg | Honest strategies do not rebalance at the maximum allowed rate continuously |
+| `expected_apy` out of band | Outside mean ± 3σ (30-day window) | > 2 000 bps absolute | See §12; values above 20% APY on Blend/DEX USDC are implausible |
+| Vault paused duration | Paused > 1 h | Paused > 24 h (17 280 ledgers) | Short pauses are expected during incidents; extended pauses indicate unresolved incident |
+| Withdrawal spike | 1h volume > 3× 30-day average | — | Coordinated run or insider exit; see §2 |
+| Whale concentration | > 20% of TotalShares | > 50% of TotalShares | See §9 |
+| Blend bad-debt loss | > 1% exchange-rate drop | > 2% exchange-rate drop | See §10 |
+
+---
+
+## 14. Grafana Dashboards
+
+Grafana dashboard JSON is exported and versioned in [`docs/grafana/`](grafana/).
+
+### 14.1 Available dashboards
+
+| File | Dashboard name | Panels |
+|------|---------------|--------|
+| [`grafana/neurowealth-ops-dashboard.json`](grafana/neurowealth-ops-dashboard.json) | NeuroWealth Vault — Operations | TVL, queue depth, rebalance latency, error rate, API p95, share price, deposit/withdrawal volume, firing alerts |
+
+### 14.2 Importing into Grafana
+
+1. Open Grafana → **Dashboards** → **Import**.
+2. Click **Upload JSON file** and select the file from `docs/grafana/`.
+3. Select your **Prometheus** data source when prompted.
+4. Click **Import**.
+
+Or via the Grafana API:
+
+```bash
+curl -X POST \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $GRAFANA_API_KEY" \
+  -d @docs/grafana/neurowealth-ops-dashboard.json \
+  "https://grafana.neurowealth.app/api/dashboards/import"
+```
+
+### 14.3 Prometheus / prom-client setup
+
+The agent backend exposes a `/metrics` endpoint using
+[`prom-client`](https://github.com/siimon/prom-client):
+
+```js
+// agent/src/metrics.js
+const client = require('prom-client');
+
+// Auto-collect default Node.js metrics (heap, event loop lag, etc.)
+client.collectDefaultMetrics({ prefix: 'neurowealth_' });
+
+// Custom metrics — register these and increment/observe them in your handlers:
+exports.httpRequestDuration = new client.Histogram({
+  name: 'neurowealth_http_request_duration_ms',
+  help: 'HTTP request duration in milliseconds',
+  labelNames: ['method', 'route', 'status'],
+  buckets: [10, 50, 100, 250, 500, 1000, 2500, 5000],
+});
+
+exports.httpRequestTotal = new client.Counter({
+  name: 'neurowealth_http_requests_total',
+  help: 'Total HTTP requests',
+  labelNames: ['method', 'route', 'status'],
+});
+
+exports.rebalanceDuration = new client.Gauge({
+  name: 'neurowealth_rebalance_duration_ms',
+  help: 'Duration of the last successful rebalance call in milliseconds',
+});
+
+exports.rebalanceTotal = new client.Counter({
+  name: 'neurowealth_rebalance_total',
+  help: 'Total number of rebalance calls',
+  labelNames: ['protocol', 'status'],
+});
+
+exports.queueWaiting = new client.Gauge({
+  name: 'neurowealth_bull_queue_waiting_total',
+  help: 'Bull queue jobs currently waiting',
+  labelNames: ['queue'],
+});
+
+exports.queueActive = new client.Gauge({
+  name: 'neurowealth_bull_queue_active_total',
+  help: 'Bull queue jobs currently active',
+  labelNames: ['queue'],
+});
+
+exports.queueFailed = new client.Gauge({
+  name: 'neurowealth_bull_queue_failed_total',
+  help: 'Bull queue jobs currently failed',
+  labelNames: ['queue'],
+});
+
+exports.totalAssets = new client.Gauge({
+  name: 'neurowealth_vault_total_assets',
+  help: 'Vault total assets in stroops (1 USDC = 1e7)',
+});
+
+exports.exchangeRate = new client.Gauge({
+  name: 'neurowealth_vault_exchange_rate',
+  help: 'Vault exchange rate (assets per share × 1e7)',
+});
+
+exports.vaultPaused = new client.Gauge({
+  name: 'neurowealth_vault_paused',
+  help: '1 if vault is paused, 0 otherwise',
+});
+
+// Expose the /metrics endpoint
+app.get('/metrics', async (req, res) => {
+  res.set('Content-Type', client.register.contentType);
+  res.end(await client.register.metrics());
+});
+```
+
+Configure Prometheus to scrape the agent:
+
+```yaml
+# prometheus.yml
+scrape_configs:
+  - job_name: neurowealth-agent
+    static_configs:
+      - targets: ['api.neurowealth.app:3000']
+    metrics_path: /metrics
+    scheme: https
+    scrape_interval: 15s
+```
+
+### 14.4 Datadog alternative
+
+If using Datadog instead of Prometheus + Grafana:
+
+```bash
+# Install the Datadog agent on Railway/Render via environment variables
+DD_API_KEY=<your-api-key>
+DD_SITE=datadoghq.com
+
+# Enable StatsD in the agent process (dogstatsd)
+npm install hot-shots
+
+# In agent/src/metrics.js, replace prom-client with hot-shots:
+const StatsD = require('hot-shots');
+const dogstatsd = new StatsD({ host: 'localhost', port: 8125, prefix: 'neurowealth.' });
+```
+
+See the [Datadog Node.js APM docs](https://docs.datadoghq.com/tracing/setup_overview/setup/nodejs/) for full instrumentation.
+
+---
+
+## 15. On-Call Response Procedures
+
+> **Escalation path:** automated alert → on-call engineer → engineering lead
+
+### 15.1 Escalation tiers
+
+| Tier | Who | Trigger | Response SLA |
+|------|-----|---------|-------------|
+| Automated | PagerDuty / OpsGenie | Alert fires | Immediate page |
+| On-call engineer | Rotating weekly | P0 or P1 alert | < 5 min acknowledge (P0), < 15 min (P1) |
+| Engineering lead | Named individual | P0 unresolved after 30 min | On-call escalates manually |
+| Incident commander | CTO / security lead | Security incident or active exploit | Engineering lead escalates |
+
+### 15.2 Alert response procedures
+
+#### P0 — Critical (< 5 min SLA)
+
+These require immediate action without waiting for root cause analysis.
+
+**`unexplained_tvl_drop_critical` — TVL drop > 5% with no matching WithdrawEvent**
+
+```
+1. Call pause() or emergency_pause() IMMEDIATELY
+   stellar contract invoke --id $VAULT_CONTRACT_ID --source $OWNER_SECRET \
+     --network mainnet -- emergency_pause
+
+2. Suspend the agent process on Railway:
+   railway redeploy --service agent --env AGENT_DISABLED=true
+   (or kill the container / set replicas to 0)
+
+3. Gather evidence:
+   a. stellar contract invoke -- get_total_assets
+   b. stellar contract invoke -- get_idle_balance
+   c. stellar contract invoke -- get_deployed_assets
+   d. Check Blend pool balance: stellar contract invoke --id $BLEND_POOL -- get_balance --user $VAULT_CONTRACT_ID
+   e. Query Stellar Horizon for last 100 events on the vault contract
+
+4. Page the engineering lead and open an incident in the incident tracker.
+
+5. Follow INCIDENT_RESPONSE.md for the full runbook.
+```
+
+**`share_supply_unaccounted_drift` — TotalShares changed with no deposit/withdraw events**
+
+```
+1. Call emergency_pause() IMMEDIATELY
+2. Halt all indexers and off-chain processes
+3. Notify the security response team — this indicates possible storage manipulation
+4. Follow SECURITY.md and INCIDENT_RESPONSE.md
+```
+
+**`tvl_share_asymmetry_broken_invariant` — TotalShares == 0 with assets > 0 (or vice versa)**
+
+```
+1. Call emergency_pause() IMMEDIATELY
+2. Do not attempt any contract interactions until root cause is confirmed
+3. Escalate to smart contract auditor
+```
+
+#### P1 — High (< 15 min SLA)
+
+**`unexplained_tvl_drop_high` — TVL drop > 1% with no WithdrawEvent**
+
+```
+1. Query get_current_protocol() — identify where funds are deployed
+2. Query Blend pool and DEX pool balances
+3. If discrepancy confirmed: call pause() and escalate to engineering lead
+4. If external protocol loss (Blend bad debt): document and decide whether to rebalance out
+5. Reference docs/BLEND_INTEGRATION_RESEARCH.md for bad-debt response options
+```
+
+**`pause_duration_exceeded` — Vault paused > 24 h**
+
+```
+1. Confirm the incident that triggered the pause is fully resolved
+2. Review post-incident report; get sign-off from engineering lead
+3. Call unpause():
+   stellar contract invoke --id $VAULT_CONTRACT_ID --source $OWNER_SECRET \
+     --network mainnet -- unpause
+4. Monitor TVL and error rate for 30 min after unpause
+```
+
+**`withdrawal_spike` — 1h withdrawal volume > 3× 30-day average**
+
+```
+1. Check get_idle_balance() vs expected withdrawal demand
+2. Review macro market conditions — is there a broader DeFi event?
+3. If withdrawal demand exceeds idle balance, the partial-withdrawal path activates:
+   see docs/PARTIAL_WITHDRAWAL_BEHAVIOR.md
+4. Monitor queue depth — large withdrawals may queue behind each other
+5. Consider a temporary TVL cap reduction if the source appears malicious
+```
+
+**`apy_out_of_band` — rebalance expected_apy outside rolling confidence band**
+
+```
+1. Cross-check reported APY against Blend pool's current supply rate
+2. If agent is reporting an APY that differs from on-chain protocol rate by > 50 bps,
+   the agent's yield oracle feed may be stale or compromised
+3. If unexplained: treat agent key as potentially compromised
+   Follow AGENT_KEY_COMPROMISE_RUNBOOK.md
+4. Suspend the agent process; do not allow further rebalances until resolved
+```
+
+#### P2 — Medium (< 30 min SLA)
+
+**`rebalance_rate_spike` — rebalance count > 4× 30-day daily average**
+
+```
+1. Check if a new strategy config was accidentally set to force-rebalance frequently
+2. Verify the agent is not duplicated (multiple instances calling rebalance concurrently)
+3. Review recent rebalance events for abnormal protocol switches
+4. If no legitimate explanation: suspend the agent and investigate
+```
+
+**`queue_depth_high` — Bull queue waiting > 50 jobs**
+
+```
+1. Check agent process logs: railway logs --tail 100
+2. If jobs are failing: railway logs | grep "failed"
+3. Common causes: Stellar RPC timeout, database connection exhausted, Redis memory full
+4. Scale up if load-related: increase MAX_QUEUE_CONCURRENCY in env vars
+5. Purge stale failed jobs if safe: access Bull dashboard or redis-cli
+```
+
+### 15.3 Routine health check schedule
+
+| Check | Frequency | Who | Method |
+|-------|-----------|-----|--------|
+| Health check endpoint (`/health/ready`) | Continuous (Railway, every 10 s) | Automated | Railway health check |
+| TVL and share price | Every 5 min | Automated | Prometheus scrape → Grafana |
+| Queue depth | Every 1 min | Automated | prom-client gauge |
+| Rebalance decisions | Every 1 h | Agent (automated) | Decision loop |
+| Agent APY confidence band | Every rebalance event | Automated | Prometheus alert rule |
+| Full-history secret scan | Weekly (Sunday 02:00 UTC) | CI | `gitleaks/gitleaks-action` in `ci.yml` |
+| On-call handoff | Weekly | On-call engineer | Slack handoff + PagerDuty rotation |
+| Incident review | After every P0/P1 incident | Engineering team | Post-incident report within 48 h |
+| Dependency audit | Weekly | CI | `cargo audit`, `npm audit` |
+
+### 15.4 Links to related runbooks
+
+| Document | When to use |
+|----------|------------|
+| [`docs/INCIDENT_RESPONSE.md`](INCIDENT_RESPONSE.md) | Full incident management process |
+| [`docs/AGENT_KEY_COMPROMISE_RUNBOOK.md`](AGENT_KEY_COMPROMISE_RUNBOOK.md) | Agent keypair is compromised |
+| [`docs/DISASTER_RECOVERY.md`](DISASTER_RECOVERY.md) | Catastrophic failure or data loss |
+| [`docs/REBALANCE_FAILURE_RECOVERY.md`](REBALANCE_FAILURE_RECOVERY.md) | Rebalance fails or leaves funds stuck |
+| [`docs/ISSUER_FREEZE_CONTINGENCY.md`](ISSUER_FREEZE_CONTINGENCY.md) | USDC issuer freezes the vault wallet |
+| [`docs/BLEND_INTEGRATION_RESEARCH.md`](BLEND_INTEGRATION_RESEARCH.md) | Blend bad-debt event response |
+| [`SECURITY.md`](../SECURITY.md) | Trust model and threat analysis |
