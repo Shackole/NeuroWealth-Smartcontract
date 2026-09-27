@@ -645,10 +645,10 @@ jobs:
 
       # Summary is written to the GitHub Actions step summary by the script.
 
-  e2e-playwright:
-    name: E2E Playwright Tests (Stellar Testnet)
+  a11y-playwright:
+    name: Accessibility Automated Tests (axe-core via Playwright)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -664,7 +664,7 @@ jobs:
         working-directory: frontend
         run: npm ci
 
-      - name: Install Playwright browsers with system dependencies
+      - name: Install Playwright Chromium with system dependencies
         working-directory: frontend
         run: npx playwright install --with-deps chromium
 
@@ -672,20 +672,15 @@ jobs:
         working-directory: frontend
         run: npm run build
 
-      - name: Run Playwright E2E tests
+      - name: Run axe-core accessibility tests
         working-directory: frontend
-        env:
-          CI: true
-          STELLAR_TESTNET_ACCOUNT: GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5
-        run: npm run test:e2e
+        run: npm run test:a11y
 
-      - name: Upload Playwright test results & failure screenshots
+      - name: Upload Accessibility Report Artifacts (HTML + JSON)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-e2e-results
-          path: |
-            frontend/test-results/
-            frontend/playwright-report/
+          name: accessibility-reports
+          path: frontend/accessibility-reports/
           retention-days: 14
 

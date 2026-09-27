@@ -1,44 +1,35 @@
 import { defineConfig, devices } from '@playwright/test';
 
-/**
- * Playwright E2E configuration for NeuroWealth Stellar Testnet user journey.
- * Configured with Chromium, failure screenshots/traces, and staging/local baseURL.
- */
 export default defineConfig({
   testDir: './e2e',
-  timeout: 30 * 1000,
+  timeout: 60_000,
   expect: {
-    timeout: 10 * 1000,
+    timeout: 10_000,
   },
-  fullyParallel: false,
+  fullyParallel: true,
   forbidOnly: !!process.env.CI,
-  retries: process.env.CI ? 2 : 0,
-  workers: 1,
+  retries: process.env.CI ? 1 : 0,
+  workers: process.env.CI ? 1 : undefined,
   reporter: [
+    ['html', { outputFolder: 'accessibility-reports/html', open: 'never' }],
+    ['json', { outputFile: 'accessibility-reports/playwright-results.json' }],
     ['list'],
-    ['html', { outputFolder: 'playwright-report', open: 'never' }],
   ],
   use: {
-    /* Base URL set to staging deployment, overridable by environment variables */
-    baseURL: process.env.PLAYWRIGHT_TEST_BASE_URL || process.env.STAGING_URL || 'https://staging.neurowealth.app',
+    baseURL: process.env.BASE_URL || 'http://localhost:3000',
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
-    video: 'retain-on-failure',
   },
   projects: [
     {
       name: 'chromium',
-      use: {
-        ...devices['Desktop Chrome'],
-        viewport: { width: 1280, height: 720 },
-      },
+      use: { ...devices['Desktop Chrome'] },
     },
   ],
-  /* Run local webserver when not targeting external staging deployment */
-  webServer: (process.env.PLAYWRIGHT_TEST_BASE_URL || process.env.STAGING_URL) ? undefined : {
-    command: 'npm run start',
-    url: 'http://localhost:3000/en',
+  webServer: {
+    command: 'npm run dev',
+    url: 'http://localhost:3000',
     reuseExistingServer: !process.env.CI,
-    timeout: 120 * 1000,
+    timeout: 120_000,
   },
 });

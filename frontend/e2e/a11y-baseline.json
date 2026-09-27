@@ -1,0 +1,6 @@
+{
+  "version": "1.0.0",
+  "standard": "WCAG 2.1 Level AA",
+  "description": "Committed baseline of known accessibility exceptions. Only new critical or serious violations will block PRs.",
+  "knownViolations": []
+}
