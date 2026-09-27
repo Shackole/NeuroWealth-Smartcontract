@@ -1,8 +1,114 @@
 {
   "Index": {
     "title": "NeuroWealth | Plateforme de rendement DeFi alimentée par l'IA",
-    "description": "Agent d'investissement autonome gérant des stratégies de rendement par contrats intelligents.",
+    "description": "Agent d'investissement IA autonome gérant des stratégies de rendement sur contrats intelligents.",
     "getStarted": "Commencer",
     "language": "Langue"
+  },
+  "Header": {
+    "tagline": "Rendement DeFi autonome sur Stellar",
+    "nav": {
+      "dashboard": "Tableau de bord",
+      "strategies": "Stratégies",
+      "transactions": "Transactions",
+      "whatsapp": "Bot WhatsApp"
+    }
+  },
+  "Hero": {
+    "badge": "Moteur de rendement autonome alimenté par l'IA"
+  },
+  "BalanceCard": {
+    "title": "Valeur totale du portefeuille",
+    "protected": "Protégé par Soroban Vault",
+    "usdLabel": "USD",
+    "rateLabel": "Taux",
+    "deposit": "Déposer",
+    "withdraw": "Retirer"
+  },
+  "EarningsCard": {
+    "title": "Gains de rendement",
+    "autoCompounded": "Auto-composé",
+    "yieldNote": "Rendement généré de manière autonome par la stratégie de l'agent IA",
+    "today": "Aujourd'hui",
+    "week": "7 jours",
+    "month": "30 jours"
+  },
+  "StrategyBadge": {
+    "title": "Stratégie actuelle",
+    "apyLabel": "APY net",
+    "weeklyGain": "+0,4% cette semaine",
+    "optimiseQuestion": "Vous souhaitez optimiser le risque ?",
+    "conservative": "Conservateur",
+    "balanced": "Équilibré",
+    "growth": "Croissance",
+    "descriptions": {
+      "conservative": "Prêts en stablecoins sur Blend (Faible risque)",
+      "balanced": "Mix optimal prêts + liquidité DEX (Recommandé)",
+      "growth": "Déploiement multi-protocole DEX LP (Rendement élevé)"
+    }
+  },
+  "TransactionHistory": {
+    "title": "Historique des transactions",
+    "noTransactions": "Aucune transaction pour l'instant",
+    "deposit": "Dépôt",
+    "withdraw": "Retrait",
+    "rebalance": "Rééquilibrage",
+    "harvest": "Récolte"
+  },
+  "WhatsAppCard": {
+    "title": "Intégration WhatsApp",
+    "live": "Bot en direct",
+    "heading": "Interagissez via WhatsApp",
+    "description": "Pas besoin de navigateur ni de portefeuille ! Envoyez simplement un message à notre bot Twilio pour vérifier avec OTP, consulter votre solde, déposer ou retirer.",
+    "webhookLabel": "URL du webhook :",
+    "demoUser": "Utilisateur : déposer 100 USDC",
+    "demoAgent": "Agent : Reçu ! 100 USDC déposés dans la stratégie Équilibrée. ✅"
+  },
+  "ActionModal": {
+    "depositTitle": "Déposer des USDC",
+    "withdrawTitle": "Retirer des USDC",
+    "depositSubtitle": "Frapper des parts dans le vault Soroban",
+    "withdrawSubtitle": "Brûler des parts et retirer des USDC",
+    "amountLabel": "Montant (USDC)",
+    "available": "Disponible",
+    "max": "MAX",
+    "exchangeRate": "Taux de change",
+    "estimatedShares": "Parts estimées",
+    "networkFee": "Frais réseau",
+    "signingWith": "Signature avec Freighter…",
+    "confirmDeposit": "Confirmer le dépôt",
+    "confirmWithdraw": "Confirmer le retrait",
+    "depositSuccess": "Dépôt réussi !",
+    "withdrawSuccess": "Retrait réussi !",
+    "txHashLabel": "Hash de transaction :",
+    "confirmedIn": "Confirmé en ~3,8 secondes sur Stellar",
+    "done": "Terminé"
+  },
+  "WalletConnect": {
+    "connect": "Connecter le portefeuille",
+    "disconnect": "Déconnecter",
+    "connected": "Connecté",
+    "address": "Adresse"
+  },
+  "Footer": {
+    "brand": "NeuroWealth AI Vault",
+    "architecture": "Architecture de contrats intelligents Soroban",
+    "stellar": "Réseau Stellar",
+    "soroban": "SDK Soroban",
+    "freighter": "Portefeuille Freighter"
+  },
+  "LanguageSwitcher": {
+    "label": "Langue"
+  },
+  "Onboarding": {
+    "skip": "Ignorer",
+    "next": "Suivant",
+    "finish": "Terminer",
+    "step1Title": "Bienvenue sur NeuroWealth",
+    "step1Body": "Votre agent de rendement IA autonome sur Stellar. Connectez votre portefeuille pour commencer.",
+    "step2Title": "Déposez des USDC",
+    "step2Body": "Déposez des USDC et laissez l'agent IA trouver les meilleures stratégies de rendement.",
+    "step3Title": "Gagnez automatiquement",
+    "step3Body": "Vos fonds sont déployés 24h/24 dans Blend et les pools de liquidité DEX."
   }
 }
