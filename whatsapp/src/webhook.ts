@@ -117,7 +117,7 @@ export function twilioSignatureMiddleware(
   );
 
   if (!isValid) {
-    res.status(403).json({ error: 'Invalid Twilio signature' });
+    res.status(401).json({ error: 'Invalid Twilio signature' });
     return;
   }
 
@@ -306,7 +306,7 @@ intentQueue.process(async (job) => {
 // Intent processor for verified users
 // ─────────────────────────────────────────────────────────
 
-async function processVerifiedIntent(
+export async function processVerifiedIntent(
   phoneHash: string,
   messageBody: string,
 ): Promise<string> {

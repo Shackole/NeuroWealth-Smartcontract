@@ -11,6 +11,7 @@ export type IntentType =
 
 export interface ParsedIntent {
   type: IntentType;
+  action?: 'deposit' | 'withdraw' | 'withdraw_all' | 'balance' | 'earnings' | 'strategy' | 'apy' | 'greeting' | 'otp' | 'unknown';
   amount?: number;
   withdrawAll?: boolean;
   strategy?: 'conservative' | 'balanced' | 'growth';
@@ -27,34 +28,34 @@ export function parseIntent(message: string): ParsedIntent {
 
   // Check 6-digit OTP code pattern
   if (/^\d{6}$/.test(clean)) {
-    return { type: 'OTP_CODE', otpCode: clean, rawText };
+    return { type: 'OTP_CODE', action: 'otp', otpCode: clean, rawText };
   }
 
   // Greeting
   if (/^(hi|hello|hey|start|menu|help)$/.test(clean)) {
-    return { type: 'GREETING', rawText };
+    return { type: 'GREETING', action: 'greeting', rawText };
   }
 
   // Balance query
   if (clean.includes('balance') || clean.includes('how much do i have') || clean.includes('my funds')) {
-    return { type: 'BALANCE', rawText };
+    return { type: 'BALANCE', action: 'balance', rawText };
   }
 
   // Earnings query
   if (clean.includes('earnings') || clean.includes('how much have i made') || clean.includes('profit') || clean.includes('yield')) {
-    return { type: 'EARNINGS', rawText };
+    return { type: 'EARNINGS', action: 'earnings', rawText };
   }
 
   // APY query
   if (clean.includes('apy') || clean.includes('rate') || clean.includes('interest rate')) {
-    return { type: 'APY', rawText };
+    return { type: 'APY', action: 'apy', rawText };
   }
 
   // Strategy change
   if (clean.includes('switch to') || clean.includes('change strategy')) {
-    if (clean.includes('conservative')) return { type: 'STRATEGY', strategy: 'conservative', rawText };
-    if (clean.includes('growth')) return { type: 'STRATEGY', strategy: 'growth', rawText };
-    if (clean.includes('balanced')) return { type: 'STRATEGY', strategy: 'balanced', rawText };
+    if (clean.includes('conservative')) return { type: 'STRATEGY', action: 'strategy', strategy: 'conservative', rawText };
+    if (clean.includes('growth')) return { type: 'STRATEGY', action: 'strategy', strategy: 'growth', rawText };
+    if (clean.includes('balanced')) return { type: 'STRATEGY', action: 'strategy', strategy: 'balanced', rawText };
   }
 
   // Deposit intent
@@ -67,18 +68,18 @@ export function parseIntent(message: string): ParsedIntent {
     if (clean.includes('growth')) strategy = 'growth';
     if (clean.includes('balanced')) strategy = 'balanced';
 
-    return { type: 'DEPOSIT', amount, strategy, rawText };
+    return { type: 'DEPOSIT', action: 'deposit', amount, strategy, rawText };
   }
 
   // Withdraw intent
   if (clean.startsWith('withdraw') || clean.includes('take out') || clean.includes('cash out')) {
     if (clean.includes('all') || clean.includes('everything')) {
-      return { type: 'WITHDRAW', withdrawAll: true, rawText };
+      return { type: 'WITHDRAW', action: 'withdraw_all', withdrawAll: true, rawText };
     }
     const amountMatch = clean.match(/(\d+(\.\d+)?)/);
     const amount = amountMatch ? parseFloat(amountMatch[1]) : undefined;
-    return { type: 'WITHDRAW', amount, withdrawAll: false, rawText };
+    return { type: 'WITHDRAW', action: 'withdraw', amount, withdrawAll: false, rawText };
   }
 
-  return { type: 'UNKNOWN', rawText };
+  return { type: 'UNKNOWN', action: 'unknown', rawText };
 }
