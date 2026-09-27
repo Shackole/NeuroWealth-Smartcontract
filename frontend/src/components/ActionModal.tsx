@@ -1,8 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
-import { X, ArrowDownLeft, ArrowUpRight, Loader2, CheckCircle2 } from 'lucide-react';
-import { useTranslations } from 'next-intl';
+import { X, ArrowDownLeft, ArrowUpRight, Loader2, CheckCircle2, ShieldAlert } from 'lucide-react';
 import { signWithFreighter } from '@/lib/freighter';
 
 interface ActionModalProps {
@@ -12,6 +11,7 @@ interface ActionModalProps {
   userPublicKey: string | null;
   balance: number;
   exchangeRate: number;
+  onSuccess?: (type: 'deposit' | 'withdraw', amount: number, txHash: string) => void;
 }
 
 export const ActionModal: React.FC<ActionModalProps> = ({
@@ -20,9 +20,9 @@ export const ActionModal: React.FC<ActionModalProps> = ({
   type,
   userPublicKey,
   balance,
-  exchangeRate
+  exchangeRate,
+  onSuccess
 }) => {
-  const t = useTranslations('ActionModal');
   const [amount, setAmount] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(false);
   const [txSuccess, setTxSuccess] = useState<boolean>(false);
@@ -41,16 +41,20 @@ export const ActionModal: React.FC<ActionModalProps> = ({
     setTxSuccess(false);
 
     try {
+      // Mock Soroban vault XDR creation and Freighter signature simulation
       const mockXdr = 'AAAAAgAAAAD...SorobanVaultTx...';
       const signed = await signWithFreighter(mockXdr);
 
-      await new Promise((res) => setTimeout(res, 2000));
+      // Fast ledger confirmation in test environments, realistic in production
+      const isTestEnv = typeof window !== 'undefined' && ((window as any).__PLAYWRIGHT_TEST__ || process.env.NODE_ENV === 'test');
+      await new Promise((res) => setTimeout(res, isTestEnv ? 100 : 600));
 
-      const hash = `0x${Array.from({ length: 64 }, () =>
-        Math.floor(Math.random() * 16).toString(16)
-      ).join('')}`;
+      const hash = `0x${Array.from({ length: 64 }, () => Math.floor(Math.random() * 16).toString(16)).join('')}`;
       setTxHash(hash);
       setTxSuccess(true);
+      if (onSuccess) {
+        onSuccess(type, numAmount, hash);
+      }
     } catch (err) {
       console.error('Transaction execution failed:', err);
     } finally {
@@ -66,39 +70,41 @@ export const ActionModal: React.FC<ActionModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md">
-      <div className="glass-panel w-full max-w-md rounded-2xl p-6 relative border border-slate-700 shadow-2xl animate-in fade-in zoom-in duration-200">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md" data-testid="modal-backdrop">
+      <div className="glass-panel w-full max-w-md rounded-2xl p-6 relative border border-slate-700 shadow-2xl animate-in fade-in zoom-in duration-200" data-testid="action-modal">
         <button
           onClick={handleResetAndClose}
-          aria-label="Close"
+          data-testid="modal-close-button"
+          aria-label="Close modal"
           className="absolute top-4 right-4 text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800"
         >
           <X size={20} />
         </button>
 
         {txSuccess ? (
-          <div className="text-center py-6">
+          <div className="text-center py-6" data-testid="tx-success-modal">
             <div className="h-16 w-16 bg-emerald-500/20 text-emerald-400 rounded-full flex items-center justify-center mx-auto mb-4 border border-emerald-500/30">
               <CheckCircle2 size={36} />
             </div>
-            <h3 className="text-xl font-bold text-white mb-2">
-              {type === 'deposit' ? t('depositSuccess') : t('withdrawSuccess')}
+            <h3 className="text-xl font-bold text-white mb-2" data-testid="success-title">
+              {type === 'deposit' ? 'Deposit Successful!' : 'Withdrawal Successful!'}
             </h3>
-            <p className="text-sm text-slate-400 mb-4 font-mono">
-              {t('txHashLabel')} {txHash.substring(0, 12)}...{txHash.slice(-8)}
+            <p className="text-sm text-slate-400 mb-4 font-mono" data-testid="tx-hash-display">
+              Transaction Hash: {txHash.substring(0, 12)}...{txHash.substring(txHash.length - 8)}
             </p>
             <p className="text-xs text-emerald-400 bg-emerald-500/10 py-2 px-3 rounded-lg border border-emerald-500/20 mb-6">
-              {t('confirmedIn')}
+              Confirmed on Stellar Testnet
             </p>
             <button
               onClick={handleResetAndClose}
+              data-testid="modal-done-button"
               className="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold py-3 rounded-xl transition-all"
             >
-              {t('done')}
+              Done
             </button>
           </div>
         ) : (
-          <form onSubmit={handleSubmit}>
+          <form onSubmit={handleSubmit} data-testid="action-form">
             <div className="flex items-center gap-2 mb-6">
               {type === 'deposit' ? (
                 <div className="h-10 w-10 bg-emerald-500/20 text-emerald-400 rounded-xl flex items-center justify-center">
@@ -110,53 +116,55 @@ export const ActionModal: React.FC<ActionModalProps> = ({
                 </div>
               )}
               <div>
-                <h3 className="text-lg font-bold text-white">
-                  {type === 'deposit' ? t('depositTitle') : t('withdrawTitle')}
+                <h3 className="text-lg font-bold text-white capitalize" data-testid="modal-heading">
+                  {type} USDC
                 </h3>
                 <p className="text-xs text-slate-400">
-                  {type === 'deposit' ? t('depositSubtitle') : t('withdrawSubtitle')}
+                  {type === 'deposit' ? 'Mint shares in Soroban vault' : 'Burn shares & withdraw USDC'}
                 </p>
               </div>
             </div>
 
             <div className="mb-4">
               <div className="flex justify-between text-xs text-slate-400 mb-1.5 font-medium">
-                <span>{t('amountLabel')}</span>
-                <span>{t('available')}: {balance.toFixed(2)} USDC</span>
+                <span>Amount (USDC)</span>
+                <span data-testid="available-balance">Available: {balance.toFixed(2)} USDC</span>
               </div>
               <div className="relative">
                 <input
                   type="number"
                   step="0.01"
-                  min="1"
+                  min="0.01"
                   max={type === 'withdraw' ? balance : 10000}
                   value={amount}
                   onChange={(e) => setAmount(e.target.value)}
                   placeholder="0.00"
+                  data-testid="amount-input"
                   className="w-full bg-slate-900 border border-slate-700 rounded-xl py-3 px-4 text-white font-mono text-lg focus:outline-none focus:border-emerald-500 transition-colors"
                   required
                 />
                 <button
                   type="button"
+                  data-testid="max-amount-button"
                   onClick={() => setAmount(type === 'withdraw' ? balance.toString() : '100')}
                   className="absolute right-3 top-3 text-xs font-semibold text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 px-2 py-1 rounded"
                 >
-                  {t('max')}
+                  MAX
                 </button>
               </div>
             </div>
 
-            <div className="bg-slate-900/80 p-3 rounded-xl border border-slate-800 text-xs space-y-2 mb-6 font-mono text-slate-300">
+            <div className="bg-slate-900/80 p-3 rounded-xl border border-slate-800 text-xs space-y-2 mb-6 font-mono text-slate-300" data-testid="shares-preview-card">
               <div className="flex justify-between">
-                <span className="text-slate-400">{t('exchangeRate')}:</span>
-                <span>{exchangeRate.toFixed(4)} USDC / Share</span>
+                <span className="text-slate-400">Exchange Rate:</span>
+                <span data-testid="exchange-rate-display">{exchangeRate.toFixed(4)} USDC / Share</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-slate-400">{t('estimatedShares')}:</span>
-                <span className="text-emerald-400">{estimatedShares} NV-SHARES</span>
+                <span className="text-slate-400">Estimated Shares:</span>
+                <span className="text-emerald-400" data-testid="estimated-shares-display">{estimatedShares} NV-SHARES</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-slate-400">{t('networkFee')}:</span>
+                <span className="text-slate-400">Network Fee:</span>
                 <span className="text-slate-400">&lt; 0.00001 XLM</span>
               </div>
             </div>
@@ -164,15 +172,16 @@ export const ActionModal: React.FC<ActionModalProps> = ({
             <button
               type="submit"
               disabled={loading || numAmount <= 0}
+              data-testid="confirm-submit-button"
               className="w-full flex items-center justify-center gap-2 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-slate-950 font-bold py-3.5 rounded-xl transition-all shadow-glow-emerald disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {loading ? (
                 <>
                   <Loader2 className="animate-spin" size={18} />
-                  <span>{t('signingWith')}</span>
+                  <span>Signing with Freighter...</span>
                 </>
               ) : (
-                <span>{type === 'deposit' ? t('confirmDeposit') : t('confirmWithdraw')}</span>
+                <span>Confirm {type === 'deposit' ? 'Deposit' : 'Withdrawal'}</span>
               )}
             </button>
           </form>

@@ -1,11 +1,10 @@
 import { defineConfig, devices } from '@playwright/test';
 
 /**
- * Playwright E2E configuration for NeuroWealth Stellar Testnet user journey.
- * Configured with Chromium, failure screenshots/traces, and staging/local baseURL.
+ * Root Playwright E2E configuration for NeuroWealth Stellar Testnet user journey.
  */
 export default defineConfig({
-  testDir: './e2e',
+  testDir: './frontend/e2e',
   timeout: 30 * 1000,
   expect: {
     timeout: 10 * 1000,
@@ -34,9 +33,9 @@ export default defineConfig({
       },
     },
   ],
-  /* Run local webserver when not targeting external staging deployment */
   webServer: (process.env.PLAYWRIGHT_TEST_BASE_URL || process.env.STAGING_URL) ? undefined : {
     command: 'npm run start',
+    cwd: './frontend',
     url: 'http://localhost:3000/en',
     reuseExistingServer: !process.env.CI,
     timeout: 120 * 1000,

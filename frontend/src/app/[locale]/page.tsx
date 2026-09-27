@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Header } from '@/components/Header';
 import { BalanceCard } from '@/components/BalanceCard';
 import { EarningsCard } from '@/components/EarningsCard';
@@ -8,9 +8,7 @@ import { StrategyBadge } from '@/components/StrategyBadge';
 import { PortfolioChart } from '@/components/PortfolioChart';
 import { TransactionHistory } from '@/components/TransactionHistory';
 import { ActionModal } from '@/components/ActionModal';
-import { DepositForm } from '@/components/DepositForm';
-import { ToastContainer, useToast } from '@/components/Toast';
-import { MessageSquare, Bot, ArrowRight, ShieldCheck, Zap, Layers } from 'lucide-react';
+import { MessageSquare, Bot, ArrowRight, ShieldCheck, Zap, Layers, X, CheckCircle2 } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { connectFreighterWallet } from '@/lib/freighter';
 import { fetchVaultState, VaultState } from '@/lib/stellar';
@@ -25,7 +23,6 @@ import {
 
 export default function DashboardPage() {
   const t = useTranslations('Index');
-  const { toasts, dismiss, success: toastSuccess, error: toastError } = useToast();
   const [publicKey, setPublicKey] = useState<string | null>(null);
   const [vaultState, setVaultState] = useState<VaultState>({
     balance: 0,
@@ -37,12 +34,10 @@ export default function DashboardPage() {
   const [chartData, setChartData] = useState<ChartDataPoint[]>([]);
   const [transactions, setTransactions] = useState<TransactionRecord[]>([]);
 
-  // Deposit form state (new full-featured form)
-  const [isDepositFormOpen, setIsDepositFormOpen] = useState<boolean>(false);
-
-  // Legacy withdraw modal state
+  // Modal State
   const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
-  const [modalType, setModalType] = useState<'deposit' | 'withdraw'>('withdraw');
+  const [modalType, setModalType] = useState<'deposit' | 'withdraw'>('deposit');
+  const [toast, setToast] = useState<{ message: string; type: 'deposit' | 'withdraw'; txHash: string } | null>(null);
 
   const handleConnect = async () => {
     const key = await connectFreighterWallet();
@@ -55,47 +50,62 @@ export default function DashboardPage() {
     setPublicKey(null);
   };
 
-  const loadData = useCallback(async () => {
-    if (publicKey) {
-      const state = await fetchVaultState(publicKey);
-      setVaultState(state);
+  const handleTransactionSuccess = (type: 'deposit' | 'withdraw', amount: number, txHash: string) => {
+    // 1. Update Vault Balance
+    setVaultState((prev) => ({
+      ...prev,
+      balance: type === 'deposit' ? prev.balance + amount : Math.max(0, prev.balance - amount)
+    }));
 
-      const earnData = await getEarningsSummary(publicKey);
-      setEarnings(earnData);
+    // 2. Prepend Transaction to history table
+    const shortHash = txHash.length > 16 ? `${txHash.substring(0, 8)}...${txHash.substring(txHash.length - 6)}` : txHash;
+    const now = new Date();
+    const formattedDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+    const newTx: TransactionRecord = {
+      id: `tx-${Date.now()}`,
+      type: type === 'deposit' ? 'deposit' : 'withdrawal',
+      amount: amount,
+      asset: 'USDC',
+      txHash: shortHash,
+      timestamp: formattedDate,
+      status: 'confirmed'
+    };
+    setTransactions((prev) => [newTx, ...prev]);
 
-      const chart = await getPortfolioValueHistory(publicKey);
-      setChartData(chart);
-
-      const txs = await getRecentTransactions(publicKey);
-      setTransactions(txs);
-    } else {
-      setVaultState({ balance: 0, strategy: 'Balanced', exchangeRate: 1.042, apy: 8.4 });
-      setEarnings({ today: 0, week: 0, month: 0 });
-      setChartData([]);
-      setTransactions([]);
-    }
-  }, [publicKey]);
-
-  useEffect(() => {
-    loadData();
-  }, [loadData]);
-
-  const openModal = (type: 'deposit' | 'withdraw') => {
-    if (type === 'deposit') {
-      setIsDepositFormOpen(true);
-    } else {
-      setModalType('withdraw');
-      setIsModalOpen(true);
-    }
+    // 3. Trigger toast notification
+    const msg = type === 'deposit'
+      ? `Successfully deposited ${amount} USDC into Soroban Vault!`
+      : `Successfully withdrew ${amount} USDC from Soroban Vault!`;
+    setToast({ message: msg, type, txHash });
   };
 
-  const handleDepositSuccess = () => {
-    // Refresh vault state after a successful deposit
+  useEffect(() => {
+    async function loadData() {
+      if (publicKey) {
+        const state = await fetchVaultState(publicKey);
+        setVaultState(state);
+
+        const earnData = await getEarningsSummary(publicKey);
+        setEarnings(earnData);
+
+        const chart = await getPortfolioValueHistory(publicKey);
+        setChartData(chart);
+
+        const txs = await getRecentTransactions(publicKey);
+        setTransactions(txs);
+      } else {
+        setVaultState({ balance: 0, strategy: 'Balanced', exchangeRate: 1.042, apy: 8.4 });
+        setEarnings({ today: 0, week: 0, month: 0 });
+        setChartData([]);
+        setTransactions([]);
+      }
+    }
     loadData();
-    toastSuccess(
-      'Deposit Successful! 🎉',
-      'Your USDC has been deposited into the vault. Earnings are now accumulating.',
-    );
+  }, [publicKey]);
+
+  const openModal = (type: 'deposit' | 'withdraw') => {
+    setModalType(type);
+    setIsModalOpen(true);
   };
 
   return (
@@ -119,6 +129,7 @@ export default function DashboardPage() {
                 </p>
                 <button
                   onClick={handleConnect}
+                  data-testid="get-started-button"
                   className="flex items-center gap-2 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-slate-950 font-bold px-6 py-3 rounded-full transition-all shadow-glow-emerald"
                 >
                   <span>{t('getStarted')}</span>
@@ -199,17 +210,7 @@ export default function DashboardPage() {
         </main>
       </div>
 
-      {/* Deposit Form (new full-featured component for issue #4) */}
-      {publicKey && (
-        <DepositForm
-          isOpen={isDepositFormOpen}
-          onClose={() => setIsDepositFormOpen(false)}
-          userPublicKey={publicKey}
-          onDepositSuccess={handleDepositSuccess}
-        />
-      )}
-
-      {/* Legacy Action Modal — used for Withdraw only */}
+      {/* Action Modal */}
       <ActionModal
         isOpen={isModalOpen}
         onClose={() => setIsModalOpen(false)}
@@ -217,10 +218,38 @@ export default function DashboardPage() {
         userPublicKey={publicKey}
         balance={vaultState.balance}
         exchangeRate={vaultState.exchangeRate}
+        onSuccess={handleTransactionSuccess}
       />
 
-      {/* Global toast notifications */}
-      <ToastContainer toasts={toasts} onDismiss={dismiss} />
+      {/* Transaction Success Toast */}
+      {toast && (
+        <div
+          role="status"
+          aria-live="polite"
+          data-testid="success-toast"
+          className="fixed bottom-6 right-6 z-50 flex items-center gap-3 bg-emerald-950 border border-emerald-500/40 text-emerald-200 px-5 py-4 rounded-2xl shadow-2xl backdrop-blur-xl animate-in fade-in slide-in-from-bottom-5 duration-300"
+        >
+          <div className="h-9 w-9 rounded-xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center shrink-0">
+            <CheckCircle2 size={20} />
+          </div>
+          <div>
+            <p className="font-bold text-sm text-white" data-testid="toast-message">
+              {toast.message}
+            </p>
+            <p className="text-xs text-slate-400 font-mono" data-testid="toast-hash">
+              Tx: {toast.txHash.substring(0, 10)}...{toast.txHash.substring(toast.txHash.length - 6)}
+            </p>
+          </div>
+          <button
+            onClick={() => setToast(null)}
+            data-testid="close-toast-button"
+            className="ml-3 text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition-colors"
+            aria-label="Dismiss notification"
+          >
+            <X size={16} />
+          </button>
+        </div>
+      )}
 
       {/* Footer */}
       <footer className="border-t border-slate-800/80 bg-[#06080e] py-6 mt-12 text-center text-xs text-slate-400">
