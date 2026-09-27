@@ -5,7 +5,9 @@
   "main": "index.js",
   "scripts": {
     "build": "tsc",
-    "test": "ts-node --transpile-only src/openAiKeyManager.test.ts && ts-node --transpile-only src/rateLimiter.test.ts && ts-node --transpile-only src/db.test.ts"
+    "test": "ts-node --transpile-only src/openAiKeyManager.test.ts && ts-node --transpile-only src/rateLimiter.test.ts && ts-node --transpile-only src/db.test.ts",
+    "start:prod": "npx ts-node src/index.ts",
+    "start:dev": "ts-node src/index.ts"
   },
   "keywords": [],
   "author": "",
