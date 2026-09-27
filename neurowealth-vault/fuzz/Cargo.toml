@@ -66,3 +66,27 @@ name = "harvest_sequence"
 path = "fuzz_targets/harvest_sequence.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "deposit_arbitrary_amounts"
+path = "fuzz_targets/deposit_arbitrary_amounts.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "withdraw_exceed_balance"
+path = "fuzz_targets/withdraw_exceed_balance.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "batch_deposit_arbitrary"
+path = "fuzz_targets/batch_deposit_arbitrary.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "share_math_overflow"
+path = "fuzz_targets/share_math_overflow.rs"
+test = false
+doc = false
