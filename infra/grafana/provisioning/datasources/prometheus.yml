@@ -1,0 +1,23 @@
+# Grafana Datasource Provisioning
+#
+# Place this file at: infra/grafana/provisioning/datasources/prometheus.yml
+# Or mount it to:     /etc/grafana/provisioning/datasources/prometheus.yml
+#
+# Grafana will automatically configure the Prometheus datasource on startup.
+# No manual UI configuration is required.
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    uid: neurowealth-prometheus
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      httpMethod: POST
+      timeInterval: "15s"
+      # Enables Prometheus exemplars for trace correlation
+      exemplarTraceIdDestinations: []

@@ -1,0 +1,21 @@
+# Grafana Dashboard Provisioning
+#
+# Place this file at: infra/grafana/provisioning/dashboards/neurowealth.yml
+# Or mount it to:     /etc/grafana/provisioning/dashboards/neurowealth.yml
+#
+# Grafana will automatically load the JSON dashboards from the configured path
+# on startup and after hot-reload.
+
+apiVersion: 1
+
+providers:
+  - name: NeuroWealth
+    orgId: 1
+    type: file
+    disableDeletion: false
+    editable: true
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/dashboards
+      foldersFromFilesStructure: true

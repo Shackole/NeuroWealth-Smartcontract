@@ -1,0 +1,79 @@
+# NeuroWealth — Prometheus Scrape Configuration
+#
+# Place this file alongside the Prometheus binary or reference it via
+#   prometheus --config.file=infra/prometheus.yml
+#
+# Environment variables (substitute real values in production):
+#   AGENT_HOST        - hostname/IP of the Node.js agent service
+#   AGENT_PORT        - port the agent exposes /metrics (default 3000)
+#   ALERTMANAGER_HOST - hostname/IP of Alertmanager
+#   ALERTMANAGER_PORT - Alertmanager port (default 9093)
+#
+# For docker-compose or Kubernetes, replace the static_configs targets with
+# service-discovery configuration appropriate for your environment.
+
+global:
+  scrape_interval:     15s  # How often to scrape targets by default
+  evaluation_interval: 15s  # How often to evaluate alert rules
+  scrape_timeout:      10s
+
+  # Labels attached to all time series and alerts
+  external_labels:
+    environment: "production"
+    project:     "neurowealth"
+
+# ---------------------------------------------------------------------------
+# Alertmanager
+# ---------------------------------------------------------------------------
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - "${ALERTMANAGER_HOST:-localhost}:${ALERTMANAGER_PORT:-9093}"
+      timeout: 10s
+
+# ---------------------------------------------------------------------------
+# Recording rules and alert rules
+# ---------------------------------------------------------------------------
+rule_files:
+  - "rules/neurowealth_alerts.yml"
+
+# ---------------------------------------------------------------------------
+# Scrape jobs
+# ---------------------------------------------------------------------------
+scrape_configs:
+
+  # ── Node.js AI Agent ────────────────────────────────────────────────────
+  - job_name: "neurowealth_agent"
+    metrics_path: /metrics
+    scheme: http
+    static_configs:
+      - targets:
+          - "${AGENT_HOST:-localhost}:${AGENT_PORT:-3000}"
+        labels:
+          service: "agent"
+          component: "ai_agent"
+    # Relabel so every metric gets a consistent `instance` label
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        regex: "(.+)"
+        replacement: "${1}"
+
+  # ── Prometheus itself (self-monitoring) ─────────────────────────────────
+  - job_name: "prometheus"
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - "localhost:9090"
+        labels:
+          service: "prometheus"
+
+  # ── Node Exporter (host OS metrics) — optional ──────────────────────────
+  # Uncomment if running node_exporter on the same host as the agent.
+  # - job_name: "node_exporter"
+  #   static_configs:
+  #     - targets:
+  #         - "localhost:9100"
+  #       labels:
+  #         service: "node_exporter"

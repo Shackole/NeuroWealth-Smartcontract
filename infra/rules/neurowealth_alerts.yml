@@ -1,0 +1,287 @@
+# NeuroWealth Vault — Prometheus Alert Rules
+#
+# Referenced from infra/prometheus.yml via rule_files.
+# Severity levels: critical (page immediately), warning (investigate).
+#
+# Alert thresholds align with docs/monitoring.md §4 and §8.
+
+groups:
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Agent Service Health
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: agent_health
+    rules:
+
+      # Agent down: decision loop hasn't completed in 5 minutes
+      - alert: AgentDown
+        expr: |
+          (time() - agent_last_decision_loop_timestamp_seconds) > 300
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "NeuroWealth agent is unresponsive"
+          description: >
+            The agent's decision loop has not completed in over 5 minutes
+            (last seen {{ $value | humanizeDuration }} ago). The vault will
+            not be rebalanced and yield may not be harvested. Check the agent
+            process and logs immediately.
+          runbook: "https://github.com/your-org/NeuroWealth-Smartcontract/blob/main/SECURITY.md"
+
+      # HTTP error rate above 5%
+      - alert: AgentHighErrorRate
+        expr: |
+          (
+            sum(rate(http_errors_total[5m]))
+            /
+            sum(rate(http_requests_total[5m]))
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Agent HTTP error rate > 5%"
+          description: >
+            The agent API error rate is {{ $value | humanizePercentage }} over
+            the last 5 minutes (threshold: 5%). This may indicate downstream
+            RPC failures or unexpected input.
+
+      # High p99 latency
+      - alert: AgentHighP99Latency
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(http_request_duration_seconds_bucket[5m])) by (le)
+          ) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Agent API p99 latency > 5s"
+          description: >
+            The 99th-percentile HTTP response time is {{ $value }}s over the
+            last 5 minutes. Investigate slow Stellar RPC calls.
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Queue Health
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: queue_health
+    rules:
+
+      # Queue depth above 100
+      - alert: QueueDepthHigh
+        expr: queue_depth > 100
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Bull queue depth > 100"
+          description: >
+            The {{ $labels.queue_name }} queue has {{ $value }} waiting jobs.
+            The agent may be falling behind. Check agent throughput and Redis
+            connectivity.
+
+      # Queue depth critically high
+      - alert: QueueDepthCritical
+        expr: queue_depth > 500
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Bull queue depth critically high (> 500)"
+          description: >
+            The {{ $labels.queue_name }} queue has {{ $value }} waiting jobs.
+            The backlog is severe — user transactions may be delayed. Scale
+            the agent or investigate failures immediately.
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Vault On-Chain Metrics
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: vault_health
+    rules:
+
+      # Vault paused
+      - alert: VaultPaused
+        expr: neurowealth_vault_paused == 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Vault is paused"
+          description: >
+            The vault has been paused for at least 5 minutes. Users cannot
+            deposit or withdraw. Investigate whether the pause is intentional
+            (maintenance) or triggered by the circuit breaker.
+
+      # Vault paused for an extended period (docs/monitoring.md §2)
+      - alert: VaultPausedTooLong
+        expr: neurowealth_vault_paused == 1
+        for: 1440m   # 24 hours
+        labels:
+          severity: critical
+        annotations:
+          summary: "Vault paused for over 24 hours"
+          description: >
+            The vault has been paused for more than 24 hours. Review the
+            post-incident status and plan the unpause. Users are unable to
+            withdraw (except via emergency_withdraw).
+
+      # Circuit breaker counter climbing
+      - alert: VaultCircuitBreakerApproachingThreshold
+        expr: neurowealth_vault_consecutive_failures >= 2
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Vault circuit breaker at {{ $value }} consecutive failures"
+          description: >
+            The vault has {{ $value }} consecutive failed rebalances. At 3
+            (default), the circuit breaker will auto-pause the vault.
+            Investigate the rebalance failure immediately.
+
+      # Unexplained TVL drop > 5% (docs/monitoring.md §4.1)
+      - alert: UnexplainedTvlDropCritical
+        expr: |
+          (
+            (neurowealth_vault_total_assets - neurowealth_vault_total_assets offset 1m)
+            / neurowealth_vault_total_assets offset 1m
+          ) < -0.05
+          unless (
+            increase(neurowealth_vault_withdraw_amount_total[1m]) > 0
+            or
+            increase(neurowealth_vault_assets_updated_decrease_total[1m]) > 0
+          )
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Vault TVL dropped > 5% without a matching WithdrawEvent"
+          description: >
+            Total assets fell by {{ $value | humanizePercentage }} in the last
+            minute without a corresponding WithdrawEvent or authorized
+            AssetsUpdatedEvent. This is an active exploit signature. EMERGENCY
+            PAUSE the vault immediately.
+          runbook: "docs/monitoring.md#alert-unexplained_tvl_drop_critical-active-exploit-signature"
+
+      # Unexplained TVL drop > 1% (docs/monitoring.md §4.1)
+      - alert: UnexplainedTvlDropHigh
+        expr: |
+          (
+            (neurowealth_vault_total_assets - neurowealth_vault_total_assets offset 1m)
+            / neurowealth_vault_total_assets offset 1m
+          ) < -0.01
+          unless (
+            increase(neurowealth_vault_withdraw_amount_total[1m]) > 0
+            or
+            increase(neurowealth_vault_assets_updated_decrease_total[1m]) > 0
+          )
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Vault TVL dropped > 1% without a matching WithdrawEvent"
+          description: >
+            Total assets fell {{ $value | humanizePercentage }} in the last
+            minute without a corresponding event. This may indicate unreported
+            protocol losses or slippage.
+
+      # Slow-bleed: > 150 bps hourly decrease (docs/monitoring.md §8)
+      - alert: AssetsUpdatedHourlyDecreaseCluster
+        expr: |
+          (
+            sum_over_time(
+              (neurowealth_vault_assets_updated_decrease_stroops_total)[1h:]
+            )
+            / avg_over_time(neurowealth_vault_total_assets[1h])
+            * 10000
+          ) > 150
+          or
+          increase(neurowealth_vault_assets_updated_decrease_total[1h]) >= 2
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Vault assets decreased > 150 bps or 2+ times in 1 hour"
+          description: >
+            The vault has reported repeated or large asset decreases over the
+            last hour. This may indicate a slow-bleed extraction attempt. Check
+            agent update_total_assets calls and protocol balances.
+
+      # Sustained bleed: > 300 bps in 24h (docs/monitoring.md §8)
+      - alert: AssetsUpdatedSustainedBleedDrain
+        expr: |
+          (
+            sum_over_time(
+              (neurowealth_vault_assets_updated_decrease_stroops_total)[24h:]
+            )
+            / avg_over_time(neurowealth_vault_total_assets[24h])
+            * 10000
+          ) > 300
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Vault cumulative asset decrease > 300 bps over 24 hours"
+          description: >
+            The vault has lost more than 3% of assets via update_total_assets
+            decreases over the past 24 hours. Possible compromised agent or
+            yield oracle. PAUSE the vault and rotate the agent key.
+
+      # Share supply drift (docs/monitoring.md §4.1)
+      - alert: ShareSupplyUnaccountedDrift
+        expr: |
+          (changes(neurowealth_vault_total_shares[1m]) > 0)
+          unless (
+            increase(neurowealth_vault_deposit_events_total[1m]) > 0
+            or
+            increase(neurowealth_vault_withdraw_events_total[1m]) > 0
+          )
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "TotalShares changed without a corresponding deposit/withdraw event"
+          description: >
+            An accounting invariant has been violated: the total share supply
+            changed without any deposit or withdrawal event. This indicates
+            possible storage corruption or unauthorized state manipulation.
+            EMERGENCY PAUSE immediately.
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Stellar RPC Health
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: stellar_rpc_health
+    rules:
+
+      # High p99 RPC latency
+      - alert: StellarRpcHighLatency
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(stellar_rpc_latency_seconds_bucket[5m])) by (le, operation)
+          ) > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Stellar RPC p99 latency > 10s for {{ $labels.operation }}"
+          description: >
+            The 99th-percentile Stellar RPC call time for {{ $labels.operation }}
+            is {{ $value }}s. The agent may fail to submit transactions within
+            Stellar's network timeouts.
+
+      # RPC error rate
+      - alert: StellarRpcHighErrorRate
+        expr: |
+          (
+            sum(rate(stellar_rpc_errors_total[5m])) by (operation)
+            /
+            (sum(rate(stellar_rpc_latency_seconds_count[5m])) by (operation) + 1)
+          ) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Stellar RPC error rate > 10% for {{ $labels.operation }}"
+          description: >
+            More than 10% of {{ $labels.operation }} RPC calls are failing.
+            Check Stellar network status and RPC endpoint health.

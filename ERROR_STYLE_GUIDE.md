@@ -1,5 +1,11 @@
 # NeuroWealth Vault Error Message Style Guide
 
+> **Full error-code reference**: [`docs/ERROR_CODES.md`](docs/ERROR_CODES.md)
+> contains every `VaultError` variant with its numeric code, category
+> (User / Agent / Owner / System), description, trigger conditions, and
+> resolution steps, plus a copy-ready TypeScript `VAULT_ERROR_MAP` for
+> frontend consumers (Issue #13).
+
 This document defines the standardized error codes and legacy wording for
 failures in the NeuroWealth Vault contract.
 
