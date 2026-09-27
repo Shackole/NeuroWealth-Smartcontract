@@ -1,283 +1,432 @@
 /**
- * Intent Parser — NeuroWealth AI Agent
+ * Natural Language Intent Parser (#23)
  *
- * Parses natural language user messages into structured vault operations.
- *
- * ## Intent schema
- *
- * | Action          | Required fields       | Optional fields  |
- * |-----------------|-----------------------|------------------|
- * | `deposit`       | action, amount        | strategy         |
- * | `withdraw`      | action, amount        |                  |
- * | `withdraw_all`  | action                |                  |
- * | `check_balance` | action                |                  |
- * | `get_earnings`  | action                |                  |
- * | `set_strategy`  | action, strategy      |                  |
- * | `get_apy`       | action                |                  |
- * | `clarify`       | action, question      |                  |
- * | `error`         | action, reason        |                  |
- *
- * ## Amount encoding
- * All amounts are in **stroops** (7-decimal, 1 USDC = 1_000_000).
- *
- * ## Parsing strategy
- * 1. Try the regex-based `parseIntentFromRegex()` fallback first.
- * 2. If regex is inconclusive, call the LLM via OpenAI key rotation.
- * 3. Validate the response with Zod.
- *
- * @see docs/DESIGN_SYSTEM.md for usage in the WhatsApp / web chat flows.
+ * Converts free-form user messages into structured action objects.
+ * Architecture:
+ *  1. Try Claude / OpenAI via circuit breaker
+ *  2. Validate LLM JSON output with Zod
+ *  3. Fall back to rule-based regex parser if LLM is unavailable
+ *  4. Log confidence scores; prompt confirmation for low-confidence intents
+ *  5. Support multi-turn context (e.g. "do the same but with 200 USDC")
+ *  6. Ask a clarifying question for genuinely ambiguous inputs
  */
 
+import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
 import { z } from 'zod';
-import { openAiKeyManager } from './openAiKeyManager';
+import logger from './logger';
 
-// ── Types ───────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────
+// Types and schemas
+// ─────────────────────────────────────────────────────────
 
-export type Action =
-  | 'deposit'
-  | 'withdraw'
-  | 'withdraw_all'
-  | 'check_balance'
-  | 'get_earnings'
-  | 'set_strategy'
-  | 'get_apy'
-  | 'clarify'
-  | 'error';
+export const ActionSchema = z.enum([
+  'deposit',
+  'withdraw',
+  'withdraw_all',
+  'check_balance',
+  'check_earnings',
+  'set_strategy',
+  'get_apy',
+  'clarify',
+]);
 
-export type Strategy = 'conservative' | 'balanced' | 'growth';
+export type Action = z.infer<typeof ActionSchema>;
 
-export type AmountTooSmallReason  = 'amount_too_small';
-export type AmountMissingReason   = 'amount_missing';
-export type UnknownActionReason   = 'unknown_action';
-export type InvalidStrategyReason = 'invalid_strategy';
+export const StrategySchema = z.enum(['conservative', 'balanced', 'growth']);
+export type Strategy = z.infer<typeof StrategySchema>;
 
-export type ErrorReason =
-  | AmountTooSmallReason
-  | AmountMissingReason
-  | UnknownActionReason
-  | InvalidStrategyReason;
-
-export interface ParsedIntent {
-  /** Resolved action */
-  action: Action;
-  /**
-   * Amount in stroops (1 USDC = 1_000_000).
-   * Only present for `deposit` and `withdraw`.
-   */
-  amount?: number;
-  /** Strategy preference for `deposit` and `set_strategy` */
-  strategy?: Strategy;
-  /** Clarifying question for the user when action is `clarify` */
-  question?: string;
-  /** Machine-readable error reason when action is `error` */
-  reason?: ErrorReason;
-}
-
-// ── Zod schema ───────────────────────────────────────────────────────────────
-
-/** Minimum deposit / withdraw amount in USDC stroops (1 stroop = 0.0000001 USDC) */
-const MIN_AMOUNT_STROOPS = 1_000_000; // 1 USDC
-
-/**
- * Zod schema for the raw JSON the LLM must return.
- *
- * The LLM returns USDC units (e.g., 50); the schema transforms them to
- * stroops by multiplying by 1_000_000.
- */
-const llmResponseSchema = z.object({
-  action: z.enum([
-    'deposit',
-    'withdraw',
-    'withdraw_all',
-    'check_balance',
-    'get_earnings',
-    'set_strategy',
-    'get_apy',
-    'clarify',
-    'error',
-  ]),
-  // LLM returns USDC amount as a number; we convert to stroops.
-  amount_usdc: z.number().positive().optional(),
-  strategy: z.enum(['conservative', 'balanced', 'growth']).optional(),
-  question: z.string().optional(),
-  reason: z.enum([
-    'amount_too_small',
-    'amount_missing',
-    'unknown_action',
-    'invalid_strategy',
-  ]).optional(),
+export const ParsedIntentSchema = z.object({
+  action: ActionSchema,
+  /** Numeric amount for deposit/withdraw actions */
+  amount: z.number().positive().optional(),
+  /** "all" when user asks to withdraw everything */
+  withdrawAll: z.boolean().optional(),
+  /** Target investment strategy */
+  strategy: StrategySchema.optional(),
+  /** Clarifying question to ask the user (action === 'clarify') */
+  clarifyingQuestion: z.string().optional(),
+  /** Confidence score 0–1 from the LLM */
+  confidence: z.number().min(0).max(1).default(1),
+  /** Raw user input */
+  raw: z.string(),
 });
 
-type LlmResponse = z.infer<typeof llmResponseSchema>;
+export type ParsedIntent = z.infer<typeof ParsedIntentSchema>;
 
-// ── Regex fallback parser ────────────────────────────────────────────────────
+/** Threshold below which we ask the user to confirm before executing */
+export const LOW_CONFIDENCE_THRESHOLD = 0.7;
 
-/**
- * Rule-based regex parser — runs before the LLM to handle unambiguous inputs
- * without incurring API latency or cost.
- *
- * Returns `null` when the input is ambiguous and the LLM should be consulted.
- */
-export function parseIntentFromRegex(message: string): ParsedIntent | null {
-  const clean = message.trim().toLowerCase();
+// ─────────────────────────────────────────────────────────
+// Multi-turn context store (per-user conversation history)
+// ─────────────────────────────────────────────────────────
 
-  // ── Balance ──────────────────────────────────────────────────────────────
-  if (
-    /\bbalance\b/.test(clean) ||
-    /how much do i have/.test(clean) ||
-    /my funds/.test(clean) ||
-    /what('s| is) in my (account|wallet|vault)/.test(clean)
-  ) {
-    return { action: 'check_balance' };
-  }
-
-  // ── APY ──────────────────────────────────────────────────────────────────
-  if (
-    /\bapy\b/.test(clean) ||
-    /what('s| is) my apy/.test(clean) ||
-    /interest rate/.test(clean) ||
-    /current (yield|rate)/.test(clean)
-  ) {
-    return { action: 'get_apy' };
-  }
-
-  // ── Earnings ─────────────────────────────────────────────────────────────
-  if (
-    /\bearnings\b/.test(clean) ||
-    /how much have i (made|earned)/.test(clean) ||
-    /my (profit|yield|returns)/.test(clean)
-  ) {
-    return { action: 'get_earnings' };
-  }
-
-  // ── Strategy ─────────────────────────────────────────────────────────────
-  const strategyMatch = clean.match(
-    /(?:switch(?: to)?|change(?: to)?|set(?: my)?(?: strategy(?: to)?)?)\s+(conservative|balanced|growth)/,
-  );
-  if (strategyMatch) {
-    return { action: 'set_strategy', strategy: strategyMatch[1] as Strategy };
-  }
-
-  // ── Withdraw all ─────────────────────────────────────────────────────────
-  if (
-    /withdraw\s+(?:all|everything|it all)/.test(clean) ||
-    /cash\s+out\s+(?:all|everything)/.test(clean) ||
-    /take\s+out\s+everything/.test(clean)
-  ) {
-    return { action: 'withdraw_all' };
-  }
-
-  // ── Withdraw with amount ──────────────────────────────────────────────────
-  const withdrawMatch = clean.match(/withdraw\s+(\d+(?:\.\d+)?)\s*(?:usdc)?/);
-  if (withdrawMatch) {
-    const usdc   = parseFloat(withdrawMatch[1]);
-    const amount = Math.round(usdc * 1_000_000);
-    if (amount < MIN_AMOUNT_STROOPS) {
-      return { action: 'error', reason: 'amount_too_small' };
-    }
-    return { action: 'withdraw', amount };
-  }
-
-  // ── Deposit with amount ───────────────────────────────────────────────────
-  const depositMatch = clean.match(/deposit\s+(\d+(?:\.\d+)?)\s*(?:usdc)?/);
-  if (depositMatch) {
-    const usdc   = parseFloat(depositMatch[1]);
-    const amount = Math.round(usdc * 1_000_000);
-    if (amount < MIN_AMOUNT_STROOPS) {
-      return { action: 'error', reason: 'amount_too_small' };
-    }
-    // Extract optional strategy
-    const stratInDeposit = clean.match(/(?:into|in)\s+(conservative|balanced|growth)\s+strategy/);
-    const strategy = stratInDeposit ? (stratInDeposit[1] as Strategy) : undefined;
-    return { action: 'deposit', amount, ...(strategy ? { strategy } : {}) };
-  }
-
-  // ── Ambiguous deposit (no amount) ────────────────────────────────────────
-  if (/\bdeposit\b/.test(clean)) {
-    return {
-      action:   'clarify',
-      question: 'How much USDC would you like to deposit?',
-    };
-  }
-
-  // ── Ambiguous withdraw (no amount, no "all") ─────────────────────────────
-  if (/\bwithdraw\b/.test(clean)) {
-    return {
-      action:   'clarify',
-      question: 'How much USDC would you like to withdraw?',
-    };
-  }
-
-  // Inconclusive — let the LLM handle it
-  return null;
+interface ConversationTurn {
+  role: 'user' | 'assistant';
+  content: string;
 }
 
-// ── LLM-based parser ─────────────────────────────────────────────────────────
+const conversationHistory = new Map<string, ConversationTurn[]>();
 
-const SYSTEM_PROMPT = `You are an intent parser for the NeuroWealth DeFi assistant.
-Parse the user's message and respond with ONLY a JSON object matching this schema:
+const MAX_HISTORY_TURNS = 6; // keep last 3 exchanges
+
+export function getConversationHistory(userId: string): ConversationTurn[] {
+  return conversationHistory.get(userId) ?? [];
+}
+
+export function appendToHistory(
+  userId: string,
+  role: 'user' | 'assistant',
+  content: string,
+): void {
+  const history = conversationHistory.get(userId) ?? [];
+  history.push({ role, content });
+  // Trim to the most recent MAX_HISTORY_TURNS turns
+  if (history.length > MAX_HISTORY_TURNS) {
+    history.splice(0, history.length - MAX_HISTORY_TURNS);
+  }
+  conversationHistory.set(userId, history);
+}
+
+export function clearHistory(userId: string): void {
+  conversationHistory.delete(userId);
+}
+
+// ─────────────────────────────────────────────────────────
+// Circuit breaker for LLM API calls
+// ─────────────────────────────────────────────────────────
+
+type BreakerState = 'CLOSED' | 'OPEN' | 'HALF_OPEN';
+
+interface CircuitBreaker {
+  state: BreakerState;
+  failures: number;
+  lastFailureTime: number;
+  successCount: number;
+}
+
+const FAILURE_THRESHOLD = 3;
+const RECOVERY_TIMEOUT_MS = 30_000; // 30 s before attempting half-open
+const HALF_OPEN_SUCCESS_THRESHOLD = 2;
+
+const breakers: Record<string, CircuitBreaker> = {
+  anthropic: { state: 'CLOSED', failures: 0, lastFailureTime: 0, successCount: 0 },
+  openai:    { state: 'CLOSED', failures: 0, lastFailureTime: 0, successCount: 0 },
+};
+
+function isAvailable(provider: string): boolean {
+  const b = breakers[provider];
+  if (!b) return true;
+  if (b.state === 'CLOSED') return true;
+  if (b.state === 'OPEN') {
+    if (Date.now() - b.lastFailureTime >= RECOVERY_TIMEOUT_MS) {
+      b.state = 'HALF_OPEN';
+      b.successCount = 0;
+      return true;
+    }
+    return false;
+  }
+  return true; // HALF_OPEN — allow one probe
+}
+
+function recordSuccess(provider: string): void {
+  const b = breakers[provider];
+  if (!b) return;
+  if (b.state === 'HALF_OPEN') {
+    b.successCount += 1;
+    if (b.successCount >= HALF_OPEN_SUCCESS_THRESHOLD) {
+      b.state = 'CLOSED';
+      b.failures = 0;
+    }
+  } else {
+    b.failures = 0;
+  }
+}
+
+function recordFailure(provider: string): void {
+  const b = breakers[provider];
+  if (!b) return;
+  b.failures += 1;
+  b.lastFailureTime = Date.now();
+  if (b.failures >= FAILURE_THRESHOLD || b.state === 'HALF_OPEN') {
+    b.state = 'OPEN';
+    logger.warn({ provider }, 'Circuit breaker opened for LLM provider');
+  }
+}
+
+// ─────────────────────────────────────────────────────────
+// System prompt
+// ─────────────────────────────────────────────────────────
+
+const SYSTEM_PROMPT = `You are an intent parser for the NeuroWealth DeFi investment bot.
+Parse the user's message into a JSON object that EXACTLY matches this schema:
+
 {
-  "action": "deposit" | "withdraw" | "withdraw_all" | "check_balance" | "get_earnings" | "set_strategy" | "get_apy" | "clarify" | "error",
-  "amount_usdc": number (USDC units, optional — only for deposit/withdraw),
-  "strategy": "conservative" | "balanced" | "growth" (optional),
-  "question": string (required when action is "clarify"),
-  "reason": "amount_too_small" | "amount_missing" | "unknown_action" | "invalid_strategy" (required when action is "error")
+  "action": "deposit" | "withdraw" | "withdraw_all" | "check_balance" | "check_earnings" | "set_strategy" | "get_apy" | "clarify",
+  "amount": <positive number, omit if not applicable>,
+  "withdrawAll": <true only when user explicitly wants all funds withdrawn>,
+  "strategy": "conservative" | "balanced" | "growth" (omit if not mentioned),
+  "clarifyingQuestion": "<a question to ask the user when genuinely ambiguous, omit otherwise>",
+  "confidence": <number 0.0–1.0 reflecting your certainty>
 }
 
 Rules:
-- "withdraw everything" / "withdraw all" → action = "withdraw_all" (no amount)
-- Deposit with 0 USDC or negative amount → action = "error", reason = "amount_too_small"
-- Deposit intent with no amount → action = "clarify", question = "How much USDC would you like to deposit?"
-- Unknown or ambiguous input → action = "clarify", question = ask for clarification
-- amount_usdc must be in USDC (NOT stroops). The system will convert automatically.`;
+- Output ONLY valid JSON — no markdown, no explanation.
+- Use action "clarify" only when you truly cannot determine the intent.
+- When the user says "all" or "everything" for a withdraw, set withdrawAll=true and omit amount.
+- When the user references a prior action (e.g. "do it again" or "same but 200 USDC"), use the conversation context to fill in missing fields.
+- confidence should be 1.0 for clear requests, lower for ambiguous ones.`;
 
-async function callLlm(message: string): Promise<LlmResponse> {
-  const raw = await openAiKeyManager.executeWithRotation(async (openai: OpenAI) => {
-    const completion = await openai.chat.completions.create({
-      model:          'gpt-4-turbo',
-      response_format: { type: 'json_object' },
-      messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
-        { role: 'user',   content: message },
-      ],
-    });
-    const content = completion.choices[0]?.message?.content;
-    if (!content) throw new Error('Empty response from LLM');
-    return content;
+// ─────────────────────────────────────────────────────────
+// LLM helpers
+// ─────────────────────────────────────────────────────────
+
+async function callAnthropic(
+  messages: ConversationTurn[],
+  rawMessage: string,
+): Promise<string> {
+  const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  const response = await client.messages.create({
+    model: 'claude-3-5-haiku-20241022',
+    max_tokens: 256,
+    system: SYSTEM_PROMPT,
+    messages: [
+      ...messages.map((m) => ({ role: m.role, content: m.content })),
+      { role: 'user', content: rawMessage },
+    ],
   });
-
-  const parsed = JSON.parse(raw as string) as unknown;
-  return llmResponseSchema.parse(parsed);
+  const block = response.content[0];
+  if (block.type !== 'text') throw new Error('Unexpected Anthropic response type');
+  return block.text;
 }
 
-function convertLlmResponse(llm: LlmResponse): ParsedIntent {
-  const intent: ParsedIntent = { action: llm.action };
-  if (llm.strategy)   intent.strategy = llm.strategy;
-  if (llm.question)   intent.question = llm.question;
-  if (llm.reason)     intent.reason   = llm.reason;
-  if (llm.amount_usdc !== undefined) {
-    intent.amount = Math.round(llm.amount_usdc * 1_000_000);
-  }
-  return intent;
+async function callOpenAI(
+  messages: ConversationTurn[],
+  rawMessage: string,
+): Promise<string> {
+  const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  const completion = await client.chat.completions.create({
+    model: 'gpt-4o-mini',
+    response_format: { type: 'json_object' },
+    messages: [
+      { role: 'system', content: SYSTEM_PROMPT },
+      ...messages.map((m) => ({ role: m.role, content: m.content })),
+      { role: 'user', content: rawMessage },
+    ],
+    max_tokens: 256,
+    temperature: 0,
+  });
+  return completion.choices[0]?.message?.content ?? '';
 }
 
-// ── Public entry-point ───────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────
+// Rule-based fallback parser
+// ─────────────────────────────────────────────────────────
 
 /**
- * Parse a natural language user message into a structured `ParsedIntent`.
- *
- * Tries the regex fallback first; falls back to the LLM for ambiguous inputs.
- *
- * @param message  Raw user message (WhatsApp / chat)
- * @returns        Structured intent ready for the vault client or chat handler
+ * Fast regex fallback used when all LLM providers are unavailable.
+ * Covers the most common intents with high recall.
  */
-export async function parseIntent(message: string): Promise<ParsedIntent> {
-  // 1. Try fast regex-based parser
-  const fast = parseIntentFromRegex(message);
-  if (fast !== null) return fast;
+export function parseIntentWithRegex(message: string): ParsedIntent {
+  const lower = message.toLowerCase().trim();
 
-  // 2. Fall back to LLM
-  const llm = await callLlm(message);
-  return convertLlmResponse(llm);
+  // Withdraw all
+  if (/\bwithdraw\s+(all|everything)\b/.test(lower)) {
+    return { action: 'withdraw_all', withdrawAll: true, confidence: 0.95, raw: message };
+  }
+
+  // Withdraw <amount>
+  const withdrawMatch = lower.match(/\bwithdraw\s+([\d,]+(?:\.\d+)?)/);
+  if (withdrawMatch) {
+    return {
+      action: 'withdraw',
+      amount: parseFloat(withdrawMatch[1].replace(/,/g, '')),
+      confidence: 0.9,
+      raw: message,
+    };
+  }
+
+  // Deposit <amount>
+  const depositMatch = lower.match(/\bdeposit\s+([\d,]+(?:\.\d+)?)/);
+  if (depositMatch) {
+    const stratMatch = lower.match(/\b(conservative|balanced|growth)\b/);
+    return {
+      action: 'deposit',
+      amount: parseFloat(depositMatch[1].replace(/,/g, '')),
+      strategy: stratMatch ? (stratMatch[1] as Strategy) : undefined,
+      confidence: 0.9,
+      raw: message,
+    };
+  }
+
+  // Balance
+  if (/\b(balance|how much|my portfolio|portfolio)\b/.test(lower)) {
+    return { action: 'check_balance', confidence: 0.9, raw: message };
+  }
+
+  // Earnings
+  if (/\b(earn|earnings|yield|profit|made)\b/.test(lower)) {
+    return { action: 'check_earnings', confidence: 0.85, raw: message };
+  }
+
+  // APY
+  if (/\b(apy|interest|rate|annual)\b/.test(lower)) {
+    return { action: 'get_apy', confidence: 0.85, raw: message };
+  }
+
+  // Strategy switch
+  const stratMatch = lower.match(
+    /\b(?:switch|change|set|use)\b.*\b(conservative|balanced|growth)\b/,
+  );
+  if (stratMatch) {
+    return {
+      action: 'set_strategy',
+      strategy: stratMatch[1] as Strategy,
+      confidence: 0.9,
+      raw: message,
+    };
+  }
+
+  // Bare strategy name
+  const bareStrat = lower.match(/^(conservative|balanced|growth)$/);
+  if (bareStrat) {
+    return {
+      action: 'set_strategy',
+      strategy: bareStrat[1] as Strategy,
+      confidence: 0.8,
+      raw: message,
+    };
+  }
+
+  // Fallback: ask for clarification
+  return {
+    action: 'clarify',
+    clarifyingQuestion:
+      'I didn\'t understand that. Could you rephrase? For example: "deposit 100 USDC" or "check my balance".',
+    confidence: 0.3,
+    raw: message,
+  };
+}
+
+// ─────────────────────────────────────────────────────────
+// Main parser
+// ─────────────────────────────────────────────────────────
+
+export interface ParseIntentOptions {
+  /** User / session identifier for multi-turn context */
+  userId?: string;
+  /**
+   * When true, skip the LLM and use only the regex parser.
+   * Useful for testing or when API keys are not configured.
+   */
+  forceRegex?: boolean;
+}
+
+/**
+ * Parse a user message into a structured ParsedIntent.
+ *
+ * Strategy:
+ * 1. Try Anthropic (claude-3-5-haiku) — fastest, cheapest
+ * 2. Try OpenAI (gpt-4o-mini) if Anthropic is unavailable
+ * 3. Fall back to regex parser if both LLMs are down
+ * 4. Validate output with Zod; fall back to regex on schema error
+ */
+export async function parseIntent(
+  message: string,
+  options: ParseIntentOptions = {},
+): Promise<ParsedIntent> {
+  const { userId, forceRegex = false } = options;
+  const history = userId ? getConversationHistory(userId) : [];
+
+  let rawJson: string | null = null;
+  let usedProvider: string | null = null;
+
+  if (!forceRegex) {
+    // ── Attempt Anthropic ──────────────────────────────────────────────────
+    if (isAvailable('anthropic') && process.env.ANTHROPIC_API_KEY) {
+      try {
+        rawJson = await callAnthropic(history, message);
+        recordSuccess('anthropic');
+        usedProvider = 'anthropic';
+      } catch (err) {
+        recordFailure('anthropic');
+        logger.warn(
+          { err: (err as Error).message },
+          'Anthropic call failed — trying OpenAI',
+        );
+      }
+    }
+
+    // ── Attempt OpenAI ─────────────────────────────────────────────────────
+    if (!rawJson && isAvailable('openai') && process.env.OPENAI_API_KEY) {
+      try {
+        rawJson = await callOpenAI(history, message);
+        recordSuccess('openai');
+        usedProvider = 'openai';
+      } catch (err) {
+        recordFailure('openai');
+        logger.warn(
+          { err: (err as Error).message },
+          'OpenAI call failed — falling back to regex parser',
+        );
+      }
+    }
+  }
+
+  // ── Parse & validate LLM output ───────────────────────────────────────────
+  if (rawJson) {
+    try {
+      const parsed = JSON.parse(rawJson);
+      const validated = ParsedIntentSchema.parse({ ...parsed, raw: message });
+
+      logger.info(
+        { action: validated.action, confidence: validated.confidence, provider: usedProvider },
+        'Intent parsed via LLM',
+      );
+
+      // Store in conversation history for multi-turn support
+      if (userId) {
+        appendToHistory(userId, 'user', message);
+        appendToHistory(userId, 'assistant', rawJson);
+      }
+
+      return validated;
+    } catch (err) {
+      logger.warn(
+        { err: (err as Error).message, rawJson },
+        'LLM output failed Zod validation — falling back to regex',
+      );
+    }
+  }
+
+  // ── Regex fallback ─────────────────────────────────────────────────────────
+  const regexResult = parseIntentWithRegex(message);
+
+  logger.info(
+    { action: regexResult.action, confidence: regexResult.confidence, provider: 'regex' },
+    'Intent parsed via regex fallback',
+  );
+
+  if (userId) {
+    appendToHistory(userId, 'user', message);
+  }
+
+  return regexResult;
+}
+
+/**
+ * Returns true when the intent confidence is too low to execute without
+ * asking the user to confirm.
+ */
+export function needsConfirmation(intent: ParsedIntent): boolean {
+  return intent.confidence < LOW_CONFIDENCE_THRESHOLD;
+}
+
+/**
+ * Returns the breaker state snapshot for observability.
+ */
+export function getBreakerStates(): Record<string, BreakerState> {
+  return Object.fromEntries(
+    Object.entries(breakers).map(([k, v]) => [k, v.state]),
+  );
 }
