@@ -1,14 +1,14 @@
-import { rpc as SorobanRpc } from '@stellar/stellar-sdk';
 import { pool } from './db';
 import { evaluateYield } from './yieldComparison';
 import { processEventForAlerts } from './alertEngine';
 import logger from './logger';
 import { withRetry } from './retry';
+import { rpcCall, getRpcServer } from './rpcClient';
 
 export { pool };
 
-const rpcUrl = process.env.SOROBAN_RPC_URL || 'https://soroban-testnet.stellar.org';
-export const server = new SorobanRpc.Server(rpcUrl);
+/** Convenience re-export for callers that still reference `server` directly. */
+export const server = getRpcServer();
 
 const VAULT_CONTRACT_ID = process.env.VAULT_CONTRACT_ID || '';
 
@@ -34,7 +34,7 @@ export async function startEventListener() {
 
   try {
     const latestLedgerResponse = await withRetry(
-      () => server.getLatestLedger(),
+      () => rpcCall((s) => s.getLatestLedger()),
       'getLatestLedger',
     );
     let startLedger = latestLedgerResponse.sequence;
@@ -43,7 +43,7 @@ export async function startEventListener() {
     eventInterval = setInterval(async () => {
       try {
         const response = await withRetry(
-          () => server.getEvents({
+          () => rpcCall((s) => s.getEvents({
             startLedger,
             filters: [
               {
@@ -52,7 +52,7 @@ export async function startEventListener() {
               }
             ],
             limit: 100,
-          }),
+          })),
           'getEvents',
         );
 
