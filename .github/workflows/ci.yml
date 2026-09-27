@@ -77,6 +77,9 @@ jobs:
           - name: "Stale-State Audit Check"
             step: "stale-state-audit"
             working_directory: "."
+          - name: "Blast Radius Security Tests"
+            step: "blast-radius-test"
+            working_directory: "."
 
     steps:
       - name: Checkout code
@@ -251,6 +254,10 @@ jobs:
             stale-state-audit)
               bash scripts/check-stale-state-audit.sh \
                 neurowealth-vault/contracts/vault/src/lib.rs
+              ;;
+            blast-radius-test)
+              npm ci
+              npm test
               ;;
             *)
               echo "Unknown step: ${{ matrix.step }}" >&2
