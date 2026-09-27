@@ -1,0 +1,115 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /neurowealth-vault
+    schedule:
+      interval: weekly
+      day: monday
+      time: '03:00'
+      timezone: UTC
+    open-pull-requests-limit: 10
+    groups:
+      cargo-minor-and-patch:
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: npm
+    directory: /agent
+    schedule:
+      interval: weekly
+      day: monday
+      time: '03:15'
+      timezone: UTC
+    open-pull-requests-limit: 10
+    groups:
+      npm-minor-and-patch:
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+      day: monday
+      time: '03:15'
+      timezone: UTC
+    open-pull-requests-limit: 10
+    groups:
+      npm-minor-and-patch:
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: npm
+    directory: /packages/vault-client
+    schedule:
+      interval: weekly
+      day: monday
+      time: '03:15'
+      timezone: UTC
+    open-pull-requests-limit: 10
+    groups:
+      npm-minor-and-patch:
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: npm
+    directory: /packages/vault-ui
+    schedule:
+      interval: weekly
+      day: monday
+      time: '03:15'
+      timezone: UTC
+    open-pull-requests-limit: 10
+    groups:
+      npm-minor-and-patch:
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: npm
+    directory: /packages/bridge
+    schedule:
+      interval: weekly
+      day: monday
+      time: '03:30'
+      timezone: UTC
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: npm
+    directory: /packages/admin-panel
+    schedule:
+      interval: weekly
+      day: monday
+      time: '03:30'
+      timezone: UTC
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: npm
+    directory: /packages/monitoring
+    schedule:
+      interval: weekly
+      day: monday
+      time: '03:30'
+      timezone: UTC
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: npm
+    directory: /whatsapp
+    schedule:
+      interval: weekly
+      day: monday
+      time: '03:30'
+      timezone: UTC
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '03:45'
+      timezone: UTC
