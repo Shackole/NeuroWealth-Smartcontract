@@ -29,6 +29,8 @@ pub const TOPIC_WITHDRAW: Symbol = symbol_short!("withdraw");
 /// Topic for `RebalanceEvent`, published by every `rebalance` outcome
 /// (including `"noop").
 pub const TOPIC_REBALANCE: Symbol = symbol_short!("rebalance");
+/// Topic for `RebalancedEvent`, published after a successful `rebalance` call.
+pub const TOPIC_REBALANCED: Symbol = symbol_short!("rebal");
 /// Topic for `VaultPausedEvent`, published by `pause`.
 pub const TOPIC_PAUSED: Symbol = symbol_short!("paused");
 /// Topic for `VaultUnpausedEvent`, published by `unpause`.

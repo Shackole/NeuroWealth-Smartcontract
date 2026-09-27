@@ -10,6 +10,7 @@ This changelog is tied to the vault contract `Version` storage value. Each relea
 
 ## [Unreleased]
 <!-- Add entries below. Format: `- Short description (Issue #N).` -->
+- **Deposit caps, DEX rebalance observability, WASM budget, and CEI audit (Issues #50–#53):** Fixed batch `TotalAssets` accounting, added a cumulative multi-entry cap regression, moved deposit token interactions after accounting effects, emitted an additive `RebalancedEvent`, set a 1.2 MB CI safety budget below the 1.5 MB repository ceiling with a rolling ten-measurement history, and documented CEI ordering/deviations in `docs/CEI_AUDIT.md`. No contract version bump.
 - **Agent-compromise adversarial suite (Issue #673):** Added `test_agent_compromise_scenarios.rs` covering owner-only calls, victim withdrawals, storage mutation, pause/upgrade/pool retarget, arbitrary `TotalAssets` manipulation, and deposit front-running. Documented the threat model in `SECURITY.md`.
 - **Formal verification of share accounting (Issue #672):** Extracted mint/burn/redeem math into the `share-math` crate, added Kani proofs for conservation, non-negative balances, monotonic exchange rate, round-trip value, and vault-favouring rounding, and wired `cargo kani -p share-math` into CI. Spec and maintenance process: `docs/FORMAL_VERIFICATION.md`.
 - **WCAG 2.1 AA vault UI (Issue #668):** Keyboard access, skip link, ARIA labels, AA contrast, rem-based type, axe-core in Vitest, and `docs/ACCESSIBILITY.md`.
