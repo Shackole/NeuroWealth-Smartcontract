@@ -1,7 +1,6 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { Header } from '@/components/Header';
 import { BalanceCard } from '@/components/BalanceCard';
 import { EarningsCard } from '@/components/EarningsCard';
 import { StrategyBadge } from '@/components/StrategyBadge';
@@ -81,8 +80,6 @@ export default function DashboardPage() {
   return (
     <div className="min-h-screen bg-[#080b11] text-slate-100 flex flex-col justify-between">
       <div>
-        <Header publicKey={publicKey} onConnect={handleConnect} onDisconnect={handleDisconnect} />
-
         <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
           {/* Hero Banner / Wallet Banner */}
           {!publicKey && (
