@@ -1,0 +1,249 @@
+name: Terraform
+
+# CI/CD pipeline for NeuroWealth Terraform infrastructure (#119).
+#
+# Triggers:
+#   - Pull request touching infra/**  → fmt + validate + plan (comment on PR)
+#   - Push to main touching infra/**  → plan + apply (requires manual approval)
+#
+# Required secrets (Settings → Secrets → Actions):
+#   AWS_ACCESS_KEY_ID         AWS credentials for the CI IAM user
+#   AWS_SECRET_ACCESS_KEY     AWS credentials for the CI IAM user
+#   AWS_REGION                AWS region (e.g. us-east-1)
+#   RAILWAY_TOKEN             Railway API token
+#   TF_STATE_BUCKET           S3 bucket name for remote state
+#   TF_LOCK_TABLE             DynamoDB table name for state locking
+
+on:
+  pull_request:
+    paths:
+      - "infra/**"
+      - ".github/workflows/terraform.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "infra/**"
+      - ".github/workflows/terraform.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write  # needed to post plan as PR comment
+
+env:
+  TF_VERSION: "1.5.7"
+  TF_WORKING_DIR: "infra/terraform"
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # terraform-check — fmt + validate (runs on every PR, fast feedback)
+  # ---------------------------------------------------------------------------
+  terraform-check:
+    name: Terraform Format & Validate
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform ${{ env.TF_VERSION }}
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ secrets.AWS_REGION }}
+
+      - name: Terraform Format Check
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform fmt -check -recursive
+
+      - name: Terraform Init (no backend)
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform init -backend=false
+
+      - name: Terraform Validate
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform validate
+
+  # ---------------------------------------------------------------------------
+  # terraform-plan — full plan with remote backend (runs on every PR)
+  # ---------------------------------------------------------------------------
+  terraform-plan:
+    name: Terraform Plan
+    runs-on: ubuntu-latest
+    needs: terraform-check
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform ${{ env.TF_VERSION }}
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: true
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ secrets.AWS_REGION }}
+
+      - name: Terraform Init
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        env:
+          TF_VAR_railway_token: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="dynamodb_table=${{ secrets.TF_LOCK_TABLE }}" \
+            -backend-config="region=${{ secrets.AWS_REGION }}"
+
+      - name: Terraform Plan
+        id: plan
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        env:
+          TF_VAR_railway_token: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          terraform plan \
+            -out=tfplan \
+            -no-color \
+            -input=false \
+            2>&1 | tee plan_output.txt
+          echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload plan artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan
+          path: ${{ env.TF_WORKING_DIR }}/tfplan
+          retention-days: 7
+
+      - name: Post plan as PR comment
+        uses: actions/github-script@v7
+        if: always()
+        with:
+          script: |
+            const fs = require('fs');
+            const planOutput = fs.readFileSync(
+              '${{ env.TF_WORKING_DIR }}/plan_output.txt', 'utf8'
+            ).slice(0, 60000); // GitHub comment limit
+
+            const status = '${{ steps.plan.outputs.exit_code }}' === '0'
+              ? '✅ Plan succeeded'
+              : '❌ Plan failed';
+
+            const body = [
+              `## Terraform Plan — ${status}`,
+              '',
+              '<details><summary>Show plan output</summary>',
+              '',
+              '```hcl',
+              planOutput,
+              '```',
+              '',
+              '</details>',
+              '',
+              `*Triggered by @${{ github.actor }} on \`${{ github.head_ref }}\`*`,
+            ].join('\n');
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const existingComment = comments.find(
+              (c) => c.user.login === 'github-actions[bot]' &&
+                     c.body.includes('## Terraform Plan')
+            );
+
+            if (existingComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existingComment.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
+  # ---------------------------------------------------------------------------
+  # terraform-apply — applies on push to main (requires manual approval)
+  # ---------------------------------------------------------------------------
+  terraform-apply:
+    name: Terraform Apply
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # The `terraform-production` GitHub Actions environment must be configured
+    # with a required reviewer to enforce manual approval before apply.
+    # Settings → Environments → terraform-production → Required reviewers
+    environment:
+      name: terraform-production
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform ${{ env.TF_VERSION }}
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ secrets.AWS_REGION }}
+
+      - name: Terraform Init
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        env:
+          TF_VAR_railway_token: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="dynamodb_table=${{ secrets.TF_LOCK_TABLE }}" \
+            -backend-config="region=${{ secrets.AWS_REGION }}"
+
+      - name: Terraform Plan
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        env:
+          TF_VAR_railway_token: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          terraform plan -out=tfplan -no-color -input=false
+
+      - name: Terraform Apply
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        env:
+          TF_VAR_railway_token: ${{ secrets.RAILWAY_TOKEN }}
+        run: terraform apply -auto-approve -input=false tfplan
+
+      - name: Write apply summary
+        if: always()
+        run: |
+          echo "## Terraform Apply" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Branch | \`${{ github.ref_name }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Commit | \`${{ github.sha }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Actor | \`${{ github.actor }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Working dir | \`${{ env.TF_WORKING_DIR }}\` |" >> "$GITHUB_STEP_SUMMARY"
