@@ -2,6 +2,8 @@ NeuroWealth 💰
 
 AI-Powered DeFi Yield Platform on Stellar
 
+[![Coverage](https://img.shields.io/badge/coverage-80%25-brightgreen)](https://github.com/Shackole/NeuroWealth-Smartcontract/actions/workflows/coverage.yml)
+
 NeuroWealth is an autonomous AI investment agent that automatically manages and grows your crypto assets on the Stellar blockchain. Deposit once, let the AI find the best yield opportunities across Stellar's DeFi ecosystem — and withdraw anytime with no lock-ups.
 
 ## Overview
