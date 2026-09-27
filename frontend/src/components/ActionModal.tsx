@@ -1,16 +1,10 @@
 'use client';
 
-import React, { useState } from 'react';
-import {
-  X,
-  ArrowDownLeft,
-  ArrowUpRight,
-  Loader2,
-  CheckCircle2,
-  ShieldAlert,
-  AlertTriangle,
-} from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { X, ArrowDownLeft, ArrowUpRight, Loader2, CheckCircle2, RefreshCw } from 'lucide-react';
 import { signWithFreighter } from '@/lib/freighter';
+import { fetchVaultCapState } from '@/lib/stellar';
+import { VaultCapIndicator, VaultCapData } from '@/components/VaultCapIndicator';
 
 interface ActionModalProps {
   isOpen: boolean;
@@ -19,18 +13,13 @@ interface ActionModalProps {
   userPublicKey: string | null;
   balance: number;
   exchangeRate: number;
-  strategy?: string;
+  /**
+   * When true, renders the form inline without its own backdrop/overlay.
+   * Used when the parent (e.g. BottomSheet) already provides the overlay.
+   */
+  embedded?: boolean;
 }
 
-/**
- * ActionModal - pre-signing confirmation modal (Issue #105)
- *
- * Flow:
- *   1. User fills in amount
- *   2. Modal shows full transaction summary + risk disclosure
- *   3. User must tick the acknowledgement checkbox
- *   4. Only after confirmation is Freighter popup opened
- */
 export const ActionModal: React.FC<ActionModalProps> = ({
   isOpen,
   onClose,
@@ -38,37 +27,51 @@ export const ActionModal: React.FC<ActionModalProps> = ({
   userPublicKey,
   balance,
   exchangeRate,
-  strategy = 'Balanced',
+  embedded = false,
 }) => {
   const [amount, setAmount] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(false);
   const [txSuccess, setTxSuccess] = useState<boolean>(false);
   const [txHash, setTxHash] = useState<string>('');
-  // Risk disclosure acknowledgement - Confirm button stays disabled until ticked
-  const [riskAcknowledged, setRiskAcknowledged] = useState<boolean>(false);
+  const [capData, setCapData] = useState<VaultCapData | null>(null);
+  const [capLoading, setCapLoading] = useState<boolean>(false);
+
+  // Refresh cap data each time the deposit modal is opened
+  useEffect(() => {
+    if (isOpen && type === 'deposit') {
+      setCapLoading(true);
+      fetchVaultCapState(userPublicKey ?? undefined)
+        .then((data) => setCapData(data))
+        .finally(() => setCapLoading(false));
+    }
+  }, [isOpen, type, userPublicKey]);
 
   if (!isOpen) return null;
 
   const numAmount = parseFloat(amount) || 0;
-  // Amounts are stored in stroops (7 decimals). Display value = stroops / 10_000_000
-  const displayAmount = numAmount.toFixed(2);
-  const estimatedShares = exchangeRate > 0 ? (numAmount / exchangeRate).toFixed(4) : '0.0000';
+  const estimatedShares = (numAmount / exchangeRate).toFixed(4);
+
+  // Deposit is disabled if TVL cap is reached or user personal cap is reached
+  const tvlFull = capData ? capData.totalDeposits >= capData.tvlCap : false;
+  const userFull = capData ? capData.userDeposits >= capData.userDepositCap : false;
+  const depositBlocked = type === 'deposit' && (tvlFull || userFull);
+
+  // Cap remaining for this user
+  const userRemaining = capData
+    ? Math.max(capData.userDepositCap - capData.userDeposits, 0)
+    : undefined;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!userPublicKey || numAmount <= 0 || !riskAcknowledged) return;
+    if (!userPublicKey || numAmount <= 0 || depositBlocked) return;
 
     setLoading(true);
     setTxSuccess(false);
 
     try {
-      // Build mock Soroban vault XDR, then open Freighter ONLY after user confirmed
       const mockXdr = 'AAAAAgAAAAD...SorobanVaultTx...';
       await signWithFreighter(mockXdr);
-
-      // Simulate on-chain ledger confirmation (~3-5s on Stellar)
       await new Promise((res) => setTimeout(res, 2000));
-
       const hash = `0x${Array.from({ length: 64 }, () =>
         Math.floor(Math.random() * 16).toString(16)
       ).join('')}`;
@@ -85,205 +88,200 @@ export const ActionModal: React.FC<ActionModalProps> = ({
     setAmount('');
     setTxSuccess(false);
     setTxHash('');
-    setRiskAcknowledged(false);
     onClose();
   };
 
-  const isConfirmEnabled = numAmount > 0 && riskAcknowledged && !loading;
+  const refreshCap = () => {
+    setCapLoading(true);
+    fetchVaultCapState(userPublicKey ?? undefined)
+      .then((d) => setCapData(d))
+      .finally(() => setCapLoading(false));
+  };
 
-  return (
-    /*
-     * Overlay: full-screen on all sizes.
-     * On mobile (< sm) the panel slides up from the bottom as a bottom sheet.
-     * On sm+ it is centred as a dialog.
-     */
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label={`${type === 'deposit' ? 'Deposit' : 'Withdraw'} confirmation`}
-      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-slate-950/80 backdrop-blur-md"
-    >
-      <div className="glass-panel w-full sm:max-w-md rounded-t-2xl sm:rounded-2xl p-6 relative border border-slate-700 shadow-2xl">
-        {/* Close button */}
+  // ── Inner form content ────────────────────────────────────────────────────
+  const inner = (
+    <>
+      {!embedded && (
         <button
           onClick={handleResetAndClose}
-          aria-label="Close modal"
           className="absolute top-4 right-4 text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800"
+          aria-label="Close modal"
         >
           <X size={20} />
         </button>
+      )}
 
-        {/* SUCCESS STATE */}
-        {txSuccess ? (
-          <div className="text-center py-6">
-            <div className="h-16 w-16 bg-emerald-500/20 text-emerald-400 rounded-full flex items-center justify-center mx-auto mb-4 border border-emerald-500/30">
-              <CheckCircle2 size={36} />
-            </div>
-            <h3 className="text-xl font-bold text-white mb-2">
-              {type === 'deposit' ? 'Deposit Successful!' : 'Withdrawal Successful!'}
-            </h3>
-            <p className="text-sm text-slate-400 mb-4 font-mono">
-              Transaction Hash:{' '}
-              {txHash.substring(0, 12)}...{txHash.substring(txHash.length - 8)}
-            </p>
-            <p className="text-xs text-emerald-400 bg-emerald-500/10 py-2 px-3 rounded-lg border border-emerald-500/20 mb-6">
-              Confirmed in ~3.8 seconds on Stellar
-            </p>
-            <button
-              onClick={handleResetAndClose}
-              className="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold py-3 rounded-xl transition-all"
-            >
-              Done
-            </button>
+      {txSuccess ? (
+        <div className="text-center py-6">
+          <div className="h-16 w-16 bg-emerald-500/20 text-emerald-400 rounded-full flex items-center justify-center mx-auto mb-4 border border-emerald-500/30">
+            <CheckCircle2 size={36} />
           </div>
-        ) : (
-          /* FORM + DISCLOSURE STATE */
-          <form onSubmit={handleSubmit}>
-            {/* Header */}
-            <div className="flex items-center gap-2 mb-6">
-              {type === 'deposit' ? (
-                <div className="h-10 w-10 bg-emerald-500/20 text-emerald-400 rounded-xl flex items-center justify-center">
-                  <ArrowDownLeft size={22} />
-                </div>
-              ) : (
-                <div className="h-10 w-10 bg-indigo-500/20 text-indigo-400 rounded-xl flex items-center justify-center">
-                  <ArrowUpRight size={22} />
-                </div>
-              )}
-              <div>
-                <h3 className="text-lg font-bold text-white capitalize">
-                  {type} USDC
-                </h3>
-                <p className="text-xs text-slate-400">
-                  {type === 'deposit'
-                    ? 'Mint shares in Soroban vault'
-                    : 'Burn shares & withdraw USDC'}
-                </p>
+          <h3 className="text-xl font-bold text-white mb-2">
+            {type === 'deposit' ? 'Deposit Successful!' : 'Withdrawal Successful!'}
+          </h3>
+          <p className="text-sm text-slate-400 mb-4 font-mono">
+            Transaction Hash: {txHash.substring(0, 12)}...{txHash.substring(txHash.length - 8)}
+          </p>
+          <p className="text-xs text-emerald-400 bg-emerald-500/10 py-2 px-3 rounded-lg border border-emerald-500/20 mb-6">
+            Confirmed in ~3.8 seconds on Stellar Devnet
+          </p>
+          <button
+            onClick={handleResetAndClose}
+            className="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold py-3 rounded-xl transition-all"
+          >
+            Done
+          </button>
+        </div>
+      ) : (
+        <form onSubmit={handleSubmit}>
+          <div className="flex items-center gap-2 mb-6">
+            {type === 'deposit' ? (
+              <div className="h-10 w-10 bg-emerald-500/20 text-emerald-400 rounded-xl flex items-center justify-center">
+                <ArrowDownLeft size={22} />
               </div>
-            </div>
-
-            {/* Amount input */}
-            <div className="mb-4">
-              <div className="flex justify-between text-xs text-slate-400 mb-1.5 font-medium">
-                <span>Amount (USDC)</span>
-                <span>Available: {balance.toFixed(2)} USDC</span>
+            ) : (
+              <div className="h-10 w-10 bg-indigo-500/20 text-indigo-400 rounded-xl flex items-center justify-center">
+                <ArrowUpRight size={22} />
               </div>
-              <div className="relative">
-                <input
-                  type="number"
-                  step="0.01"
-                  min="1"
-                  max={type === 'withdraw' ? balance : 10000}
-                  value={amount}
-                  onChange={(e) => setAmount(e.target.value)}
-                  placeholder="0.00"
-                  aria-label="Amount in USDC"
-                  className="w-full bg-slate-900 border border-slate-700 rounded-xl py-3 px-4 text-white font-mono text-lg focus:outline-none focus:border-emerald-500 transition-colors"
-                  required
-                />
-                <button
-                  type="button"
-                  onClick={() =>
-                    setAmount(type === 'withdraw' ? balance.toString() : '100')
-                  }
-                  className="absolute right-3 top-3 text-xs font-semibold text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 px-2 py-1 rounded"
-                >
-                  MAX
-                </button>
-              </div>
-            </div>
-
-            {/* Transaction Summary */}
-            <div className="bg-slate-900/80 p-3 rounded-xl border border-slate-800 text-xs space-y-2 mb-4 font-mono text-slate-300">
-              <p className="text-[10px] uppercase tracking-wider text-slate-500 font-sans font-semibold mb-1">
-                Transaction Details
-              </p>
-              <div className="flex justify-between">
-                <span className="text-slate-400">Action:</span>
-                <span className="capitalize font-semibold text-white">{type}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-400">Amount:</span>
-                <span className="text-white">{displayAmount} USDC</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-400">Strategy:</span>
-                <span className="text-white">{strategy}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-400">
-                  {type === 'deposit' ? 'Shares to mint:' : 'Shares to burn:'}
-                </span>
-                <span className="text-emerald-400">{estimatedShares} NV-SHARES</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-400">Exchange Rate:</span>
-                <span>{exchangeRate.toFixed(4)} USDC / Share</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-400">Network Fee:</span>
-                <span className="text-slate-400">&lt; 0.00001 XLM</span>
-              </div>
-            </div>
-
-            {/* Risk Disclosure */}
-            <div className="bg-amber-950/30 border border-amber-500/30 rounded-xl p-3 mb-4">
-              <div className="flex items-start gap-2 mb-2">
-                <ShieldAlert size={16} className="text-amber-400 mt-0.5 shrink-0" />
-                <p className="text-xs font-semibold text-amber-300">Risk Disclosure</p>
-              </div>
-              <p className="text-xs text-amber-200/70 leading-relaxed">
-                Funds will be managed autonomously by the NeuroWealth AI agent
-                across Stellar DeFi protocols. Smart contract interactions carry
-                inherent risks including protocol bugs and market volatility.{' '}
-                <strong className="text-amber-300">You can withdraw anytime</strong>{' '}
-                with no lock-up period.
+            )}
+            <div>
+              <h3 className="text-lg font-bold text-white capitalize">{type} USDC</h3>
+              <p className="text-xs text-slate-400">
+                {type === 'deposit'
+                  ? 'Mint shares in Soroban vault'
+                  : 'Burn shares & withdraw USDC'}
               </p>
             </div>
+          </div>
 
-            {/* Acknowledgement checkbox - required before Confirm */}
-            <label className="flex items-start gap-3 mb-5 cursor-pointer group">
-              <input
-                type="checkbox"
-                checked={riskAcknowledged}
-                onChange={(e) => setRiskAcknowledged(e.target.checked)}
-                aria-label="I understand the risks and wish to proceed"
-                className="mt-0.5 h-4 w-4 rounded border-slate-600 bg-slate-800 text-emerald-500 accent-emerald-500 cursor-pointer"
-              />
-              <span className="text-xs text-slate-300 group-hover:text-white transition-colors leading-relaxed">
-                I understand the risks, and I wish to proceed with this {type}.
+          {/* Vault Cap Indicators — deposit only */}
+          {type === 'deposit' && (
+            <div className="mb-5 bg-slate-900/60 rounded-xl border border-slate-800 p-4">
+              <div className="flex items-center justify-between text-xs text-slate-400 mb-3">
+                <span className="font-semibold uppercase tracking-wider">Vault Capacity</span>
+                {capLoading ? (
+                  <RefreshCw size={12} className="animate-spin text-slate-500" />
+                ) : (
+                  <button
+                    type="button"
+                    onClick={refreshCap}
+                    className="flex items-center gap-1 hover:text-emerald-400 transition-colors"
+                    aria-label="Refresh cap data"
+                  >
+                    <RefreshCw size={11} />
+                    Refresh
+                  </button>
+                )}
+              </div>
+              {capLoading ? (
+                <div className="flex items-center gap-2 text-xs text-slate-500 py-2">
+                  <Loader2 size={13} className="animate-spin" />
+                  Loading vault capacity...
+                </div>
+              ) : capData ? (
+                <VaultCapIndicator capData={capData} />
+              ) : null}
+            </div>
+          )}
+
+          <div className="mb-4">
+            <div className="flex justify-between text-xs text-slate-400 mb-1.5 font-medium">
+              <span>Amount (USDC)</span>
+              <span>
+                {type === 'deposit' && userRemaining !== undefined
+                  ? `Cap remaining: ${userRemaining.toLocaleString('en-US', { maximumFractionDigits: 2 })} USDC`
+                  : `Available: ${balance.toFixed(2)} USDC`}
               </span>
-            </label>
-
-            {/* Action buttons */}
-            <div className="flex gap-3">
+            </div>
+            <div className="relative">
+              <input
+                type="number"
+                step="0.01"
+                min="1"
+                max={
+                  type === 'withdraw'
+                    ? balance
+                    : userRemaining !== undefined
+                    ? userRemaining
+                    : 10000
+                }
+                value={amount}
+                onChange={(e) => setAmount(e.target.value)}
+                placeholder="0.00"
+                disabled={depositBlocked}
+                className="w-full bg-slate-900 border border-slate-700 rounded-xl py-3 px-4 text-white font-mono text-lg focus:outline-none focus:border-emerald-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                required
+              />
               <button
                 type="button"
-                onClick={handleResetAndClose}
-                className="flex-1 py-3 rounded-xl border border-slate-700 text-slate-300 hover:bg-slate-800 hover:text-white transition-all text-sm font-semibold"
+                onClick={() =>
+                  setAmount(
+                    type === 'withdraw'
+                      ? balance.toString()
+                      : userRemaining !== undefined
+                      ? String(Math.min(userRemaining, 100))
+                      : '100'
+                  )
+                }
+                disabled={depositBlocked}
+                className="absolute right-3 top-3 text-xs font-semibold text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 px-2 py-1 rounded disabled:opacity-30 disabled:cursor-not-allowed"
               >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                disabled={!isConfirmEnabled}
-                className="flex-1 flex items-center justify-center gap-2 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-slate-950 font-bold py-3 rounded-xl transition-all shadow-glow-emerald disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                {loading ? (
-                  <>
-                    <Loader2 className="animate-spin" size={18} />
-                    <span>Signing with Freighter...</span>
-                  </>
-                ) : (
-                  <>
-                    <AlertTriangle size={16} />
-                    <span>I understand, proceed</span>
-                  </>
-                )}
+                MAX
               </button>
             </div>
-          </form>
-        )}
+          </div>
+
+          <div className="bg-slate-900/80 p-3 rounded-xl border border-slate-800 text-xs space-y-2 mb-6 font-mono text-slate-300">
+            <div className="flex justify-between">
+              <span className="text-slate-400">Exchange Rate:</span>
+              <span>{exchangeRate.toFixed(4)} USDC / Share</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-slate-400">Estimated Shares:</span>
+              <span className="text-emerald-400">{estimatedShares} NV-SHARES</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-slate-400">Network Fee:</span>
+              <span className="text-slate-400">&lt; 0.00001 XLM</span>
+            </div>
+          </div>
+
+          <button
+            type="submit"
+            disabled={loading || numAmount <= 0 || depositBlocked}
+            className="w-full flex items-center justify-center gap-2 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-slate-950 font-bold py-3.5 rounded-xl transition-all shadow-glow-emerald disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {loading ? (
+              <>
+                <Loader2 className="animate-spin" size={18} />
+                <span>Signing with Freighter...</span>
+              </>
+            ) : depositBlocked ? (
+              <span>Deposits Unavailable</span>
+            ) : (
+              <span>Confirm {type === 'deposit' ? 'Deposit' : 'Withdrawal'}</span>
+            )}
+          </button>
+        </form>
+      )}
+    </>
+  );
+
+  // ── Embedded mode: just render the form (BottomSheet provides the shell) ──
+  if (embedded) {
+    return <div className="pb-2">{inner}</div>;
+  }
+
+  // ── Modal mode: full-screen overlay ───────────────────────────────────────
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md"
+      role="dialog"
+      aria-modal="true"
+      aria-label={type === 'deposit' ? 'Deposit USDC' : 'Withdraw USDC'}
+    >
+      <div className="glass-panel w-full max-w-md rounded-2xl p-6 relative border border-slate-700 shadow-2xl animate-in fade-in zoom-in duration-200">
+        {inner}
       </div>
     </div>
   );
