@@ -418,7 +418,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
       - name: Check for contract changes
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@v4
         id: filter
         with:
           filters: |
