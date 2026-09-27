@@ -1,282 +1,165 @@
 'use client';
 
 import React, { useState } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { ShieldCheck, Zap, Flame, Info, Check, Loader2, type LucideIcon } from 'lucide-react';
-import { signWithFreighter } from '@/lib/freighter';
+import { ShieldCheck, Zap, TrendingUp, Check } from 'lucide-react';
+import { setUserStrategy } from '@/lib/contract';
 
-// ─── Strategy data (static constants matching README) ─────────────────────────
-export type Strategy = 'Conservative' | 'Balanced' | 'Growth';
+export type StrategyType = 'conservative' | 'balanced' | 'growth';
 
-interface StrategyMeta {
-  id: Strategy;
-  label: string;
-  apyRange: string;
-  riskLevel: 'Low' | 'Medium' | 'High';
+export interface StrategyOption {
+  id: StrategyType;
+  name: string;
+  apy: number;
+  risk: 'Low' | 'Medium' | 'High';
   description: string;
-  icon: LucideIcon;
-  accentColor: string;
-  bgColor: string;
-  borderColor: string;
-  riskBadgeColor: string;
+  icon: React.ElementType;
 }
 
-const STRATEGIES: StrategyMeta[] = [
+export const STRATEGIES: StrategyOption[] = [
   {
-    id: 'Conservative',
-    label: 'Conservative',
-    apyRange: '3–6%',
-    riskLevel: 'Low',
-    description: 'Stablecoin lending on Blend Protocol. Predictable returns with minimal exposure to volatility.',
-    icon: ShieldCheck,
-    accentColor: 'text-blue-400',
-    bgColor: 'bg-blue-500/10',
-    borderColor: 'border-blue-500/40',
-    riskBadgeColor: 'bg-blue-500/15 text-blue-300 border-blue-500/30',
+    id: 'conservative',
+    name: 'Conservative',
+    apy: 5.2,
+    risk: 'Low',
+    description: '100% Blend lending pool allocation prioritizing principal safety and steady yield.',
+    icon: ShieldCheck
   },
   {
-    id: 'Balanced',
-    label: 'Balanced',
-    apyRange: '6–10%',
-    riskLevel: 'Medium',
-    description: 'Mix of stablecoin lending and DEX liquidity provision. Optimal risk-to-reward ratio.',
-    icon: Zap,
-    accentColor: 'text-emerald-400',
-    bgColor: 'bg-emerald-500/10',
-    borderColor: 'border-emerald-500/40',
-    riskBadgeColor: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30',
+    id: 'balanced',
+    name: 'Balanced',
+    apy: 8.4,
+    risk: 'Medium',
+    description: 'Dynamic allocation between Blend and DEX pools automated by AI rebalancing.',
+    icon: Zap
   },
   {
-    id: 'Growth',
-    label: 'Growth',
-    apyRange: '10–15%',
-    riskLevel: 'High',
-    description: 'Aggressive multi-protocol deployment across Blend and DEX pools for maximum yield.',
-    icon: Flame,
-    accentColor: 'text-amber-400',
-    bgColor: 'bg-amber-500/10',
-    borderColor: 'border-amber-500/40',
-    riskBadgeColor: 'bg-amber-500/15 text-amber-300 border-amber-500/30',
-  },
+    id: 'growth',
+    name: 'Growth',
+    apy: 12.1,
+    risk: 'High',
+    description: 'Aggressive multi-protocol yield farming maximizing compound returns.',
+    icon: TrendingUp
+  }
 ];
 
-// ─── Tooltip ───────────────────────────────────────────────────────────────────
-function AdvisoryTooltip() {
-  const [visible, setVisible] = useState(false);
-  return (
-    <div className="relative inline-flex">
-      <button
-        aria-label="Strategy advisory information"
-        onMouseEnter={() => setVisible(true)}
-        onMouseLeave={() => setVisible(false)}
-        onFocus={() => setVisible(true)}
-        onBlur={() => setVisible(false)}
-        className="text-slate-500 hover:text-slate-300 transition-colors"
-      >
-        <Info size={14} />
-      </button>
-      <AnimatePresence>
-        {visible && (
-          <motion.div
-            initial={{ opacity: 0, y: 6 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 6 }}
-            transition={{ duration: 0.15 }}
-            className="absolute bottom-full right-0 mb-2 w-64 z-50 bg-slate-900 border border-slate-700 rounded-xl p-3 shadow-2xl text-xs text-slate-300 leading-relaxed"
-            role="tooltip"
-          >
-            <p className="font-semibold text-white mb-1">Advisory only</p>
-            Your strategy preference is stored on-chain as a signal for the AI
-            agent. Actual fund deployment is managed autonomously by the vault
-            — your selected strategy informs the agent&apos;s allocation decisions
-            but does not directly control where funds are deployed.
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </div>
-  );
-}
-
-// ─── Individual strategy card ──────────────────────────────────────────────────
-interface CardProps {
-  strategy: StrategyMeta;
-  isActive: boolean;
-  isLoading: boolean;
-  onSelect: () => void;
-}
-
-function StrategyCard({ strategy, isActive, isLoading, onSelect }: CardProps) {
-  const Icon = strategy.icon;
-
-  return (
-    <motion.button
-      whileHover={{ scale: 1.02 }}
-      whileTap={{ scale: 0.98 }}
-      onClick={onSelect}
-      disabled={isLoading}
-      aria-pressed={isActive}
-      aria-label={`Select ${strategy.label} strategy`}
-      className={`relative flex flex-col text-left p-4 rounded-2xl border-2 transition-all cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 disabled:opacity-60 disabled:cursor-not-allowed w-full ${
-        isActive
-          ? `${strategy.bgColor} ${strategy.borderColor} shadow-lg`
-          : 'bg-slate-900/60 border-slate-800 hover:border-slate-600 hover:bg-slate-800/60'
-      }`}
-    >
-      {/* Active checkmark */}
-      {isActive && (
-        <span
-          className={`absolute top-3 right-3 h-5 w-5 rounded-full flex items-center justify-center ${strategy.bgColor} ${strategy.accentColor}`}
-        >
-          <Check size={12} strokeWidth={3} />
-        </span>
-      )}
-
-      {/* Loading spinner overlay */}
-      {isLoading && isActive && (
-        <span className="absolute top-3 right-3">
-          <Loader2 size={16} className={`${strategy.accentColor} animate-spin`} />
-        </span>
-      )}
-
-      {/* Icon */}
-      <div className={`h-9 w-9 rounded-xl flex items-center justify-center mb-3 ${strategy.bgColor}`}>
-        <Icon size={18} className={strategy.accentColor} />
-      </div>
-
-      {/* Title + APY */}
-      <div className="flex items-baseline justify-between mb-2">
-        <span className="font-bold text-white text-sm">{strategy.label}</span>
-        <span className={`font-extrabold text-lg font-mono ${strategy.accentColor}`}>
-          {strategy.apyRange}
-        </span>
-      </div>
-
-      <p className="text-xs text-slate-400 leading-relaxed mb-3">
-        {strategy.description}
-      </p>
-
-      {/* Risk badge */}
-      <span
-        className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold border ${strategy.riskBadgeColor}`}
-      >
-        {strategy.riskLevel} Risk
-      </span>
-
-      {/* APY label */}
-      <p className="text-[10px] text-slate-500 mt-2">APY range (estimated)</p>
-    </motion.button>
-  );
-}
-
-// ─── Main StrategySelector export ─────────────────────────────────────────────
-interface StrategySelectorProps {
-  publicKey: string | null;
-  currentStrategy: Strategy;
-  apy: number;
-  onStrategyChange: (strategy: Strategy) => void;
+export interface StrategySelectorProps {
+  userPublicKey?: string | null;
+  activeStrategy?: StrategyType;
+  onSelectStrategy?: (strategy: StrategyType) => void;
 }
 
 export const StrategySelector: React.FC<StrategySelectorProps> = ({
-  publicKey,
-  currentStrategy,
-  apy,
-  onStrategyChange,
+  userPublicKey,
+  activeStrategy = 'balanced',
+  onSelectStrategy
 }) => {
-  // Optimistic selection — shown immediately; reverted on tx failure
-  const [optimisticStrategy, setOptimisticStrategy] = useState<Strategy | null>(null);
-  const [pendingStrategy, setPendingStrategy] = useState<Strategy | null>(null);
-  const [txError, setTxError] = useState<string | null>(null);
+  const [selected, setSelected] = useState<StrategyType>(activeStrategy);
+  const [loading, setLoading] = useState<boolean>(false);
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
-  const displayStrategy = optimisticStrategy ?? currentStrategy;
+  const handleSelect = async (strategyId: StrategyType) => {
+    setSelected(strategyId);
+    setStatusMessage(null);
 
-  async function handleSelectStrategy(strategy: Strategy) {
-    if (!publicKey || strategy === displayStrategy) return;
-
-    // Optimistic UI update
-    setOptimisticStrategy(strategy);
-    setPendingStrategy(strategy);
-    setTxError(null);
-    onStrategyChange(strategy);
-
-    try {
-      /**
-       * In a full integration, we'd build a Soroban transaction that calls
-       * set_user_strategy(user, strategy) on the vault contract.
-       * For now, we simulate the signing step. The vault contract call can be
-       * wired up once the Soroban RPC endpoint is configured.
-       *
-       * Placeholder XDR — replace with real transaction built via stellar-sdk:
-       * const tx = await buildSetStrategyTx(publicKey, strategy);
-       * const signedXdr = await signWithFreighter(tx.toXDR(), NETWORK_PASSPHRASE);
-       */
-      const PLACEHOLDER_XDR = ''; // will be replaced with real Soroban tx
-      if (PLACEHOLDER_XDR) {
-        const signed = await signWithFreighter(PLACEHOLDER_XDR);
-        if (!signed) {
-          throw new Error('Transaction rejected by user');
-        }
-        // TODO: submit signed XDR to Soroban RPC
-      }
-
-      // Strategy committed successfully (optimistic update stays)
-    } catch (err: unknown) {
-      // Revert optimistic update on failure
-      const message = err instanceof Error ? err.message : 'Transaction failed';
-      setTxError(message);
-      setOptimisticStrategy(null);
-      onStrategyChange(currentStrategy);
-    } finally {
-      setPendingStrategy(null);
+    if (onSelectStrategy) {
+      onSelectStrategy(strategyId);
     }
-  }
+
+    if (userPublicKey) {
+      setLoading(true);
+      try {
+        await setUserStrategy(userPublicKey, strategyId);
+        setStatusMessage(`Strategy set to ${strategyId.toUpperCase()}`);
+      } catch (err: any) {
+        setStatusMessage(`Failed to update strategy: ${err.message}`);
+      } finally {
+        setLoading(false);
+      }
+    }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent, strategyId: StrategyType) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      handleSelect(strategyId);
+    }
+  };
 
   return (
-    <div className="glass-panel-interactive rounded-2xl p-5 flex flex-col gap-4">
-      {/* Header */}
+    <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div>
-          <div className="flex items-center gap-2">
-            <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
-              Investment Strategy
-            </span>
-            <AdvisoryTooltip />
-          </div>
-          <p className="text-xs text-slate-500 mt-0.5">
-            Current APY:{' '}
-            <span className="text-emerald-400 font-semibold">{apy.toFixed(1)}%</span>
-          </p>
+          <h3 className="text-lg font-bold text-white">Investment Strategy</h3>
+          <p className="text-xs text-slate-400">Select how autonomous AI deploys your deposited assets</p>
         </div>
-        {!publicKey && (
-          <span className="text-[10px] text-slate-500 italic">Connect wallet to change</span>
+        {statusMessage && (
+          <span role="status" className="text-xs text-emerald-400 font-mono">
+            {statusMessage}
+          </span>
         )}
       </div>
 
-      {/* Cards */}
-      <div className="grid grid-cols-1 gap-3">
-        {STRATEGIES.map((strategy) => (
-          <StrategyCard
-            key={strategy.id}
-            strategy={strategy}
-            isActive={displayStrategy === strategy.id}
-            isLoading={pendingStrategy === strategy.id}
-            onSelect={() => handleSelectStrategy(strategy.id)}
-          />
-        ))}
+      <div
+        role="radiogroup"
+        aria-label="Investment Strategy Selector"
+        className="grid grid-cols-1 md:grid-cols-3 gap-4"
+      >
+        {STRATEGIES.map((st) => {
+          const isSelected = selected === st.id;
+          const Icon = st.icon;
+
+          return (
+            <div
+              key={st.id}
+              role="radio"
+              aria-checked={isSelected}
+              aria-label={`${st.name} Strategy`}
+              tabIndex={0}
+              onClick={() => handleSelect(st.id)}
+              onKeyDown={(e) => handleKeyDown(e, st.id)}
+              className={`cursor-pointer rounded-2xl p-5 border transition-all relative overflow-hidden select-none focus:outline-none focus:ring-2 focus:ring-emerald-400 ${
+                isSelected
+                  ? 'border-emerald-500 bg-emerald-950/20 shadow-glow-emerald'
+                  : 'border-slate-800 bg-slate-900/50 hover:border-slate-700 hover:bg-slate-900'
+              }`}
+            >
+              <div className="flex items-start justify-between mb-3">
+                <div className={`p-2.5 rounded-xl ${
+                  isSelected ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-800 text-slate-400'
+                }`}>
+                  <Icon size={20} aria-hidden="true" />
+                </div>
+                <div className="text-right">
+                  <span className="text-lg font-extrabold text-white">{st.apy}%</span>
+                  <span className="text-[10px] text-slate-400 block font-mono">EST. APY</span>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 mb-1">
+                <h4 className="font-bold text-white text-base">{st.name}</h4>
+                {isSelected && (
+                  <span className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-emerald-400 bg-emerald-500/20 px-1.5 py-0.5 rounded">
+                    <Check size={10} aria-hidden="true" /> Active
+                  </span>
+                )}
+              </div>
+
+              <p className="text-xs text-slate-300 leading-relaxed mb-3">
+                {st.description}
+              </p>
+
+              <div className="pt-3 border-t border-slate-800/80 flex justify-between text-[11px] text-slate-400 font-mono">
+                <span>Risk Level:</span>
+                <span className={`font-semibold ${
+                  st.risk === 'Low' ? 'text-teal-400' : st.risk === 'Medium' ? 'text-amber-400' : 'text-rose-400'
+                }`}>
+                  {st.risk}
+                </span>
+              </div>
+            </div>
+          );
+        })}
       </div>
-
-      {/* Error */}
-      {txError && (
-        <p role="alert" className="text-xs text-red-400 text-center mt-1">
-          ⚠ {txError}. Strategy reverted.
-        </p>
-      )}
-
-      {/* Pending state message */}
-      {pendingStrategy && (
-        <p className="text-xs text-slate-400 text-center animate-pulse">
-          Submitting strategy to the Soroban vault…
-        </p>
-      )}
     </div>
   );
 };
