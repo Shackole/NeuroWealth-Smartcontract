@@ -15,19 +15,19 @@
     "@neurowealth/vault-client": "file:../vault-client",
     "@stellar/stellar-sdk": "^12.0.0",
     "date-fns": "^3.0.0",
-    "react": ">=17.0.0",
+    "react": ">=19.3.0",
     "react-dom": ">=17.0.0",
     "recharts": "^2.10.0"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "^6.4.0",
-    "@testing-library/react": "^16.3.3",
-    "@types/react": "^18.2.0",
+    "@testing-library/react": "^14.2.0",
+    "@types/react": "^19.3.0",
     "@types/react-dom": "^18.2.0",
     "@vitejs/plugin-react": "^4.0.0",
     "autoprefixer": "^10.4.0",
     "axe-core": "^4.9.0",
-    "eslint": "^10.11.0",
+    "eslint": "^8.0.0",
     "eslint-plugin-react": "^7.12.4",
     "jsdom": "^24.0.0",
     "postcss": "^8.4.0",
@@ -39,7 +39,7 @@
     "vitest-axe": "^0.1.0"
   },
   "peerDependencies": {
-    "react": ">=17.0.0",
+    "react": ">=19.3.0",
     "react-dom": ">=17.0.0"
   },
   "license": "MIT"
