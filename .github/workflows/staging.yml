@@ -41,7 +41,7 @@ jobs:
         run: ./scripts/deploy-staging.sh
 
       - name: Upload staging contract configuration
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: staging-contracts
           path: ${{ runner.temp }}/staging-contracts.env
