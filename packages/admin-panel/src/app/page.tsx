@@ -15,6 +15,7 @@ import { ApprovalTTL } from "@/components/ApprovalTTL";
 import { OwnershipTransfer } from "@/components/OwnershipTransfer";
 import { AgentManagement } from "@/components/AgentManagement";
 import { ContractUpgrade } from "@/components/ContractUpgrade";
+import { UpgradeTimelock } from "@/components/UpgradeTimelock";
 
 import { Settings, AlertCircle } from "lucide-react";
 
@@ -211,6 +212,22 @@ export default function AdminDashboard() {
 
         {client && owner && publicKey === owner ? (
           <div className="space-y-8">
+            {/* Issue #18 — Upgrade timelock banner: visible when a pending upgrade exists */}
+            <UpgradeTimelock
+              client={client}
+              signer={StellarSdk.Keypair.random()}
+              currentLedger={currentLedger}
+              ownerPublicKey={owner}
+              connectedPublicKey={publicKey!}
+              onUpgradeComplete={() => {
+                // refresh ledger number after upgrade completes
+                getSorobanServer(network)
+                  .getLatestLedger()
+                  .then((l) => setCurrentLedger(l.sequence))
+                  .catch(() => {});
+              }}
+            />
+
             {/* Emergency Controls */}
             <section>
               <h2 className="text-2xl font-bold mb-4 text-emerald-400">

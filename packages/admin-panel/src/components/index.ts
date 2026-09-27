@@ -7,3 +7,4 @@ export { ApprovalTTL } from "./ApprovalTTL";
 export { OwnershipTransfer } from "./OwnershipTransfer";
 export { AgentManagement } from "./AgentManagement";
 export { ContractUpgrade } from "./ContractUpgrade";
+export { UpgradeTimelock } from "./UpgradeTimelock";
