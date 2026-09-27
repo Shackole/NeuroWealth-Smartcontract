@@ -25,6 +25,8 @@ export interface AlertThresholds {
   withdrawalSpikeFactor: number; // 3 = 3x avg
   pauseDurationLedgers: number; // ~24h = 17280
   capSaturationPercentage: number; // 95 = 95%
+  queueDepthWarningThreshold?: number; // 50 jobs
+  queueDepthCriticalThreshold?: number; // 75 jobs
 }
 
 export interface HealthMetrics {
@@ -40,6 +42,7 @@ export interface HealthMetrics {
   sharePrice: number;
   tvlCap: bigint;
   userDepositCap: bigint;
+  queueDepth?: number;
   pendingUpgrade?: PendingTimelock;
   pendingAgent?: PendingTimelock;
 }
@@ -72,7 +75,8 @@ export type AlertType =
   | "agent_update_proposed"
   | "owner_transfer_initiated"
   | "anomalous_activity"
-  | "rpc_connectivity";
+  | "rpc_connectivity"
+  | "queue_depth_exceeded";
 
 export interface MetricRecord {
   timestamp: number;

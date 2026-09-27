@@ -51,7 +51,47 @@ export class AlertEngine {
     const timelockAlerts = this.checkTimelocksMonitoring(current);
     alerts.push(...timelockAlerts);
 
+    // Queue depth monitoring (#89)
+    const queueDepthAlert = this.checkQueueDepth(current);
+    if (queueDepthAlert) alerts.push(queueDepthAlert);
+
     return alerts;
+  }
+
+  private checkQueueDepth(current: HealthMetrics): Alert | null {
+    if (current.queueDepth === undefined) return null;
+
+    const criticalThreshold = this.thresholds.queueDepthCriticalThreshold ?? 75;
+    const warningThreshold = this.thresholds.queueDepthWarningThreshold ?? 50;
+
+    if (current.queueDepth > criticalThreshold) {
+      return this.createAlert(
+        "queue_depth_exceeded",
+        "critical",
+        "Critical: Transaction Queue Depth Exceeded",
+        `Backend transaction queue depth reached ${current.queueDepth} jobs (critical threshold: ${criticalThreshold}). Investigate RPC throughput or worker stalls.`,
+        {
+          queue_depth: current.queueDepth,
+          critical_threshold: criticalThreshold,
+          warning_threshold: warningThreshold,
+        },
+      );
+    }
+
+    if (current.queueDepth > warningThreshold) {
+      return this.createAlert(
+        "queue_depth_exceeded",
+        "warning",
+        "Warning: Transaction Queue Depth Elevated",
+        `Backend transaction queue depth elevated to ${current.queueDepth} jobs (warning threshold: ${warningThreshold}).`,
+        {
+          queue_depth: current.queueDepth,
+          warning_threshold: warningThreshold,
+        },
+      );
+    }
+
+    return null;
   }
 
   private checkTvlDrop(
