@@ -1,8 +1,9 @@
 import type { Metadata } from 'next';
 import './globals.css';
-import { ThemeProvider } from '@/components/ThemeProvider';
+import { ThemeProvider, ThemeScript } from '@/components/ThemeProvider';
+import { ToastProvider } from '@/components/ToastProvider';
+import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { OnboardingTutorial } from '@/components/OnboardingTutorial';
-import { SWRProvider } from '@/components/SWRProvider';
 import { NextIntlClientProvider } from 'next-intl';
 import { getMessages } from 'next-intl/server';
 import { notFound } from 'next/navigation';
@@ -12,17 +13,6 @@ export const metadata: Metadata = {
   title: 'NeuroWealth | AI-Powered DeFi Yield Platform on Stellar',
   description: 'Autonomous AI investment agent managing smart contract yield strategies on the Stellar blockchain with 24/7 rebalancing.',
 };
-
-/**
- * RTL-ready locale direction map.
- * Add RTL locale codes here when they are introduced (e.g. 'ar', 'he', 'fa').
- * All current locales (en, es, fr, pt, zh, ja) are LTR.
- */
-const RTL_LOCALES: string[] = [];
-
-function getTextDirection(locale: string): 'ltr' | 'rtl' {
-  return RTL_LOCALES.includes(locale) ? 'rtl' : 'ltr';
-}
 
 export default async function RootLayout({
   children,
@@ -35,21 +25,38 @@ export default async function RootLayout({
   if (!locales.includes(locale as any)) notFound();
 
   const messages = await getMessages();
-  const dir = getTextDirection(locale);
 
   return (
-    <html lang={locale} dir={dir} suppressHydrationWarning>
+    <html lang={locale} suppressHydrationWarning>
+      <head>
+        {/*
+          ThemeScript MUST be the very first script executed before any paint
+          to prevent a Flash Of Unstyled Content (FOUC). It reads the stored
+          preference (or falls back to OS preference) and applies the correct
+          'light' | 'dark' class to <html> synchronously.
+        */}
+        <ThemeScript />
+      </head>
       <body className="antialiased bg-white dark:bg-[#080b11] text-slate-900 dark:text-slate-100 selection:bg-emerald-500 selection:text-black transition-colors duration-300">
         <NextIntlClientProvider messages={messages}>
-          <SWRProvider>
-            <ThemeProvider>
-              <OnboardingTutorial />
-              <div className="fixed inset-0 bg-[radial-gradient(ellipse_80%_80%_at_50%_-20%,rgba(16,185,129,0.15),rgba(255,255,255,0))] dark:bg-[radial-gradient(ellipse_80%_80%_at_50%_-20%,rgba(16,185,129,0.15),rgba(255,255,255,0))] pointer-events-none z-0" />
-              <div className="relative z-10">
-                {children}
-              </div>
-            </ThemeProvider>
-          </SWRProvider>
+          <ThemeProvider>
+            <ToastProvider>
+              {/* Top-level error boundary — catches crashes in any child */}
+              <ErrorBoundary section="application">
+                <OnboardingTutorial />
+                {/* Ambient gradient — visible in both themes */}
+                <div
+                  className="fixed inset-0 pointer-events-none z-0"
+                  aria-hidden="true"
+                >
+                  <div className="absolute inset-0 bg-[radial-gradient(ellipse_80%_80%_at_50%_-20%,rgba(16,185,129,0.15),rgba(255,255,255,0))]" />
+                </div>
+                <div className="relative z-10">
+                  {children}
+                </div>
+              </ErrorBoundary>
+            </ToastProvider>
+          </ThemeProvider>
         </NextIntlClientProvider>
       </body>
     </html>
