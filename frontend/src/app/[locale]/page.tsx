@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { Header } from '@/components/Header';
 import { BalanceCard } from '@/components/BalanceCard';
 import { EarningsCard } from '@/components/EarningsCard';
@@ -8,38 +8,35 @@ import { StrategyBadge } from '@/components/StrategyBadge';
 import { PortfolioChart } from '@/components/PortfolioChart';
 import { TransactionHistory } from '@/components/TransactionHistory';
 import { ActionModal } from '@/components/ActionModal';
-import { MessageSquare, Bot, ArrowRight, Zap } from 'lucide-react';
+import {
+  BalanceCardSkeleton,
+  EarningsCardSkeleton,
+  StrategyCardSkeleton,
+  ChartSkeleton,
+} from '@/components/SkeletonCard';
+import { PortfolioError } from '@/components/PortfolioError';
+import { MessageSquare, Bot, ArrowRight, ShieldCheck, Zap, RefreshCw } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { connectFreighterWallet } from '@/lib/freighter';
-import { fetchVaultState, VaultState } from '@/lib/stellar';
-import {
-  getEarningsSummary,
-  getPortfolioValueHistory,
-  getRecentTransactions,
-  EarningsSummary,
-  ChartDataPoint,
-  TransactionRecord
-} from '@/lib/database';
+import { usePortfolio } from '@/lib/usePortfolio';
+
+/** Fallback chart data shown when no real data is available yet */
+const PLACEHOLDER_CHART = [
+  { date: 'Jul 21', value: 1000, yield: 0 },
+  { date: 'Jul 24', value: 1200, yield: 15 },
+  { date: 'Jul 28', value: 1450, yield: 45 },
+];
 
 export default function DashboardPage() {
   const t = useTranslations('Index');
-  const tHero = useTranslations('Hero');
-  const tWhatsApp = useTranslations('WhatsAppCard');
-  const tFooter = useTranslations('Footer');
 
   const [publicKey, setPublicKey] = useState<string | null>(null);
-  const [vaultState, setVaultState] = useState<VaultState>({
-    balance: 0,
-    strategy: 'Balanced',
-    exchangeRate: 1.042,
-    apy: 8.4
-  });
-  const [earnings, setEarnings] = useState<EarningsSummary>({ today: 0, week: 0, month: 0 });
-  const [chartData, setChartData] = useState<ChartDataPoint[]>([]);
-  const [transactions, setTransactions] = useState<TransactionRecord[]>([]);
-
-  const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
   const [modalType, setModalType] = useState<'deposit' | 'withdraw'>('deposit');
+  const [isModalOpen, setIsModalOpen] = useState(false);
+
+  // SWR-powered portfolio data — auto-refreshes every 30 s
+  const { data, isLoading, error, refresh } = usePortfolio(publicKey);
+  const { vaultState, earnings, chartData, transactions } = data;
 
   const handleConnect = async () => {
     const key = await connectFreighterWallet();
@@ -48,44 +45,33 @@ export default function DashboardPage() {
 
   const handleDisconnect = () => setPublicKey(null);
 
-  useEffect(() => {
-    async function loadData() {
-      if (publicKey) {
-        const state = await fetchVaultState(publicKey);
-        setVaultState(state);
-        const earnData = await getEarningsSummary(publicKey);
-        setEarnings(earnData);
-        const chart = await getPortfolioValueHistory(publicKey);
-        setChartData(chart);
-        const txs = await getRecentTransactions(publicKey);
-        setTransactions(txs);
-      } else {
-        setVaultState({ balance: 0, strategy: 'Balanced', exchangeRate: 1.042, apy: 8.4 });
-        setEarnings({ today: 0, week: 0, month: 0 });
-        setChartData([]);
-        setTransactions([]);
-      }
-    }
-    loadData();
-  }, [publicKey]);
-
   const openModal = (type: 'deposit' | 'withdraw') => {
     setModalType(type);
     setIsModalOpen(true);
   };
 
+  /** After a successful deposit/withdraw, immediately re-fetch portfolio. */
+  const handleTransactionComplete = () => {
+    refresh();
+    setIsModalOpen(false);
+  };
+
   return (
     <div className="min-h-screen bg-[#080b11] text-slate-100 flex flex-col justify-between">
       <div>
-        <Header publicKey={publicKey} onConnect={handleConnect} onDisconnect={handleDisconnect} />
+        <Header
+          publicKey={publicKey}
+          onConnect={handleConnect}
+          onDisconnect={handleDisconnect}
+        />
 
         <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
-          {/* Hero Banner */}
+          {/* Hero Banner / Wallet Banner */}
           {!publicKey && (
             <div className="glass-panel rounded-3xl p-8 relative overflow-hidden border border-emerald-500/20 bg-gradient-to-r from-emerald-950/30 via-slate-900/60 to-indigo-950/30 shadow-glow-emerald">
               <div className="max-w-2xl relative z-10">
                 <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 text-emerald-400 text-xs font-semibold border border-emerald-500/20 mb-4">
-                  <Zap size={14} /> {tHero('badge')}
+                  <Zap size={14} /> AI-Powered Autonomous Yield Engine
                 </div>
                 <h1 className="text-3xl sm:text-4xl font-extrabold tracking-tight text-white mb-3">
                   {t('title')}
@@ -104,66 +90,108 @@ export default function DashboardPage() {
             </div>
           )}
 
-          {/* Top 3 Cards */}
+          {/* Auto-refresh indicator */}
+          {publicKey && (
+            <div className="flex items-center justify-end gap-2 text-xs text-slate-500">
+              <RefreshCw
+                size={12}
+                className={isLoading ? 'animate-spin text-emerald-400' : ''}
+                aria-hidden="true"
+              />
+              <span>
+                {isLoading ? 'Refreshing…' : 'Auto-refreshes every 30 s'}
+              </span>
+              <button
+                onClick={() => refresh()}
+                className="underline underline-offset-2 hover:text-emerald-400 transition-colors"
+                aria-label="Manually refresh portfolio data"
+              >
+                Refresh now
+              </button>
+            </div>
+          )}
+
+          {/* Top 3 Cards Grid */}
           <section id="dashboard" className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <BalanceCard
-              balance={vaultState.balance}
-              usdEquivalent={vaultState.balance * 1.0}
-              exchangeRate={vaultState.exchangeRate}
-              onOpenDeposit={() => openModal('deposit')}
-              onOpenWithdraw={() => openModal('withdraw')}
-              isConnected={!!publicKey}
-            />
-            <EarningsCard earnings={earnings} isConnected={!!publicKey} />
-            <StrategyBadge
-              strategy={vaultState.strategy}
-              apy={vaultState.apy}
-              onSelectStrategy={(newSt) => setVaultState((prev) => ({ ...prev, strategy: newSt }))}
-            />
+            {error ? (
+              <PortfolioError message={error.message} onRetry={refresh} />
+            ) : isLoading && !data.vaultState.balance ? (
+              <>
+                <BalanceCardSkeleton />
+                <EarningsCardSkeleton />
+                <StrategyCardSkeleton />
+              </>
+            ) : (
+              <>
+                <BalanceCard
+                  balance={vaultState.balance}
+                  usdEquivalent={vaultState.balance * 1.0}
+                  exchangeRate={vaultState.exchangeRate}
+                  onOpenDeposit={() => openModal('deposit')}
+                  onOpenWithdraw={() => openModal('withdraw')}
+                  isConnected={!!publicKey}
+                />
+                <EarningsCard earnings={earnings} isConnected={!!publicKey} />
+                <StrategyBadge
+                  strategy={vaultState.strategy}
+                  apy={vaultState.apy}
+                  onSelectStrategy={(newSt) =>
+                    // Optimistic update via mutate is handled by refresh
+                    console.log('Strategy changed:', newSt)
+                  }
+                />
+              </>
+            )}
           </section>
 
-          {/* Portfolio Chart */}
+          {/* Portfolio Chart Section */}
           <section id="strategies">
-            <PortfolioChart data={chartData.length > 0 ? chartData : [
-              { date: 'Jul 21', value: 1000, yield: 0 },
-              { date: 'Jul 24', value: 1200, yield: 15 },
-              { date: 'Jul 28', value: 1450, yield: 45 }
-            ]} />
+            {isLoading && chartData.length === 0 ? (
+              <ChartSkeleton />
+            ) : (
+              <PortfolioChart
+                data={chartData.length > 0 ? chartData : PLACEHOLDER_CHART}
+              />
+            )}
           </section>
 
-          {/* History + WhatsApp */}
+          {/* Transaction History & WhatsApp Banner */}
           <section id="history" className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="lg:col-span-2">
               <TransactionHistory transactions={transactions} />
             </div>
 
-            {/* WhatsApp Card */}
-            <div id="whatsapp" className="glass-panel-interactive rounded-2xl p-6 relative overflow-hidden flex flex-col justify-between border border-emerald-500/20">
+            {/* WhatsApp Integration Callout Card */}
+            <div
+              id="whatsapp"
+              className="glass-panel-interactive rounded-2xl p-6 relative overflow-hidden flex flex-col justify-between border border-emerald-500/20"
+            >
               <div>
                 <div className="flex items-center justify-between mb-4">
                   <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-                    <MessageSquare size={14} className="text-emerald-400" /> {tWhatsApp('title')}
+                    <MessageSquare size={14} className="text-emerald-400" />
+                    WhatsApp Integration
                   </span>
                   <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
-                    {tWhatsApp('live')}
+                    Live Bot
                   </span>
                 </div>
-
                 <h3 className="text-lg font-bold text-white mb-2">
-                  {tWhatsApp('heading')}
+                  Interact via WhatsApp Chat
                 </h3>
                 <p className="text-xs text-slate-300 leading-relaxed mb-4">
-                  {tWhatsApp('description')}
+                  No browser or wallet needed! Simply text our Twilio bot to verify
+                  with OTP, check balance, deposit, or withdraw on the go.
                 </p>
-
                 <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 font-mono text-xs text-emerald-400 space-y-1 mb-4">
-                  <div>{tWhatsApp('demoUser')}</div>
-                  <div className="text-slate-300">{tWhatsApp('demoAgent')}</div>
+                  <div>User: deposit 100 USDC</div>
+                  <div className="text-slate-300">
+                    Agent: Got it! Deposited 100 USDC into Balanced strategy. ✅
+                  </div>
                 </div>
               </div>
-
               <div className="pt-4 border-t border-slate-800">
-                <span className="text-xs text-slate-400 block mb-2">{tWhatsApp('webhookLabel')}</span>
+                <span className="text-xs text-slate-400 block mb-2">Webhook URL:</span>
                 <code className="text-[11px] bg-slate-900 px-2 py-1 rounded border border-slate-800 text-slate-300 block truncate">
                   /api/whatsapp/webhook
                 </code>
@@ -176,7 +204,7 @@ export default function DashboardPage() {
       {/* Action Modal */}
       <ActionModal
         isOpen={isModalOpen}
-        onClose={() => setIsModalOpen(false)}
+        onClose={handleTransactionComplete}
         type={modalType}
         userPublicKey={publicKey}
         balance={vaultState.balance}
@@ -188,18 +216,33 @@ export default function DashboardPage() {
         <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-4">
           <div className="flex items-center gap-2">
             <Bot size={16} className="text-emerald-400" />
-            <span className="font-semibold text-slate-300">{tFooter('brand')}</span>
-            <span>— {tFooter('architecture')}</span>
+            <span className="font-semibold text-slate-300">NeuroWealth AI Vault</span>
+            <span>— Soroban Smart Contract Architecture</span>
           </div>
           <div className="flex items-center gap-6">
-            <a href="https://stellar.org" target="_blank" rel="noreferrer" className="hover:text-emerald-400 transition-colors">
-              {tFooter('stellar')}
+            <a
+              href="https://stellar.org"
+              target="_blank"
+              rel="noreferrer"
+              className="hover:text-emerald-400 transition-colors"
+            >
+              Stellar Network
             </a>
-            <a href="https://soroban.stellar.org" target="_blank" rel="noreferrer" className="hover:text-emerald-400 transition-colors">
-              {tFooter('soroban')}
+            <a
+              href="https://soroban.stellar.org"
+              target="_blank"
+              rel="noreferrer"
+              className="hover:text-emerald-400 transition-colors"
+            >
+              Soroban SDK
             </a>
-            <a href="https://freighter.app" target="_blank" rel="noreferrer" className="hover:text-emerald-400 transition-colors">
-              {tFooter('freighter')}
+            <a
+              href="https://freighter.app"
+              target="_blank"
+              rel="noreferrer"
+              className="hover:text-emerald-400 transition-colors"
+            >
+              Freighter Wallet
             </a>
           </div>
         </div>
