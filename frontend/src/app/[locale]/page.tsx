@@ -83,7 +83,7 @@ export default function DashboardPage() {
       <div>
         <Header publicKey={publicKey} onConnect={handleConnect} onDisconnect={handleDisconnect} />
 
-        <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
+        <main id="main-content" className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
           {/* Hero Banner / Wallet Banner */}
           {!publicKey && (
             <div className="glass-panel rounded-3xl p-8 relative overflow-hidden border border-emerald-500/20 bg-gradient-to-r from-emerald-950/30 via-slate-900/60 to-indigo-950/30 shadow-glow-emerald">
