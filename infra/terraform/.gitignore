@@ -1,0 +1,25 @@
+# Ignore generated and secret Terraform files.
+# .terraform.lock.hcl is intentionally NOT ignored — it should be committed
+# to ensure all team members and CI use the same provider versions.
+
+# Local Terraform working directory (contains downloaded providers).
+.terraform/
+
+# State files — never commit state; use the remote S3 backend.
+*.tfstate
+*.tfstate.backup
+
+# Saved plan files.
+*.tfplan
+
+# Local variable overrides — may contain secrets.
+terraform.tfvars
+
+# Override files are non-portable.
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Crash log from a failed Terraform run.
+crash.log
