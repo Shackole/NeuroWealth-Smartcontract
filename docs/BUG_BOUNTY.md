@@ -1,7 +1,7 @@
 # NeuroWealth Bug Bounty Program
 
 > **Status:** Active — Pre-Mainnet  
-> **Last updated:** 2026-08-24  
+> **Last updated:** 2026-09-24  
 > **Program managed by:** NeuroWealth Security Team
 
 We reward security researchers who responsibly disclose vulnerabilities in the
@@ -33,15 +33,33 @@ The following assets are **in scope** for the bug bounty:
 |------|-------------|
 | `neurowealth-vault/contracts/vault/src/lib.rs` | Core vault contract (deposit, withdraw, rebalance, upgrade, pause logic) |
 | `neurowealth-vault/contracts/vault/src/topics.rs` | Event topic constants |
-| All deployed contract addresses listed in the latest [Mainnet Deployment Runbook](../scripts/MAINNET_DEPLOYMENT_RUNBOOK.txt) | On-chain instances |
+| All deployed contract addresses listed in the latest [Mainnet Deployment Runbook](../scripts/) | On-chain instances |
 
-### Repository / Off-Chain Components (Secondary Scope)
+### Backend API (Secondary Scope)
 
-| Path | Description |
-|------|-------------|
-| `agent/src/` | AI agent backend (event listener, intent parser, yield comparison) |
-| `packages/vault-client/src/` | TypeScript vault client library |
-| `scripts/deploy-*.sh` | Deployment scripts (key hygiene, initialization ordering) |
+| Component | Description |
+|-----------|-------------|
+| AI agent backend (`agent/`) | Event listener, intent parser, yield comparison engine |
+| REST / webhook API endpoints | Authentication, input validation, authorization |
+| TypeScript vault client (`packages/vault-client/src/`) | Client library used by frontend and agent |
+| Deployment scripts (`scripts/deploy-*.sh`) | Key hygiene, initialization ordering |
+
+### Frontend (Tertiary Scope)
+
+| Component | Description |
+|-----------|-------------|
+| Next.js web app (`frontend/`) | User-facing portfolio dashboard |
+| Wallet integration | Freighter wallet signing flows |
+| Stellarterm / in-app transaction construction | Crafted transaction forgery or XSS |
+
+### WhatsApp Bot (Tertiary Scope)
+
+| Component | Description |
+|-----------|-------------|
+| WhatsApp bot handler (`whatsapp/`) | Twilio webhook receiver and intent dispatcher |
+| OTP verification flow | Phone number–to–keypair binding |
+| Custodial keypair storage | Secret key handling for WhatsApp-onboarded users |
+| Message injection | Crafted WhatsApp messages that trigger unauthorized vault operations |
 
 ### What We Care About Most
 
@@ -59,9 +77,11 @@ The following assets are **in scope** for the bug bounty:
 - **Reentrancy** — despite CEI pattern enforcement, any novel cross-contract
   reentrant path that breaks invariants.
 - **Integer overflow / underflow** — arithmetic bugs in share or asset
-  accounting that checked-math should catch but might not.
-- **Front-running / MEV** — exploitable ordering of initialize, deposit, or
-  upgrade transactions in the Stellar mempool.
+  accounting.
+- **WhatsApp OTP bypass** — triggering a deposit or withdrawal for a phone
+  number that has not completed OTP verification.
+- **Custodial key exfiltration** — any path that exposes a WhatsApp user's
+  Stellar secret key to a third party.
 
 ---
 
@@ -70,99 +90,115 @@ The following assets are **in scope** for the bug bounty:
 The following are **not eligible** for bounty rewards:
 
 - Theoretical or speculative attacks with no working proof-of-concept.
-- Issues in third-party protocols (Blend, Stellar DEX) unless the vault's
+- Issues in third-party protocols (Blend, Stellar DEX) **unless** the vault's
   integration amplifies the impact.
+- Social-engineering attacks against NeuroWealth team members (e.g., phishing
+  employees to reveal keys).
 - Bugs already reported or currently being fixed in an open issue or PR.
 - Bugs in test files (`src/tests/`) or fuzz targets (`fuzz/`) that do not
-  reflect production contract behavior.
-- Social-engineering attacks against team members.
+  reflect production contract behaviour.
 - Denial-of-service that only affects testnet or devnet.
 - Front-end / UI bugs that are cosmetic and do not affect funds.
 - Issues requiring physical access to a developer's machine.
 - Informational-only findings with no exploitable impact.
+- Self-inflicted issues (e.g., user knowingly shares their own secret key).
 - Planned / acknowledged risks already documented in
-  [`SECURITY.md`](../SECURITY.md) (e.g., Blend utilization liquidity risk).
+  [`SECURITY.md`](../SECURITY.md) (e.g., Blend utilisation liquidity risk,
+  USDC issuer freeze).
 
 ---
 
 ## Severity Rubric
 
 We use a four-tier severity system aligned with industry standards
-(Immunefi / HackerOne).
+(Immunefi / HackerOne). All payout amounts are in **USDC**.
 
-### Critical — Up to **$50,000**
+### Critical — $10,000 – $50,000
 
 Direct, on-chain theft or permanent loss of user funds without requiring any
-privileged key.
+privileged key, or full compromise of the custodial key storage backing
+WhatsApp users.
 
 **Example bug classes:**
 
-| Class | Example |
-|-------|---------|
-| Share-price manipulation | Inflate `total_assets` via `update_total_assets` to drain other users on withdrawal |
-| Auth bypass | Call `rebalance()` or `execute_upgrade()` as an arbitrary address |
-| Unauthorized withdrawal | Extract USDC to a non-depositor address without their auth |
-| Upgrade hijack | Execute `execute_upgrade()` before the timelock expires, or bypass the owner-auth check |
-| Reentrancy theft | Cross-contract reentrant call that double-mints shares or double-withdraws USDC |
+| Class | Example | Payout Range |
+|-------|---------|--------------|
+| Share-price manipulation | Inflate `total_assets` to drain other users on withdrawal | $25,000–$50,000 |
+| Auth bypass | Call `rebalance()` or `execute_upgrade()` as an arbitrary address | $20,000–$50,000 |
+| Unauthorized withdrawal | Extract USDC to a non-depositor address without their auth | $25,000–$50,000 |
+| Upgrade hijack | Execute `execute_upgrade()` before timelock or bypass owner-auth | $20,000–$40,000 |
+| Reentrancy theft | Reentrant path that double-mints shares or double-withdraws USDC | $25,000–$50,000 |
+| Custodial key dump | API or WhatsApp bot bug leaking all custodial Stellar secret keys | $10,000–$30,000 |
 
 **Criteria:** Funds at risk, exploitable on mainnet, no trusted actor required.
 
 ---
 
-### High — Up to **$10,000**
+### High — $2,500 – $10,000
 
-Severe impact on vault integrity or user funds requiring a single compromised
-or malicious trusted actor (owner or agent).
+Severe impact requiring a single compromised / malicious trusted actor, or
+targeted theft from a single WhatsApp user.
 
 **Example bug classes:**
 
-| Class | Example |
-|-------|---------|
-| Privilege escalation | Agent can call owner-only functions (e.g., `set_tvl_cap`) |
-| Pause bypass | Paused function executes a state-changing operation despite the paused flag |
-| Forced lock-up | Owner can permanently brick withdrawals beyond the documented pause mechanism |
-| Cap bypass | Depositing more than `user_deposit_cap` or `tvl_cap` in a single tx |
-| Agent over-reporting | `update_total_assets` reports more than on-chain balance without triggering the solvency check |
+| Class | Example | Payout Range |
+|-------|---------|--------------|
+| Privilege escalation | Agent can call owner-only functions (e.g., `set_tvl_cap`) | $5,000–$10,000 |
+| Pause bypass | Paused-blocked function executes despite the paused flag | $5,000–$10,000 |
+| Forced lock-up | Owner can permanently brick withdrawals beyond documented pause | $2,500–$7,500 |
+| Cap bypass | Deposit more than `user_deposit_cap` or `tvl_cap` in one tx | $2,500–$5,000 |
+| WhatsApp OTP bypass | Trigger deposit/withdraw for unverified phone number | $5,000–$10,000 |
+| Single-user key exfiltration | API bug leaking one WhatsApp user's secret key | $2,500–$7,500 |
 
 **Criteria:** High impact, but typically requires a compromised key or
 specific race condition.
 
 ---
 
-### Medium — Up to **$2,500**
+### Medium — $250 – $2,500
 
 Moderate impact, exploitable under specific conditions, or degraded security
 guarantees.
 
 **Example bug classes:**
 
-| Class | Example |
-|-------|---------|
-| Griefing / DoS | Any account can lock the vault into a state requiring owner intervention |
-| Rounding manipulation | Systematic rounding abuse to drain value from the vault over many transactions |
-| Event spoofing | Emit misleading events that cause off-chain agents to take incorrect action |
-| TTL expiry abuse | Deliberately expire another user's `Shares` storage entry to cause data loss |
-| Cooldown bypass | Call `rebalance()` / `harvest()` more frequently than configured |
+| Class | Example | Payout Range |
+|-------|---------|--------------|
+| Griefing / DoS | Any account can lock vault into a state requiring owner intervention | $500–$2,500 |
+| Rounding manipulation | Systematic rounding abuse to drain value over many transactions | $500–$2,500 |
+| Event spoofing | Emit misleading events causing off-chain agents to act incorrectly | $250–$1,000 |
+| TTL expiry abuse | Deliberately expire another user's `Shares` storage entry | $250–$1,000 |
+| Cooldown bypass | Call `rebalance()` / `harvest()` more often than configured | $500–$2,000 |
+| WhatsApp message injection | Craft a message that executes a different intent than shown | $500–$2,000 |
+| API authentication weakness | Weak session tokens or missing auth on sensitive endpoints | $500–$2,000 |
 
 **Criteria:** Real impact but not direct fund loss in a single transaction.
 
 ---
 
-### Low — Up to **$500**
+### Low — $50 – $500
 
-Minor issues that violate documented security properties but have limited
-practical exploitability.
+Minor issues that violate documented security properties with limited practical
+exploitability.
 
 **Example bug classes:**
 
-| Class | Example |
-|-------|---------|
-| Access-control gap | Non-critical function callable by wrong role without real-world impact |
-| Missing event | State-changing function that silently omits an event that indexers rely on |
-| Input validation | Edge-case input (e.g., `amount = 0`) not rejected with the correct error code |
-| Documentation mismatch | SECURITY.md or ARCHITECTURE.md describes behavior that differs from code |
+| Class | Example | Payout Range |
+|-------|---------|--------------|
+| Access-control gap | Non-critical function callable by wrong role, no real-world impact | $50–$250 |
+| Missing event | State-changing function that silently omits an event indexers rely on | $50–$250 |
+| Input validation | Edge-case input not rejected with the correct error code | $50–$250 |
+| Documentation mismatch | `SECURITY.md` or `ARCHITECTURE.md` describes behaviour that differs from code | $50–$200 |
+| WhatsApp UX confusion | Bot error messages that could mislead users into unsafe actions | $50–$200 |
 
 **Criteria:** Low exploitability or impact confined to off-chain tooling.
+
+---
+
+### Informational — No Payout
+
+Findings that are out of scope, acknowledged, or informational only. We may
+still credit the researcher and address the finding, but no bounty is paid.
 
 ---
 
@@ -174,15 +210,13 @@ practical exploitability.
 ```
 
 **Alternative (for program status / questions only):** Open a
-[GitHub Security Advisory](https://github.com/Neurowealth/NeuroWealth-Smartcontract/security/advisories/new)
+[GitHub Security Advisory](https://github.com/Shackole/NeuroWealth-Smartcontract/security/advisories/new)
 via the "Report a vulnerability" button on the repo's Security tab.
 
 **Do NOT** open a public GitHub issue for a security vulnerability. Doing so
 will disqualify the report from bounty eligibility.
 
 ### Report Template
-
-Please include the following in your report:
 
 ```
 **Severity (your assessment):** Critical / High / Medium / Low
@@ -223,13 +257,13 @@ We will **not** pursue legal action against researchers who:
 5. Do not publicly disclose the vulnerability before the coordinated
    disclosure deadline (see [Disclosure Policy](#disclosure-policy)).
 
-If you inadvertently access user funds or data while researching a
-vulnerability, stop immediately, include it in your report, and we will
-work with you to assess the impact without penalty.
+If you inadvertently access user funds or data while researching a vulnerability,
+stop immediately, include it in your report, and we will work with you to
+assess the impact without penalty.
 
-**Testing environment:** All testing should be performed on Stellar
-**testnet** or **devnet**. Testing directly against mainnet contracts may
-disqualify your report and could expose you to legal risk.
+**Testing environment:** All testing should be performed on Stellar **testnet**
+or **devnet**. Testing directly against mainnet contracts may disqualify your
+report and could expose you to legal risk.
 
 ---
 
@@ -238,11 +272,11 @@ disqualify your report and could expose you to legal risk.
 | Milestone | Target |
 |-----------|--------|
 | Initial acknowledgement | **48 hours** of receiving the report |
-| Triage and severity assignment | **5 business days** |
+| Triage and severity assignment | **7 business days** |
 | Fix developed and reviewed | **14 business days** (Critical / High) |
 | Fix developed and reviewed | **30 business days** (Medium / Low) |
 | Patch deployed to testnet | **7 days** after fix review |
-| Patch deployed to mainnet | Dependent on timelock (24 h) + deployment schedule |
+| Patch deployed to mainnet | Dependent on 24 h timelock + deployment schedule |
 | Bounty paid | **7 business days** after mainnet deployment confirmation |
 | Coordinated public disclosure | **90 days** after initial report (may be shortened by mutual agreement) |
 
@@ -255,8 +289,9 @@ proactively and agree on an updated timeline with the reporter.
 
 1. **Confirmation:** We send a written confirmation of bounty eligibility and
    the approved severity tier.
-2. **Validation:** Reporter provides wallet address (Stellar or EVM).
-3. **Payment:** Bounties are paid in **USDC** on the Stellar network.
+2. **Validation:** Reporter provides a Stellar wallet address for USDC payout.
+3. **Payment:** Bounties are paid in **USDC** on the Stellar network within
+   7 business days of mainnet deployment confirmation.
 4. **Tax:** Reporters are responsible for any applicable taxes in their
    jurisdiction.
 5. **Acknowledgement:** With permission, we will credit the reporter in the
