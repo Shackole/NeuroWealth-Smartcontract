@@ -1,6 +1,25 @@
 version: '3.8'
 
 services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: neurowealth-postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=neurowealth
+    volumes:
+      - ../db/schema.sql:/docker-entrypoint-initdb.d/init.sql
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d neurowealth"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   agent:
     build:
       context: .
@@ -17,6 +36,10 @@ services:
       - USER_RATE_LIMIT_MAX_REQUESTS=20
       - MAX_DB_POOL_SIZE=10
       - MIN_DB_POOL_SIZE=2
+      - JWT_SECRET=test_jwt_secret_key_12345
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3001/health || exit 1"]
@@ -24,3 +47,6 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+
+volumes:
+  pgdata:
