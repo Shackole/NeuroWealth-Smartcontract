@@ -1,0 +1,119 @@
+name: Staging Deploy
+
+on:
+  push:
+    branches: [staging]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: staging-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy-contract:
+    name: Deploy vault to Stellar testnet
+    runs-on: ubuntu-latest
+    environment: staging
+    outputs:
+      contract-artifact: staging-contracts
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install Stellar CLI
+        run: |
+          VERSION="$(tr -d '[:space:]' < .stellar-version)"
+          curl -sSL "https://github.com/stellar/stellar-cli/releases/download/v${VERSION}/stellar-cli-${VERSION}-x86_64-unknown-linux-gnu.tar.gz" | tar -xz
+          install stellar "$HOME/.local/bin/stellar"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          stellar --version
+
+      - name: Deploy and initialize staging vault
+        env:
+          STAGING_DEPLOYER_SECRET_KEY: ${{ secrets.STAGING_DEPLOYER_SECRET_KEY }}
+          STAGING_CONTRACTS_FILE: ${{ runner.temp }}/staging-contracts.env
+        run: ./scripts/deploy-staging.sh
+
+      - name: Upload staging contract configuration
+        uses: actions/upload-artifact@v4
+        with:
+          name: staging-contracts
+          path: ${{ runner.temp }}/staging-contracts.env
+          retention-days: 14
+
+  deploy-services:
+    name: Deploy frontend and agent
+    needs: deploy-contract
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download staging contract configuration
+        uses: actions/download-artifact@v4
+        with:
+          name: staging-contracts
+          path: ${{ runner.temp }}/staging
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Deploy frontend to Vercel
+        working-directory: frontend
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_STAGING_PROJECT_ID }}
+          NEXT_PUBLIC_SOROBAN_RPC_URL: https://soroban-testnet.stellar.org
+          NEXT_PUBLIC_SOROBAN_NETWORK_PASSPHRASE: Test SDF Network ; September 2015
+        run: |
+          set -euo pipefail
+          source "${RUNNER_TEMP}/staging/staging-contracts.env"
+          npm ci
+          npx vercel pull --yes --environment=production --token "$VERCEL_TOKEN"
+          npx vercel deploy --prod --yes --token "$VERCEL_TOKEN" \
+            --build-env NEXT_PUBLIC_SOROBAN_RPC_URL="$NEXT_PUBLIC_SOROBAN_RPC_URL" \
+            --build-env NEXT_PUBLIC_SOROBAN_NETWORK_PASSPHRASE="$NEXT_PUBLIC_SOROBAN_NETWORK_PASSPHRASE" \
+            --build-env NEXT_PUBLIC_VAULT_CONTRACT_ID="$NEXT_PUBLIC_VAULT_CONTRACT_ID"
+
+      - name: Deploy agent to Railway staging service
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_STAGING_SERVICE: ${{ vars.RAILWAY_STAGING_SERVICE }}
+        run: |
+          set -euo pipefail
+          npm install --global @railway/cli
+          railway up agent --service "$RAILWAY_STAGING_SERVICE" \
+            --environment staging --ci
+
+  staging-e2e:
+    name: Run Playwright against staging
+    needs: deploy-services
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install dependencies and browser
+        working-directory: frontend
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: Test deployed staging frontend
+        working-directory: frontend
+        env:
+          STAGING_BASE_URL: ${{ vars.STAGING_BASE_URL }}
+        run: npm run test:e2e
