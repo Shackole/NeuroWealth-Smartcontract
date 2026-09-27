@@ -1,3 +1,38 @@
+import type { Metadata } from 'next';
+
+export const metadata: Metadata = {
+  title: 'Dashboard',
+  description:
+    'View your NeuroWealth portfolio, earnings, and AI yield optimization performance.',
+  openGraph: {
+    title: 'NeuroWealth | Dashboard',
+    description:
+      'View your NeuroWealth portfolio, earnings, and AI yield optimization performance.',
+  },
+  twitter: {
+    title: 'NeuroWealth | Dashboard',
+    description:
+      'View your NeuroWealth portfolio, earnings, and AI yield optimization performance.',
+  },
+};
+
+// JSON-LD structured data (SoftwareApplication schema)
+const jsonLd = {
+  '@context': 'https://schema.org',
+  '@type': 'SoftwareApplication',
+  name: 'NeuroWealth',
+  applicationCategory: 'FinanceApplication',
+  operatingSystem: 'Web',
+  description:
+    'Autonomous AI investment agent managing crypto yield on Stellar blockchain. Deposit once, earn up to 15% APY with automatic rebalancing.',
+  url: 'https://neurowealth.app',
+  offers: {
+    '@type': 'Offer',
+    price: '0',
+    priceCurrency: 'USD',
+  },
+};
+
 'use client';
 
 import React, { useState, useEffect } from 'react';
@@ -95,6 +130,11 @@ export default function DashboardPage() {
 
   return (
     <div className="min-h-screen bg-[#080b11] text-slate-100 flex flex-col justify-between">
+      {/* JSON-LD structured data */}
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
+      />
       <div>
         <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
           {/* Hero Banner */}
