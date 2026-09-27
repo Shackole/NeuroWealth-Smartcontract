@@ -1,0 +1,74 @@
+# systemd unit file for the NeuroWealth AI Agent (#120).
+#
+# Installation:
+#   sudo cp agent/neurowealth-agent.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable neurowealth-agent
+#   sudo systemctl start neurowealth-agent
+#
+# Requires:
+#   - Node.js >= 20 installed at /usr/bin/node
+#   - ts-node installed globally: npm install -g ts-node typescript
+#   - Application cloned/deployed to /opt/neurowealth/agent
+#   - System user 'neurowealth' created:
+#       sudo useradd -r -s /sbin/nologin -d /opt/neurowealth neurowealth
+#   - Log directory created:
+#       sudo mkdir -p /var/log/neurowealth-agent
+#       sudo chown neurowealth:neurowealth /var/log/neurowealth-agent
+
+[Unit]
+Description=NeuroWealth AI Agent — autonomous yield optimisation service
+Documentation=https://github.com/julianajohn7202-stack/NeuroWealth-Smartcontract/blob/main/agent/PROCESS_MANAGEMENT.md
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=neurowealth
+Group=neurowealth
+WorkingDirectory=/opt/neurowealth/agent
+
+# Load environment variables from a file managed outside version control.
+# Create /opt/neurowealth/agent/.env.production with production secrets.
+EnvironmentFile=-/opt/neurowealth/agent/.env.production
+
+# Core environment — override in EnvironmentFile as needed.
+Environment=NODE_ENV=production
+Environment=PORT=3001
+Environment=LOG_LEVEL=info
+
+# Start command — uses ts-node for direct TypeScript execution.
+# Replace with 'node dist/index.js' once a build step is in place.
+ExecStart=/usr/bin/node -r ts-node/register src/index.ts
+
+# Graceful restart: send SIGTERM to trigger the app's shutdown handler,
+# which flushes Bull queues and closes the DB pool.
+KillSignal=SIGTERM
+# Allow up to 30 s for graceful shutdown before SIGKILL.
+TimeoutStopSec=30
+
+# Logging — append stdout and stderr to the log file.
+# Log rotation is handled by logrotate (see agent/logrotate.conf).
+StandardOutput=append:/var/log/neurowealth-agent/agent.log
+StandardError=append:/var/log/neurowealth-agent/agent.log
+
+# Restart policy:
+#   Restart=on-failure  — restart on non-zero exit or signal termination.
+#   RestartSec=5s       — wait 5 s before each restart attempt.
+#   StartLimitIntervalSec=600  — rolling window of 10 minutes.
+#   StartLimitBurst=5   — maximum 5 restart attempts within the window.
+#   After 5 fast crashes systemd marks the unit as failed and stops retrying.
+#   Use 'systemctl reset-failed neurowealth-agent' to clear the counter.
+Restart=on-failure
+RestartSec=5s
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+# Security hardening.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=read-only
+
+[Install]
+WantedBy=multi-user.target
