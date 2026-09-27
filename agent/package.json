@@ -5,7 +5,12 @@
   "main": "index.js",
   "scripts": {
     "build": "tsc",
-    "test": "ts-node --transpile-only src/openAiKeyManager.test.ts && ts-node --transpile-only src/rateLimiter.test.ts && ts-node --transpile-only src/db.test.ts"
+    "test": "ts-node --transpile-only src/openAiKeyManager.test.ts && ts-node --transpile-only src/rateLimiter.test.ts && ts-node --transpile-only src/db.test.ts",
+    "start:prod": "pm2 start ecosystem.config.js --env production",
+    "start:staging": "pm2 start ecosystem.config.js --env staging",
+    "stop": "pm2 stop neurowealth-agent",
+    "logs": "pm2 logs neurowealth-agent",
+    "healthcheck": "bash scripts/healthcheck.sh"
   },
   "keywords": [],
   "author": "",
