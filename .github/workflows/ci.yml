@@ -103,7 +103,7 @@ jobs:
           workspaces: neurowealth-vault
 
       - name: Cache cargo registry and tooling
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/bin/
