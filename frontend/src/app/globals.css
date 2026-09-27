@@ -39,6 +39,10 @@ body {
   overflow-x: hidden;
 }
 
+html {
+  overflow-x: hidden;
+}
+
 .dark body,
 body {
   background-color: #080b11;
