@@ -5,6 +5,7 @@ import { evaluateYield } from './yieldComparison';
 import healthRouter, { configureHealthChecks } from './health';
 import logger from './logger';
 import { initializeTracing } from './tracing';
+import { createProductionYieldCheckJob, YieldCheckJob } from './yieldCheckJob';
 
 import { ipRateLimiter, userRateLimiter } from './rateLimiter';
 
@@ -20,6 +21,7 @@ app.use(userRateLimiter);
 app.use(healthRouter);
 
 let decisionInterval: ReturnType<typeof setInterval> | null = null;
+let yieldCheckJob: YieldCheckJob | null = null;
 
 /**
  * Invokes the vault contract's `auto_compound(min_out)` function to harvest
@@ -72,6 +74,12 @@ async function main() {
   await startEventListener();
   startDecisionLoop();
 
+  // Issue #22 — Bull-style yield-check queue: runs every hour
+  yieldCheckJob = createProductionYieldCheckJob(pool);
+  await yieldCheckJob.ensureSchema();
+  yieldCheckJob.start();
+  logger.info('Yield check queue started (hourly APY comparison + rebalance trigger)');
+
   const serverInstance = app.listen(PORT, () => {
     logger.info({ port: PORT }, 'Agent HTTP server listening');
   });
@@ -83,6 +91,11 @@ async function main() {
     if (decisionInterval) {
       clearInterval(decisionInterval);
       decisionInterval = null;
+    }
+
+    if (yieldCheckJob) {
+      yieldCheckJob.stop();
+      yieldCheckJob = null;
     }
 
     stopEventListener();
