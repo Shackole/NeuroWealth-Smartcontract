@@ -238,6 +238,35 @@ When the agent calls `rebalance(protocol="blend", ...)` the vault:
 
 On withdrawal, if the vault's idle balance is insufficient, it calls `blend_pool.submit()` to withdraw the required amount before transferring to the user.
 
+### Approval TTL Management (#57)
+
+Every `rebalance` and `harvest` call issues (or renews) a Stellar token approval
+granting the Blend or DEX pool contract the right to pull USDC from the vault.
+
+| Parameter | Value | Notes |
+|-----------|-------|-------|
+| **Default TTL** | **100,000 ledgers** | ≈ 5.7 days at ~5 s/ledger on Stellar mainnet. Written as `DEFAULT_APPROVAL_TTL` in `lib.rs`. |
+| Minimum TTL | 1,000 ledgers | `set_approval_ttl` rejects anything below this. |
+| Maximum TTL | 500,000 ledgers | `set_approval_ttl` rejects anything above this. |
+| **Near-expiry renewal threshold** | **1,000 ledgers** | Written as `APPROVAL_RENEWAL_THRESHOLD`. |
+
+**Near-expiry renewal logic:**  
+Before executing any protocol call, `rebalance` and `harvest` check whether the
+stored approval expiry (`DataKey::BlendApprovalExpiry` / `DataKey::DexApprovalExpiry`)
+is within `APPROVAL_RENEWAL_THRESHOLD` (1,000) ledgers of the current ledger sequence.
+If so, the approval is refreshed to a full `ApprovalTtl` window before the protocol
+interaction proceeds. This prevents approval-expiry reverts when many ledgers elapse
+between agent calls.
+
+`supply_to_blend` and `supply_to_dex` always issue a fresh approval for the exact
+supply amount when they execute, and record the resulting expiry ledger in instance
+storage for the renewal guard to read on the next call.
+
+**Configuration:**  
+- `set_approval_ttl(ttl)` — owner sets TTL (bounds: 1,000–500,000 ledgers). Emits `ApprovalTtlUpdatedEvent`.  
+- `get_approval_ttl()` — returns configured TTL or `DEFAULT_APPROVAL_TTL` (100,000) when unset.  
+- The legacy `set_blend_approval_ttl` / `get_blend_approval_ttl` setters write the same `ApprovalTtl` storage key and share the same audit trail.
+
 ### Historical: Phase 1 (1:1 accounting — deprecated)
 
 Prior to the ERC-4626 model, the vault used simple 1:1 balance accounting: 1 deposited USDC = 1 vault balance unit, with no share concept. This approach could not track proportional yield and has been fully replaced. The `Balance(Address)` key is retained only for legacy migration paths and is no longer the authoritative ownership record — `Shares(Address)` is.
