@@ -1,17 +1,22 @@
-# Gitleaks configuration for NeuroWealth-Smartcontract (#605).
+# Gitleaks configuration for NeuroWealth-Smartcontract (#115).
 #
-# Extends the default gitleaks ruleset and adds a Stellar-specific rule:
-# ed25519 secret seeds ("S" + 55 base32 chars) must never be committed.
-# Run locally with:   gitleaks git --redact -v .
-# Pre-commit hook:    scripts/pre-commit-gitleaks.sh
-# CI enforcement:     .github/workflows/ci.yml (secret-scan job)
+# Extends the default gitleaks ruleset and adds project-specific rules.
+# Rules are reviewed quarterly (see docs/SECRETS_HYGIENE.md#quarterly-review).
+#
+# Run locally:       gitleaks git --redact -v .
+# Pre-commit hook:   scripts/pre-commit-gitleaks.sh
+# CI enforcement:    .github/workflows/secret-scan.yml
 
 [extend]
 useDefault = true
 
+# ---------------------------------------------------------------------------
+# Project-specific rules
+# ---------------------------------------------------------------------------
+
 [[rules]]
 id = "stellar-secret-key"
-description = "Stellar ed25519 secret seed (S...)"
+description = "Stellar ed25519 secret seed (S + 55 base32 chars)"
 regex = '''\bS[A-Z2-7]{55}\b'''
 keywords = ["S"]
 
@@ -20,10 +25,85 @@ keywords = ["S"]
 # seeds (e.g. in @stellar/stellar-base). Never commit node_modules anyway.
 paths = ['''node_modules/''']
 
+# ---------------------------------------------------------------------------
+# AWS credentials
+# ---------------------------------------------------------------------------
+
+[[rules]]
+id = "aws-access-key-id"
+description = "AWS Access Key ID"
+regex = '''(?:A3T[A-Z0-9]|AKIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16}'''
+keywords = ["AKIA", "AGPA", "AIDA", "AROA", "AIPA", "ANPA", "ANVA", "ASIA"]
+
+[[rules]]
+id = "aws-secret-access-key"
+description = "AWS Secret Access Key"
+regex = '''(?i)aws[_\-\.]?secret[_\-\.]?access[_\-\.]?key\s*[=:]\s*['""]?([A-Za-z0-9/+]{40})['""]?'''
+keywords = ["aws_secret", "aws-secret", "secret_access_key"]
+
+# ---------------------------------------------------------------------------
+# GCP / Google
+# ---------------------------------------------------------------------------
+
+[[rules]]
+id = "gcp-service-account-key"
+description = "GCP Service Account private key JSON"
+regex = '''\"type\"\s*:\s*\"service_account\"'''
+keywords = ["service_account"]
+
+[[rules]]
+id = "google-api-key"
+description = "Google API Key"
+regex = '''AIza[0-9A-Za-z\-_]{35}'''
+keywords = ["AIza"]
+
+# ---------------------------------------------------------------------------
+# Generic credentials
+# ---------------------------------------------------------------------------
+
+[[rules]]
+id = "jwt-secret"
+description = "JWT token or signing secret"
+regex = '''(?i)(jwt[_\-\.]?secret|jwt[_\-\.]?key|signing[_\-\.]?secret)\s*[=:]\s*['""]?([A-Za-z0-9/+=_\-]{20,})['""]?'''
+keywords = ["jwt_secret", "jwt_key", "signing_secret"]
+
+[[rules]]
+id = "private-key-header"
+description = "PEM private key header"
+regex = '''-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----'''
+keywords = ["PRIVATE KEY"]
+
+[[rules]]
+id = "database-url-with-password"
+description = "Database URL containing credentials"
+regex = '''(?i)(postgres|postgresql|mysql|mongodb)://[^:]+:[^@\s]{8,}@'''
+keywords = ["postgres://", "postgresql://", "mysql://", "mongodb://"]
+
+# ---------------------------------------------------------------------------
+# Global allowlist
+# ---------------------------------------------------------------------------
+
 [allowlist]
-description = "Global allowlist"
+description = "Global allowlist — paths that never contain real secrets"
 paths = [
   # Binary/build outputs are not sources of truth for secrets.
   '''(^|/)target/''',
   '''\.wasm$''',
+  # Environment templates are placeholders only — never real values.
+  '''\.env\.example$''',
+  '''\.env\..+\.template$''',
+  # Test fixtures contain fabricated keys for unit tests.
+  # QUARTERLY REVIEW: audit this list each quarter (Jan/Apr/Jul/Oct).
+  # Any entry here must have a corresponding comment justifying it.
+  # Real secrets found in test fixtures must be removed and rotated.
+  '''(^|/)test/fixtures/''',
+  '''(^|/)tests/fixtures/''',
+  '''(^|/)__tests__/''',
+  # Vendored dependencies — should not be committed, but if present, skip.
+  '''node_modules/''',
+  # Documentation images and binary assets.
+  '''\.(png|jpg|jpeg|gif|svg|ico|pdf)$''',
 ]
+
+# Specific known false-positive commits (added via .gitleaksignore with
+# per-fingerprint justification comments).  See .gitleaksignore.

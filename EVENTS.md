@@ -133,6 +133,22 @@ pub struct RebalanceEvent {
 - Frontend displays current strategy allocation
 - Indexers monitor strategy changes for risk analysis
 
+### 4b. RebalancedEvent
+**Topic:** `"rebal"` (`TOPIC_REBALANCED`)
+
+Emitted once after each completed `rebalance` call, including successful no-op
+routes. An incomplete protocol exit emits `RebalanceFailedEvent` and returns
+before this event.
+
+```rust
+pub struct RebalancedEvent {
+    pub from: Symbol,    // Protocol held before the call
+    pub to: Symbol,      // Requested destination protocol
+    pub amount: i128,    // Amount moved during the rebalance
+    pub min_out: i128,   // Minimum accepted output for each protocol leg
+}
+```
+
 ### 4a. ProtocolChangedEvent
 **Topic:** `"proto_chg"` (`TOPIC_PROTOCOL_CHANGED`)
 

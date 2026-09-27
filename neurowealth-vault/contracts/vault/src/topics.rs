@@ -29,6 +29,8 @@ pub const TOPIC_WITHDRAW: Symbol = symbol_short!("withdraw");
 /// Topic for `RebalanceEvent`, published by every `rebalance` outcome
 /// (including `"noop").
 pub const TOPIC_REBALANCE: Symbol = symbol_short!("rebalance");
+/// Topic for `RebalancedEvent`, published after a successful `rebalance` call.
+pub const TOPIC_REBALANCED: Symbol = symbol_short!("rebal");
 /// Topic for `VaultPausedEvent`, published by `pause`.
 pub const TOPIC_PAUSED: Symbol = symbol_short!("paused");
 /// Topic for `VaultUnpausedEvent`, published by `unpause`.
@@ -56,6 +58,9 @@ pub const TOPIC_OWNERSHIP_INITIATED: Symbol = symbol_short!("own_init");
 pub const TOPIC_OWNERSHIP_TRANSFERRED: Symbol = symbol_short!("own_xfer");
 /// Topic for `OwnershipTransferCancelledEvent`, published by `cancel_ownership_transfer`.
 pub const TOPIC_OWNERSHIP_CANCELLED: Symbol = symbol_short!("own_cncl");
+/// Topic for `PendingOwnerExpiredEvent`, published by `transfer_ownership` when a
+/// new proposal silently overwrites an expired one (#61).
+pub const TOPIC_OWNERSHIP_EXPIRED: Symbol = symbol_short!("own_expir");
 /// Topic for `AssetsUpdatedEvent`, published by `update_total_assets`.
 pub const TOPIC_ASSETS_UPDATED: Symbol = symbol_short!("assets");
 /// Topic for `UpgradedEvent`, published by `execute_upgrade`.
@@ -210,3 +215,12 @@ pub const TOPIC_BATCH_TTL_TOUCHED: Symbol = symbol_short!("batch_ttl");
 /// Topic for `GuardianSetEvent`, published by `set_guardian` and
 /// `remove_guardian` when the guardian key changes.
 pub const TOPIC_GUARDIAN_SET: Symbol = symbol_short!("guard_set");
+
+// ============================================================================
+// Batch deposit (#42)
+// ============================================================================
+
+/// Topic for `BatchDepositedEvent`, published by `batch_deposit` after all
+/// entries are processed. The agent address is published as an indexed topic
+/// so indexers can filter batch deposits by agent without scanning payloads.
+pub const TOPIC_BATCH_DEPOSITED: Symbol = symbol_short!("batch_dep2");

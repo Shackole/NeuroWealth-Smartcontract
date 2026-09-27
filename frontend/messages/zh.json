@@ -1,8 +1,114 @@
 {
   "Index": {
-    "title": "NeuroWealth | AI驱动的DeFi收益平台",
-    "description": "自主AI投资代理管理智能合约收益策略。",
-    "getStarted": "开始",
+    "title": "NeuroWealth | AI 驱动的 DeFi 收益平台",
+    "description": "自主 AI 投资代理，管理智能合约收益策略。",
+    "getStarted": "开始使用",
     "language": "语言"
+  },
+  "Header": {
+    "tagline": "Stellar 上的自主 DeFi 收益",
+    "nav": {
+      "dashboard": "仪表板",
+      "strategies": "策略",
+      "transactions": "交易记录",
+      "whatsapp": "WhatsApp 机器人"
+    }
+  },
+  "Hero": {
+    "badge": "AI 驱动的自主收益引擎"
+  },
+  "BalanceCard": {
+    "title": "总投资组合价值",
+    "protected": "Soroban Vault 保护",
+    "usdLabel": "美元",
+    "rateLabel": "汇率",
+    "deposit": "存款",
+    "withdraw": "取款"
+  },
+  "EarningsCard": {
+    "title": "收益盈利",
+    "autoCompounded": "自动复利",
+    "yieldNote": "由 AI 代理策略自主产生的收益",
+    "today": "今天",
+    "week": "7 天",
+    "month": "30 天"
+  },
+  "StrategyBadge": {
+    "title": "当前策略",
+    "apyLabel": "净年化收益率",
+    "weeklyGain": "本周 +0.4%",
+    "optimiseQuestion": "想要优化风险？",
+    "conservative": "保守型",
+    "balanced": "均衡型",
+    "growth": "成长型",
+    "descriptions": {
+      "conservative": "Blend 稳定币借贷（低风险）",
+      "balanced": "最佳借贷 + DEX 流动性组合（推荐）",
+      "growth": "多协议 DEX LP 部署（更高收益）"
+    }
+  },
+  "TransactionHistory": {
+    "title": "交易历史",
+    "noTransactions": "暂无交易",
+    "deposit": "存款",
+    "withdraw": "取款",
+    "rebalance": "再平衡",
+    "harvest": "收割"
+  },
+  "WhatsAppCard": {
+    "title": "WhatsApp 集成",
+    "live": "实时机器人",
+    "heading": "通过 WhatsApp 聊天交互",
+    "description": "无需浏览器或钱包！只需向我们的 Twilio 机器人发送消息，即可进行 OTP 验证、查询余额、存款或取款。",
+    "webhookLabel": "Webhook 地址：",
+    "demoUser": "用户：存入 100 USDC",
+    "demoAgent": "代理：好的！已将 100 USDC 存入均衡策略。✅"
+  },
+  "ActionModal": {
+    "depositTitle": "存入 USDC",
+    "withdrawTitle": "取出 USDC",
+    "depositSubtitle": "在 Soroban vault 中铸造份额",
+    "withdrawSubtitle": "销毁份额并提取 USDC",
+    "amountLabel": "金额（USDC）",
+    "available": "可用",
+    "max": "最大",
+    "exchangeRate": "汇率",
+    "estimatedShares": "预计份额",
+    "networkFee": "网络费用",
+    "signingWith": "正在用 Freighter 签名…",
+    "confirmDeposit": "确认存款",
+    "confirmWithdraw": "确认取款",
+    "depositSuccess": "存款成功！",
+    "withdrawSuccess": "取款成功！",
+    "txHashLabel": "交易哈希：",
+    "confirmedIn": "在 Stellar 上约 3.8 秒确认",
+    "done": "完成"
+  },
+  "WalletConnect": {
+    "connect": "连接钱包",
+    "disconnect": "断开连接",
+    "connected": "已连接",
+    "address": "地址"
+  },
+  "Footer": {
+    "brand": "NeuroWealth AI Vault",
+    "architecture": "Soroban 智能合约架构",
+    "stellar": "Stellar 网络",
+    "soroban": "Soroban SDK",
+    "freighter": "Freighter 钱包"
+  },
+  "LanguageSwitcher": {
+    "label": "语言"
+  },
+  "Onboarding": {
+    "skip": "跳过",
+    "next": "下一步",
+    "finish": "完成",
+    "step1Title": "欢迎来到 NeuroWealth",
+    "step1Body": "您在 Stellar 上的自主 AI 收益代理。连接您的钱包以开始使用。",
+    "step2Title": "存入 USDC",
+    "step2Body": "存入 USDC，让 AI 代理为您找到最佳收益策略。",
+    "step3Title": "自动赚取",
+    "step3Body": "您的资金 24/7 部署在 Blend 和 DEX 流动性池中。"
   }
 }

@@ -318,17 +318,17 @@ pub enum VaultError {
     MultiProtocolEnabledError = 79,
 
     /// The configured call rate for an operation has been exhausted.
-    RateLimitExceeded = 80,
+    RateLimitExceeded = 77,
     /// The owner supplied an unsupported rate-limit category.
-    InvalidRateLimitCategory = 81,
+    InvalidRateLimitCategory = 78,
     /// A rate-limit window must be non-zero when a limit is enabled.
-    InvalidRateLimitConfig = 82,
+    InvalidRateLimitConfig = 79,
     /// A batch contains more entries than the configured maximum.
-    BatchSizeExceeded = 83,
+    BatchSizeExceeded = 80,
     /// No adapter contract is configured for the requested protocol (#656).
-    ProtocolAdapterNotConfigured = 84,
+    ProtocolAdapterNotConfigured = 81,
     /// The requested protocol is not on the owner-managed whitelist (#656).
-    ProtocolNotWhitelisted = 85,
+    ProtocolNotWhitelisted = 82,
 
 }
 
@@ -368,9 +368,6 @@ impl VaultError {
     pub const EmergencyWithdrawalNotAllowed: Self = Self::NotPaused;
     pub const HoldingPeriodNotElapsed: Self = Self::InvalidStrategy;
     pub const InvalidHoldingPeriod: Self = Self::InvalidStrategy;
-    /// Alias for `TimelockNotExpired` using the vocabulary from issue #58.
-    /// Both names map to the same on-chain error code (#50).
-    pub const TimelockNotElapsed: Self = Self::TimelockNotExpired;
 }
 
 // ============================================================================
@@ -382,7 +379,7 @@ impl VaultError {
 /// This enum defines all keys used for both instance and persistent storage.
 /// Instance storage is used for contract-wide configuration, while persistent
 /// storage is used for per-user data that requires efficient access.
-#[contracttype(export = false)]
+#[contracttype]
 pub enum DataKey {
     /// Legacy user's principal USDC balance (key: user Address).
     ///
@@ -494,16 +491,6 @@ pub enum DataKey {
     LastRebalanceLedger,
     /// Number of ledgers added to the current ledger for protocol approvals.
     ApprovalTtl,
-    /// Ledger at which the last Blend token approval expires.
-    ///
-    /// Written by `supply_to_blend` whenever an approval is issued.
-    /// Read by `maybe_renew_blend_approval` to decide whether a near-expiry
-    /// renewal is needed before the next `rebalance` or `harvest` call (#57).
-    BlendApprovalExpiry,
-    /// Ledger at which the last DEX token approval expires.
-    ///
-    /// Analogous to `BlendApprovalExpiry` for the DEX supply path (#57).
-    DexApprovalExpiry,
     /// DEX liquidity pool contract address
     /// The address of the Stellar DEX liquidity pool contract used by the
     /// Balanced/Growth strategies for on-chain liquidity provision.
@@ -1869,6 +1856,38 @@ pub struct BatchTtlTouchedEvent {
     pub users_extended: u32,
 }
 
+// ============================================================================
+// Batch deposit types (#42)
+// ============================================================================
+
+/// A single entry in a `batch_deposit` call.
+///
+/// The agent supplies one `BatchDepositItem` per user whose deposit should
+/// be processed in this batch transaction.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BatchDepositItem {
+    /// The user whose funds are being deposited.
+    pub user: Address,
+    /// Amount of USDC to deposit for this user (7 decimal places).
+    pub amount: i128,
+}
+
+/// Emitted once after `batch_deposit` finishes processing all entries.
+///
+/// # Topics
+/// - `0`: `SymbolShort("batch_dep2")` (`TOPIC_BATCH_DEPOSITED`)
+/// - `1`: `Address` — the agent who submitted the batch (indexed topic)
+#[contracttype]
+pub struct BatchDepositedEvent {
+    /// Number of entries that were successfully processed.
+    pub count: u32,
+    /// Total USDC amount deposited across all successful entries.
+    pub total_amount: i128,
+    /// Number of entries that were skipped due to validation failures.
+    pub skipped: u32,
+}
+
 /// Emitted when the guardian key is set or cleared via `set_guardian` /
 /// `remove_guardian` (#44 / #607).
 ///
@@ -1923,14 +1942,6 @@ const MAX_DEPOSIT_CEILING: i128 = 100_000_000_000_i128;
 pub(crate) const DEFAULT_APPROVAL_TTL: u32 = 100_000;
 const MIN_APPROVAL_TTL: u32 = 1_000;
 const MAX_APPROVAL_TTL: u32 = 500_000;
-/// Ledgers-remaining threshold below which a token approval is proactively
-/// renewed before `rebalance` and `harvest` (#57).
-///
-/// When the stored approval expiry is within this many ledgers of the current
-/// ledger sequence, `rebalance` and `harvest` renew the approval to a full
-/// `ApprovalTtl` window before executing any protocol call.  This prevents
-/// protocol calls from reverting because a stale allowance expired mid-call.
-pub(crate) const APPROVAL_RENEWAL_THRESHOLD: u32 = 1_000;
 
 /// Default circuit-breaker threshold (#439): the number of consecutive failed
 /// rebalances that trips an automatic emergency pause when the owner has not
@@ -1963,12 +1974,6 @@ pub const RATE_LIMIT_TOUCH_TTL: Symbol = symbol_short!("touch_ttl");
 pub const RATE_LIMIT_PREVIEW: Symbol = symbol_short!("preview");
 /// Rate-limit category for `batch_deposit` calls.
 pub const RATE_LIMIT_BATCH_DEPOSIT: Symbol = symbol_short!("batch_dep");
-/// Rate-limit category for global agent `harvest` calls (Issue #46).
-///
-/// Unlike `rebalance`, `harvest` has its own independent global bucket so
-/// the owner can configure harvest frequency separately from rebalance
-/// frequency.  Both still share the rebalance cooldown guard.
-pub const RATE_LIMIT_HARVEST: Symbol = symbol_short!("harvest");
 
 /// Default single-user deposit allowance: 100 calls per 720 ledgers (~1 hour).
 const DEFAULT_DEPOSIT_RATE_LIMIT_MAX_CALLS: u32 = 100;
@@ -1992,11 +1997,6 @@ const DEFAULT_PREVIEW_RATE_LIMIT_WINDOW: u32 = 1;
 /// Default per-user batch-deposit allowance: 100 calls per 720 ledgers.
 const DEFAULT_BATCH_DEPOSIT_RATE_LIMIT_MAX_CALLS: u32 = 100;
 const DEFAULT_BATCH_DEPOSIT_RATE_LIMIT_WINDOW: u32 = 720;
-/// Default global harvest allowance: 100 calls per 720 ledgers (~1 hour).
-/// Deliberately generous to remain backwards-compatible; owners of production
-/// deployments should tighten this to match their harvest schedule (Issue #46).
-const DEFAULT_HARVEST_RATE_LIMIT_MAX_CALLS: u32 = 100;
-const DEFAULT_HARVEST_RATE_LIMIT_WINDOW: u32 = 720;
 /// Maximum number of `(token, amount)` entries accepted by `batch_deposit` by default.
 const DEFAULT_MAX_BATCH_SIZE: u32 = 50;
 
@@ -2022,8 +2022,46 @@ const USER_SHARES_TTL_EXTEND_TO: u32 = 100;
 /// `current_ledger_sequence + ApprovalTtl`.
 const DEFAULT_BLEND_APPROVAL_TTL: u32 = 100_000;
 
-pub use topics::*;
+use topics::{
+    TOPIC_AGENT_UPDATED, TOPIC_AGENT_UPDATE_CANCELLED, TOPIC_AGENT_UPDATE_CONFIRMED,
+    TOPIC_AGENT_UPDATE_PROPOSED, TOPIC_AGENT_KEY_ROTATED, TOPIC_APPROVAL_TTL_UPDATED,
+    TOPIC_ASSETS_UPDATED, TOPIC_ASSET_DEPOSIT, TOPIC_ASSET_WITHDRAW,
+    TOPIC_BATCH_SIZE_LIMIT_UPDATED, TOPIC_BLEND_POOL_CONFIGURED, TOPIC_BLEND_SUPPLY,
+    TOPIC_BLEND_WITHDRAW, TOPIC_CAPS_UPDATED, TOPIC_DEPOSIT, TOPIC_DEPOSIT_LIMITS_UPDATED,
+    TOPIC_DEX_POOL_CONFIGURED, TOPIC_DEX_SUPPLY, TOPIC_DEX_WITHDRAW, TOPIC_EMERGENCY_HARVEST,
+    TOPIC_EMERGENCY_PAUSED, TOPIC_EMERGENCY_WITHDRAWAL, TOPIC_HARVEST, TOPIC_INIT,
+    TOPIC_LIMITS_UPDATED, TOPIC_MAX_FAILURES_UPDATED, TOPIC_MIGRATE, TOPIC_MIGRATION_PAUSED,
+    TOPIC_MIGRATION_TARGET_UPDATED, TOPIC_OWNERSHIP_CANCELLED, TOPIC_OWNERSHIP_INITIATED,
+    TOPIC_OWNERSHIP_TRANSFERRED, TOPIC_PAUSED, TOPIC_PROTOCOL_CHANGED,
+    TOPIC_RATE_LIMIT_CONFIG_UPDATED, TOPIC_RATE_LIMIT_HIT, TOPIC_REBALANCE,
+    TOPIC_REBALANCE_COOLDOWN_UPDATED, TOPIC_REBALANCE_FAILED, TOPIC_SHARES_LOCKED,
+    TOPIC_SHARES_UNLOCKED, TOPIC_SUPPORTED_ASSETS_UPDATED, TOPIC_STANDBY_AGENT_UPDATED,
+    TOPIC_TVL_CAP_UPDATED, TOPIC_UNPAUSED, TOPIC_UPGRADED,
+    TOPIC_UPGRADE_CANCELLED, TOPIC_UPGRADE_SCHEDULED, TOPIC_USER_CAP_UPDATED,
+    TOPIC_USER_STRATEGY_UPDATED, TOPIC_WITHDRAW, TOPIC_YIELD_ATTRIBUTED,
+    TOPIC_BATCH_TTL_TOUCHED, TOPIC_GUARDIAN_SET,
+    TOPIC_BATCH_DEPOSITED,
+    TOPIC_USER_STRATEGY_UPDATED, TOPIC_WITHDRAW,
+    TOPIC_BLEND_POOL_CONFIGURED, TOPIC_BLEND_SUPPLY, TOPIC_BLEND_WITHDRAW, TOPIC_CAPS_UPDATED,
+    TOPIC_DEPOSIT, TOPIC_DEPOSIT_LIMITS_UPDATED, TOPIC_DEX_POOL_CONFIGURED, TOPIC_DEX_SUPPLY,
 
+    TOPIC_DEX_WITHDRAW, TOPIC_EMERGENCY_HARVEST, TOPIC_EMERGENCY_PAUSED, TOPIC_HARVEST, TOPIC_INIT,
+    TOPIC_LIMITS_UPDATED, TOPIC_MIGRATE, TOPIC_MIGRATION_PAUSED, TOPIC_MIGRATION_TARGET_UPDATED,
+    TOPIC_OWNERSHIP_CANCELLED, TOPIC_OWNERSHIP_INITIATED,
+    TOPIC_SHARES_LOCKED, TOPIC_SHARES_UNLOCKED, TOPIC_EMERGENCY_WITHDRAWAL,
+    TOPIC_MULTI_PROTOCOL_MODE, TOPIC_PROTOCOL_ALLOCATION_CHANGED, TOPIC_PROTOCOL_APY_UPDATED,
+
+    TOPIC_DEX_WITHDRAW, TOPIC_EMERGENCY_HARVEST, TOPIC_EMERGENCY_PAUSED, TOPIC_EMERGENCY_WITHDRAWAL,
+    TOPIC_HARVEST, TOPIC_INIT, TOPIC_LIMITS_UPDATED, TOPIC_MIGRATE, TOPIC_MIGRATION_PAUSED,
+    TOPIC_MIGRATION_TARGET_UPDATED, TOPIC_OWNERSHIP_CANCELLED, TOPIC_OWNERSHIP_INITIATED,
+
+    TOPIC_OWNERSHIP_TRANSFERRED, TOPIC_PAUSED, TOPIC_PROTOCOL_CHANGED, TOPIC_REBALANCE,
+    TOPIC_REBALANCE_COOLDOWN_UPDATED, TOPIC_REBALANCE_FAILED, TOPIC_TVL_CAP_UPDATED,
+    TOPIC_UNPAUSED, TOPIC_UPGRADED, TOPIC_UPGRADE_CANCELLED, TOPIC_UPGRADE_SCHEDULED,
+    TOPIC_USER_CAP_UPDATED, TOPIC_USER_STRATEGY_UPDATED, TOPIC_WITHDRAW,
+    TOPIC_MAX_FAILURES_UPDATED,
+
+};
 
 impl BlendPoolClient {
     /// Deposits assets to the Blend pool.
@@ -2597,194 +2635,211 @@ impl NeuroWealthVault {
         );
     }
 
-    /// Deposits multiple amounts in a single transaction. Each entry specifies a
-    /// token address and amount. Currently only the vault's USDC token is
-    /// accepted; other tokens will be supported when multi-asset functionality
-    /// is enabled (Phase 3).
+    /// Processes deposits for multiple users in a single Soroban transaction.
     ///
-    /// The entire batch is processed atomically — if any transfer fails, the
-    /// whole transaction reverts. Shares are minted once based on the aggregate
-    /// deposit amount, reducing transaction costs for multi-token deposits.
+    /// Called by the AI agent on behalf of multiple users. Each entry is
+    /// validated independently — an invalid entry is skipped and counted as
+    /// `skipped` rather than aborting the entire batch (partial success).
     ///
     /// # Arguments
     ///
     /// * `env` - The Soroban environment.
-    /// * `user` - The user address depositing funds (must authorize).
-    /// * `entries` - A vector of `(token_address, amount)` pairs.
+    /// * `agent` - The AI agent address (must be the vault's authorized agent).
+    /// * `entries` - A vector of `BatchDepositItem { user, amount }` pairs.
     ///
     /// # Events
     ///
-    /// Emits one `DepositEvent` per entry.
-    ///
-    /// # Panics
-    ///
-    /// - If any entry's token is not the vault's USDC token (until multi-asset).
-    /// - If any entry's amount fails validation.
-    /// - If the aggregate deposit exceeds the TVL or user cap.
-    /// - If the batch exceeds the configured entry limit.
-    /// - If the user's deposit or batch rate-limit bucket is exhausted.
-    /// - If shares to mint rounds down to zero.
-    pub fn batch_deposit(env: Env, user: Address, entries: Vec<(Address, i128)>) {
-        Self::require_initialized(&env);
-        user.require_auth();
-        Self::require_not_paused(&env);
-
-        let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
-        let total_entries = entries.len();
-        Self::require_batch_size(&env, total_entries);
-        // A batch is one deposit operation for the per-user deposit bucket and
-        // one operation for the separate batch bucket. This closes the bypass
-        // where a caller could avoid the single-deposit limit by batching.
-        Self::enforce_user_rate_limit(&env, &user, RATE_LIMIT_DEPOSIT);
-        Self::enforce_user_rate_limit(&env, &user, RATE_LIMIT_BATCH_DEPOSIT);
-
-        // First pass: validate every entry before any transfer (fail-fast).
-        let mut total_amount: i128 = 0;
-        for i in 0..total_entries {
-            let (token, amount) = entries.get(i).unwrap();
-            // Until multi-asset is enabled, require all entries to use USDC.
-            if token != usdc_token {
-                panic!(
-                    "batch_deposit: token {:?} is not supported; only USDC is accepted",
-                    token
-                );
-            }
-            Self::require_positive_amount(&env, amount);
-            total_amount = total_amount
-                .checked_add(amount)
-                .expect("batch_deposit: total amount overflow");
-        }
-
-        // Validate aggregate against vault limits.
-        if total_entries > 0 {
-            Self::require_minimum_deposit(&env, total_amount);
-            Self::require_maximum_deposit(&env, total_amount);
-            Self::require_within_deposit_cap(&env, &user, total_amount);
-            Self::require_within_tvl_cap(&env, total_amount);
-        }
-
-        // Second pass: execute transfers.
-        let token_client = token::Client::new(&env, &usdc_token);
-        for i in 0..total_entries {
-            let (_token, amount) = entries.get(i).unwrap();
-            token_client.transfer(&user, &env.current_contract_address(), &amount);
-        }
-
-        // Update total deposits and mint shares once for the aggregate.
-        let total: i128 = env
-            .storage()
-            .instance()
-            .get(&DataKey::TotalDeposits)
-            .unwrap_or(0_i128);
-        env.storage().instance().set(
-            &DataKey::TotalDeposits,
-            &(total
-                .checked_add(total_amount)
-                .expect("batch_deposit: total deposits overflow")),
-        );
-
-        let shares_to_mint = Self::convert_to_shares_internal(&env, total_amount);
-        Self::require(
-            &env,
-            shares_to_mint > 0,
-            VaultError::SharesToMintMustBePositive,
-        );
-
-        let current_shares: i128 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Shares(user.clone()))
-            .unwrap_or(0_i128);
-        env.storage().persistent().set(
-            &DataKey::Shares(user.clone()),
-            &(current_shares
-                .checked_add(shares_to_mint)
-                .expect("batch_deposit: shares overflow")),
-        );
-
-        if current_shares == 0
-            && !env
-                .storage()
-                .persistent()
-                .has(&DataKey::UserStrategy(user.clone()))
-        {
-            let default_strategy = Symbol::new(&env, "balanced");
-            env.storage()
-                .persistent()
-                .set(&DataKey::UserStrategy(user.clone()), &default_strategy);
-            env.events().publish(
-                (TOPIC_USER_STRATEGY_UPDATED, user.clone()),
-                UserStrategyUpdatedEvent {
-                    user: user.clone(),
-                    old_strategy: Symbol::new(&env, ""),
-                    new_strategy: default_strategy,
-                },
-            );
-        }
-
-        let total_shares: i128 = env
-            .storage()
-            .instance()
-            .get(&DataKey::TotalShares)
-            .unwrap_or(0_i128);
-        env.storage().instance().set(
-            &DataKey::TotalShares,
-            &(total_shares
-                .checked_add(shares_to_mint)
-                .expect("batch_deposit: total shares overflow")),
-        );
-
-        for i in 0..total_entries {
-            let (_token, amount) = entries.get(i).unwrap();
-            env.events().publish(
-                (TOPIC_DEPOSIT, user.clone()),
-                DepositEvent {
-                    user: user.clone(),
-                    amount,
-                    shares: shares_to_mint,
-                },
-            );
-        }
-    }
-
-    // ==========================================================================
-    // CORE LIFECYCLE - WITHDRAW
-    // ==========================================================================
-
-    /// Withdraws USDC from the vault for a user.
-    ///
-    /// The user must authorize this transaction with their signature.
-    /// The vault transfers USDC from its balance to the user.
-    ///
-    /// If funds are deployed in Blend, this function will pull liquidity back
-    /// first to ensure funds are available for withdrawal.
-    ///
-    /// # Arguments
-    ///
-    /// * `env` - The Soroban environment.
-    /// * `user` - The user address withdrawing funds (must authorize).
-    /// * `amount` - Amount of USDC to withdraw (7 decimal places).
-    ///
-    /// # Returns
-    ///
-    /// None.
-    ///
-    /// # Events
-    ///
-    /// Emits:
-    /// - `WithdrawEvent`
-    ///
-    /// # Errors
-    ///
-    /// None.
+    /// Emits one `DepositEvent` per successfully processed entry, plus a single
+    /// `BatchDepositedEvent` summarising the whole call.
     ///
     /// # Panics
     ///
     /// - If the vault is paused.
-    /// - If amount is not positive.
-    /// - If user has insufficient balance or shares.
-    /// - If the vault has insufficient liquidity and cannot retrieve enough from Blend.
-    /// - If the USDC transfer fails.
+    /// - If the caller is not the vault agent.
+    /// - If the batch exceeds `MaxBatchSize`.
+    /// - If the agent's batch rate-limit bucket is exhausted.
+    /// - If the total valid amount would exceed the TVL cap.
+    pub fn batch_deposit(env: Env, agent: Address, entries: Vec<BatchDepositItem>) {
+        Self::require_initialized(&env);
+        agent.require_auth();
+        Self::require_not_paused(&env);
+        Self::require_is_agent(&env);
+
+        let total_entries = entries.len();
+        Self::require_batch_size(&env, total_entries);
+
+        // Rate-limit the whole batch call using the batch-deposit bucket.
+        Self::enforce_user_rate_limit(&env, &agent, RATE_LIMIT_BATCH_DEPOSIT);
+
+        let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
+        let token_client = token::Client::new(&env, &usdc_token);
+
+        // ── CHECKS phase ────────────────────────────────────────────────────
+        // Pre-validate every entry independently to compute the aggregate valid
+        // amount for the TVL cap guard. Invalid entries are counted as skipped.
+        let mut total_valid_amount: i128 = 0;
+        let mut valid_count: u32 = 0;
+        let mut skip_count: u32 = 0;
+
+        for i in 0..total_entries {
+            let item = entries.get(i).unwrap();
+            let min_dep = Self::get_min_deposit_internal(&env);
+            let max_dep = Self::get_max_deposit_internal(&env);
+            let cap: i128 = env
+                .storage()
+                .instance()
+                .get(&DataKey::UserDepositCap)
+                .unwrap_or(0_i128);
+
+            let ok = item.amount > 0
+                && item.amount >= min_dep
+                && item.amount <= max_dep
+                && {
+                    if cap > 0 {
+                        let user_shares = Self::read_shares(&env, &item.user);
+                        let user_assets = Self::convert_to_assets_internal(&env, user_shares);
+                        user_assets.saturating_add(item.amount) <= cap
+                    } else {
+                        true
+                    }
+                };
+
+            if ok {
+                total_valid_amount = total_valid_amount
+                    .checked_add(item.amount)
+                    .expect("batch_deposit: amount overflow");
+                valid_count += 1;
+            } else {
+                skip_count += 1;
+            }
+        }
+
+        // Guard the aggregate valid amount against the TVL cap.
+        if total_valid_amount > 0 {
+            Self::require_within_tvl_cap(&env, total_valid_amount);
+        }
+
+        // ── EFFECTS + INTERACTIONS phase ─────────────────────────────────────
+        // Process each valid entry: transfer tokens, mint shares, update state.
+        for i in 0..total_entries {
+            let item = entries.get(i).unwrap();
+            let min_dep = Self::get_min_deposit_internal(&env);
+            let max_dep = Self::get_max_deposit_internal(&env);
+            if item.amount <= 0 || item.amount < min_dep || item.amount > max_dep {
+                continue;
+            }
+            let cap: i128 = env
+                .storage()
+                .instance()
+                .get(&DataKey::UserDepositCap)
+                .unwrap_or(0_i128);
+            if cap > 0 {
+                let user_shares = Self::read_shares(&env, &item.user);
+                let user_assets = Self::convert_to_assets_internal(&env, user_shares);
+                if user_assets.saturating_add(item.amount) > cap {
+                    continue;
+                }
+            }
+
+            // Transfer USDC from agent to vault.
+            token_client.transfer(&agent, &env.current_contract_address(), &item.amount);
+
+            // Mint shares for the individual user.
+            let shares_to_mint = Self::convert_to_shares_internal(&env, item.amount);
+            if shares_to_mint == 0 {
+                // Return the transfer — zero-share mints are not allowed.
+                token_client.transfer(&env.current_contract_address(), &agent, &item.amount);
+                continue;
+            }
+
+            // Update per-user shares.
+            let current_shares = Self::read_shares(&env, &item.user);
+            env.storage().persistent().set(
+                &DataKey::Shares(item.user.clone()),
+                &(current_shares
+                    .checked_add(shares_to_mint)
+                    .expect("batch_deposit: user shares overflow")),
+            );
+
+            // Register user in the active-share index on first deposit.
+            if current_shares == 0 {
+                Self::add_to_user_index(&env, &item.user);
+                if !env
+                    .storage()
+                    .persistent()
+                    .has(&DataKey::UserStrategy(item.user.clone()))
+                {
+                    let default_strategy = Symbol::new(&env, "balanced");
+                    env.storage().persistent().set(
+                        &DataKey::UserStrategy(item.user.clone()),
+                        &default_strategy,
+                    );
+                    env.events().publish(
+                        (TOPIC_USER_STRATEGY_UPDATED, item.user.clone()),
+                        UserStrategyUpdatedEvent {
+                            user: item.user.clone(),
+                            old_strategy: Symbol::new(&env, ""),
+                            new_strategy: default_strategy,
+                        },
+                    );
+                }
+            }
+
+            // Update vault-wide totals (TotalDeposits, TotalShares, TotalAssets).
+            let td: i128 = env
+                .storage()
+                .instance()
+                .get(&DataKey::TotalDeposits)
+                .unwrap_or(0_i128);
+            env.storage().instance().set(
+                &DataKey::TotalDeposits,
+                &(td.checked_add(item.amount).expect("batch_deposit: deposits overflow")),
+            );
+
+            let ts: i128 = env
+                .storage()
+                .instance()
+                .get(&DataKey::TotalShares)
+                .unwrap_or(0_i128);
+            env.storage().instance().set(
+                &DataKey::TotalShares,
+                &(ts.checked_add(shares_to_mint).expect("batch_deposit: shares overflow")),
+            );
+
+            let ta = Self::get_total_assets_internal(&env);
+            env.storage().instance().set(
+                &DataKey::TotalAssets,
+                &(ta.checked_add(item.amount).expect("batch_deposit: assets overflow")),
+            );
+
+            // Record deposit ledger for flash-loan protection.
+            env.storage().persistent().set(
+                &DataKey::LastDepositLedger(item.user.clone()),
+                &env.ledger().sequence(),
+            );
+
+            // Per-entry DepositEvent (indexed by user address).
+            env.events().publish(
+                (TOPIC_DEPOSIT, item.user.clone()),
+                DepositEvent {
+                    user: item.user.clone(),
+                    amount: item.amount,
+                    shares: shares_to_mint,
+                },
+            );
+        }
+
+        // Aggregate BatchDepositedEvent (indexed by agent address).
+        env.events().publish(
+            (TOPIC_BATCH_DEPOSITED, agent.clone()),
+            BatchDepositedEvent {
+                count: valid_count,
+                total_amount: total_valid_amount,
+                skipped: skip_count,
+            },
+        );
+    }
+
     /// - If the user's withdrawal rate-limit bucket is exhausted.
     pub fn withdraw(env: Env, user: Address, amount: i128) {
         Self::require_initialized(&env);
@@ -3975,12 +4030,6 @@ impl NeuroWealthVault {
         // calls, so a gracefully handled failed exit still counts as an attempt.
         Self::enforce_global_rate_limit(&env, RATE_LIMIT_REBALANCE);
 
-        // Near-expiry approval renewal (#57): proactively refresh token
-        // approvals for whichever protocol pool is configured before any
-        // protocol call is made, so approvals never lapse mid-call.
-        Self::maybe_renew_blend_approval(&env);
-        Self::maybe_renew_dex_approval(&env);
-
         let current_protocol: Symbol = env
             .storage()
             .instance()
@@ -4685,16 +4734,10 @@ impl NeuroWealthVault {
             panic_with_error!(&env, VaultError::UnsupportedProtocol);
         }
 
-        // Harvest uses its own dedicated global bucket (RATE_LIMIT_HARVEST)
-        // so the owner can configure harvest and rebalance frequencies
-        // independently (Issue #46). Both operations still respect the
-        // shared rebalance cooldown guard.
-        Self::enforce_global_rate_limit(&env, RATE_LIMIT_HARVEST);
-
-        // Near-expiry approval renewal (#57): proactively refresh token
-        // approvals before the withdraw-then-resupply round-trip.
-        Self::maybe_renew_blend_approval(&env);
-        Self::maybe_renew_dex_approval(&env);
+        // Harvest also performs an external protocol round-trip. Reuse the
+        // global rebalance bucket so it cannot bypass the frequency guard by
+        // alternating between `rebalance` and `harvest`.
+        Self::enforce_global_rate_limit(&env, RATE_LIMIT_REBALANCE);
 
         let withdrawn = Self::withdraw_from_protocol(&env, &current_protocol, min_out);
 
@@ -4932,16 +4975,10 @@ impl NeuroWealthVault {
             panic_with_error!(&env, VaultError::UnsupportedProtocol);
         }
 
-        // Harvest uses its own dedicated global bucket (RATE_LIMIT_HARVEST)
-        // so the owner can configure harvest and rebalance frequencies
-        // independently (Issue #46). Both operations still respect the
-        // shared rebalance cooldown guard.
-        Self::enforce_global_rate_limit(&env, RATE_LIMIT_HARVEST);
-
-        // Near-expiry approval renewal (#57): proactively refresh token
-        // approvals before the withdraw-then-resupply round-trip.
-        Self::maybe_renew_blend_approval(&env);
-        Self::maybe_renew_dex_approval(&env);
+        // Harvest also performs an external protocol round-trip. Reuse the
+        // global rebalance bucket so it cannot bypass the frequency guard by
+        // alternating between `rebalance` and `harvest`.
+        Self::enforce_global_rate_limit(&env, RATE_LIMIT_REBALANCE);
 
         let withdrawn = Self::withdraw_from_protocol(&env, &current_protocol, min_out);
 
@@ -5584,10 +5621,7 @@ impl NeuroWealthVault {
         // expires, which prevents a caller from bypassing a newly tightened
         // policy by relying on a stale reset. Avoid an unnecessary storage
         // operation for per-user categories.
-        if category == RATE_LIMIT_REBALANCE
-            || category == RATE_LIMIT_PREVIEW
-            || category == RATE_LIMIT_HARVEST
-        {
+        if category == RATE_LIMIT_REBALANCE || category == RATE_LIMIT_PREVIEW {
             env.storage()
                 .instance()
                 .remove(&DataKey::RateLimitGlobalState(category.clone()));
@@ -6159,36 +6193,6 @@ impl NeuroWealthVault {
         Self::get_max_deposit_internal(&env)
     }
 
-    /// Returns both the minimum and maximum per-transaction deposit limits as
-    /// a single `(min, max)` tuple.
-    ///
-    /// This is the recommended view function for deposit-limit validation
-    /// because it avoids two separate RPC round-trips when both values are
-    /// needed (e.g., frontend preview or off-chain validation).
-    ///
-    /// # Returns
-    ///
-    /// `(min_deposit, max_deposit)` where:
-    /// - `min_deposit` — minimum USDC per deposit (default 1,000,000 = 1 USDC)
-    /// - `max_deposit` — maximum USDC per deposit (default 10,000,000,000 = 10,000 USDC)
-    ///
-    /// Both values are in stroops (7 decimal places).
-    ///
-    /// # Errors
-    ///
-    /// None.
-    ///
-    /// # Panics
-    ///
-    /// - [`VaultError::NotInitialized`] if the vault has not been initialized.
-    pub fn get_deposit_limits(env: Env) -> (i128, i128) {
-        Self::require_initialized(&env);
-        (
-            Self::get_min_deposit_internal(&env),
-            Self::get_max_deposit_internal(&env),
-        )
-    }
-
     // ==========================================================================
     // USER STRATEGY PREFERENCE
     // ==========================================================================
@@ -6392,30 +6396,26 @@ impl NeuroWealthVault {
     /// Can only be called once `env.ledger().sequence() >= AgentTimelockExpiry`.
     /// On success the pending agent becomes the active agent and the proposal is cleared.
     ///
-    /// **Idempotency**: if no pending proposal exists (because the update was
-    /// already confirmed or there was never a proposal), this function returns
-    /// without error or events — it is a no-op. This makes double-confirm safe
-    /// and avoids spurious failures from replayed or retried transactions.
-    ///
     /// # Events
     ///
-    /// Emits (only when a pending proposal is actually applied):
+    /// Emits:
     /// - `AgentUpdateConfirmedEvent`
     /// - `AgentUpdatedEvent` (for backward-compatible indexers)
     ///
     /// # Panics
     ///
     /// - If the caller is not the owner.
-    /// - If the timelock delay has not yet elapsed (`TimelockNotElapsed` / `TimelockNotExpired`, error #50).
+    /// - If no pending proposal exists (`NoTimelockPending`).
+    /// - If the timelock delay has not yet elapsed (`TimelockNotExpired`).
     pub fn confirm_agent_update(env: Env) {
         Self::require_initialized(&env);
         Self::require_is_owner(&env);
 
-        // Idempotency: if no pending proposal exists, silently return.
-        // This makes double-confirm a safe no-op instead of a hard panic.
-        if !env.storage().instance().has(&DataKey::PendingAgent) {
-            return;
-        }
+        Self::require(
+            &env,
+            env.storage().instance().has(&DataKey::PendingAgent),
+            VaultError::NoTimelockPending,
+        );
 
         let expiry: u32 = env
             .storage()
@@ -6426,7 +6426,7 @@ impl NeuroWealthVault {
         Self::require(
             &env,
             env.ledger().sequence() >= expiry,
-            VaultError::TimelockNotElapsed,
+            VaultError::TimelockNotExpired,
         );
 
         let old_agent: Address = env.storage().instance().get(&DataKey::Agent).unwrap();
@@ -6463,9 +6463,7 @@ impl NeuroWealthVault {
     /// Cancels a pending agent update before it can be confirmed. (#317)
     ///
     /// Only the owner may cancel. Clears the pending proposal so a new one can
-    /// be proposed. Safe to call at any point — both **before** and **after**
-    /// the timelock expiry — giving the owner the option to simply discard a
-    /// proposal rather than confirming it even once the window has opened.
+    /// be proposed. Safe to call at any point during the timelock window.
     ///
     /// # Events
     ///
@@ -6513,14 +6511,6 @@ impl NeuroWealthVault {
     /// 24-hour timelock window opened by [`update_agent`](crate::NeuroWealthVault::update_agent), and decide
     /// whether to let it proceed or call [`cancel_agent_update`](crate::NeuroWealthVault::cancel_agent_update).
     ///
-    /// **Post-confirm / post-cancel behaviour (issue #58):** Both
-    /// [`confirm_agent_update`](crate::NeuroWealthVault::confirm_agent_update) and
-    /// [`cancel_agent_update`](crate::NeuroWealthVault::cancel_agent_update) remove the
-    /// `PendingAgent` and `AgentTimelockExpiry` storage entries before they
-    /// return. Therefore this function **always returns `None`** after either
-    /// of those operations completes — the `Some` variant can only be observed
-    /// while a proposal is still in flight.
-    ///
     /// # Arguments
     ///
     /// * `env` - The Soroban environment.
@@ -6530,10 +6520,8 @@ impl NeuroWealthVault {
     /// * `Some((new_agent, effective_ledger))` while a proposal is pending,
     ///   where `effective_ledger` is the first ledger at which
     ///   [`confirm_agent_update`](crate::NeuroWealthVault::confirm_agent_update) may be called.
-    /// * `None` when no proposal is pending — either:
-    ///   - No proposal has been submitted yet (`update_agent` not called), **or**
-    ///   - The proposal was confirmed via `confirm_agent_update`, **or**
-    ///   - The proposal was cancelled via `cancel_agent_update`.
+    /// * `None` when no proposal is pending — either none was made, or it was
+    ///   already confirmed or cancelled.
     ///
     /// Compare `effective_ledger` against `env.ledger().sequence()` to tell a
     /// still-waiting proposal from a ready-to-confirm one. The currently active
@@ -6563,11 +6551,9 @@ impl NeuroWealthVault {
     ///     Some((new_agent, effective_ledger)) => {
     ///         if env.ledger().sequence() >= effective_ledger {
     ///             vault_client.confirm_agent_update();
-    ///             // get_pending_agent_update() now returns None
     ///         } else {
     ///             // Still inside the timelock window; cancel if unexpected.
-    ///             vault_client.cancel_agent_update();
-    ///             // get_pending_agent_update() now returns None
+    ///             let _ = new_agent;
     ///         }
     ///     }
     /// }
@@ -9434,15 +9420,6 @@ impl NeuroWealthVault {
                 window_ledgers: DEFAULT_BATCH_DEPOSIT_RATE_LIMIT_WINDOW,
             },
         );
-        // Issue #46: Harvest bucket — independent of the rebalance bucket so
-        // the owner can tune their frequencies separately.
-        env.storage().instance().set(
-            &DataKey::RateLimitConfig(RATE_LIMIT_HARVEST),
-            &RateLimitConfig {
-                max_calls: DEFAULT_HARVEST_RATE_LIMIT_MAX_CALLS,
-                window_ledgers: DEFAULT_HARVEST_RATE_LIMIT_WINDOW,
-            },
-        );
         env.storage()
             .instance()
             .set(&DataKey::MaxBatchSize, &DEFAULT_MAX_BATCH_SIZE);
@@ -9457,7 +9434,6 @@ impl NeuroWealthVault {
             || category == &RATE_LIMIT_TOUCH_TTL
             || category == &RATE_LIMIT_PREVIEW
             || category == &RATE_LIMIT_BATCH_DEPOSIT
-            || category == &RATE_LIMIT_HARVEST
     }
 
     /// Rejects unknown category symbols before they can create arbitrary
@@ -9499,11 +9475,6 @@ impl NeuroWealthVault {
             RateLimitConfig {
                 max_calls: DEFAULT_PREVIEW_RATE_LIMIT_MAX_CALLS,
                 window_ledgers: DEFAULT_PREVIEW_RATE_LIMIT_WINDOW,
-            }
-        } else if category == &RATE_LIMIT_HARVEST {
-            RateLimitConfig {
-                max_calls: DEFAULT_HARVEST_RATE_LIMIT_MAX_CALLS,
-                window_ledgers: DEFAULT_HARVEST_RATE_LIMIT_WINDOW,
             }
         } else {
             RateLimitConfig {
@@ -9995,135 +9966,6 @@ impl NeuroWealthVault {
         }
     }
 
-    // ─── Near-expiry approval renewal helpers (#57) ───────────────────────────
-
-    /// Proactively renews the Blend token approval if the stored expiry is
-    /// within `APPROVAL_RENEWAL_THRESHOLD` ledgers of the current sequence.
-    ///
-    /// Called at the start of `rebalance` and `harvest` so that approvals
-    /// never expire mid-call even if many ledgers have elapsed between agent
-    /// invocations.  When no approval has been issued yet (no stored expiry)
-    /// this is a no-op — `supply_to_blend` will issue the first approval when
-    /// it is called.
-    ///
-    /// The renewal issues an approval for `i128::MAX` (the maximum possible
-    /// allowance) so the spender can consume whatever amount the subsequent
-    /// supply call requires without a second approval round-trip.
-    fn maybe_renew_blend_approval(env: &Env) {
-        let stored_expiry: u32 = env
-            .storage()
-            .instance()
-            .get(&DataKey::BlendApprovalExpiry)
-            .unwrap_or(0);
-
-        if stored_expiry == 0 {
-            // No approval has been issued yet; nothing to renew.
-            return;
-        }
-
-        let current = env.ledger().sequence();
-        let ledgers_remaining = stored_expiry.saturating_sub(current);
-
-        if ledgers_remaining <= APPROVAL_RENEWAL_THRESHOLD {
-            // Approval is near expiry — renew it now.
-            let pool_address: Option<Address> =
-                env.storage().instance().get(&DataKey::BlendPool);
-            let usdc_token: Option<Address> =
-                env.storage().instance().get(&DataKey::UsdcToken);
-
-            if let (Some(pool), Some(token)) = (pool_address, usdc_token) {
-                let vault_address = env.current_contract_address();
-                let new_expiry = current.saturating_add(Self::get_approval_ttl_internal(env));
-
-                let approval_args: Vec<Val> = vec![
-                    env,
-                    vault_address.clone().into_val(env),
-                    pool.clone().into_val(env),
-                    i128::MAX.into_val(env),
-                    new_expiry.into_val(env),
-                ];
-
-                env.authorize_as_current_contract(vec![
-                    env,
-                    InvokerContractAuthEntry::Contract(SubContractInvocation {
-                        context: ContractContext {
-                            contract: token.clone(),
-                            fn_name: Symbol::new(env, "approve"),
-                            args: approval_args,
-                        },
-                        sub_invocations: vec![env],
-                    }),
-                ]);
-
-                let token_client = token::Client::new(env, &token);
-                token_client.approve(&vault_address, &pool, &i128::MAX, &new_expiry);
-
-                // Update stored expiry.
-                env.storage()
-                    .instance()
-                    .set(&DataKey::BlendApprovalExpiry, &new_expiry);
-            }
-        }
-    }
-
-    /// Proactively renews the DEX token approval if the stored expiry is
-    /// within `APPROVAL_RENEWAL_THRESHOLD` ledgers of the current sequence (#57).
-    ///
-    /// Analogous to `maybe_renew_blend_approval` for the DEX supply path.
-    fn maybe_renew_dex_approval(env: &Env) {
-        let stored_expiry: u32 = env
-            .storage()
-            .instance()
-            .get(&DataKey::DexApprovalExpiry)
-            .unwrap_or(0);
-
-        if stored_expiry == 0 {
-            return;
-        }
-
-        let current = env.ledger().sequence();
-        let ledgers_remaining = stored_expiry.saturating_sub(current);
-
-        if ledgers_remaining <= APPROVAL_RENEWAL_THRESHOLD {
-            let pool_address: Option<Address> =
-                env.storage().instance().get(&DataKey::DexPool);
-            let usdc_token: Option<Address> =
-                env.storage().instance().get(&DataKey::UsdcToken);
-
-            if let (Some(pool), Some(token)) = (pool_address, usdc_token) {
-                let vault_address = env.current_contract_address();
-                let new_expiry = current.saturating_add(Self::get_approval_ttl_internal(env));
-
-                let approval_args: Vec<Val> = vec![
-                    env,
-                    vault_address.clone().into_val(env),
-                    pool.clone().into_val(env),
-                    i128::MAX.into_val(env),
-                    new_expiry.into_val(env),
-                ];
-
-                env.authorize_as_current_contract(vec![
-                    env,
-                    InvokerContractAuthEntry::Contract(SubContractInvocation {
-                        context: ContractContext {
-                            contract: token.clone(),
-                            fn_name: Symbol::new(env, "approve"),
-                            args: approval_args,
-                        },
-                        sub_invocations: vec![env],
-                    }),
-                ]);
-
-                let token_client = token::Client::new(env, &token);
-                token_client.approve(&vault_address, &pool, &i128::MAX, &new_expiry);
-
-                env.storage()
-                    .instance()
-                    .set(&DataKey::DexApprovalExpiry, &new_expiry);
-            }
-        }
-    }
-
     /// Internal helper: Supplies USDC to the Blend pool.
     ///
     /// This function handles the cross-contract call to Blend's supply function.
@@ -10207,12 +10049,6 @@ impl NeuroWealthVault {
             }),
         ]);
         token_client.approve(&vault_address, &pool_address, &amount, &approval_ledger);
-
-        // Record the expiry so the near-expiry renewal guard in rebalance/harvest
-        // can proactively refresh this approval before it lapses (#57).
-        env.storage()
-            .instance()
-            .set(&DataKey::BlendApprovalExpiry, &approval_ledger);
 
         // Authorize and execute Blend supply
         env.authorize_as_current_contract(vec![
@@ -10410,12 +10246,6 @@ impl NeuroWealthVault {
             }),
         ]);
         token_client.approve(&vault_address, &pool_address, &amount, &approval_ledger);
-
-        // Record the expiry so the near-expiry renewal guard in rebalance/harvest
-        // can proactively refresh this approval before it lapses (#57).
-        env.storage()
-            .instance()
-            .set(&DataKey::DexApprovalExpiry, &approval_ledger);
 
         // Authorize and execute the DEX add_liquidity (pulls USDC via transfer_from).
         env.authorize_as_current_contract(vec![

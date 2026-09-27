@@ -21,10 +21,11 @@ export const EarningsCard: React.FC<EarningsCardProps> = ({ earnings, isConnecte
           <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
             <TrendingUp size={14} className="text-indigo-400" /> Yield Earnings
           </span>
-          <div className="flex bg-slate-900 p-1 rounded-lg border border-slate-800 text-xs">
+          <div className="flex bg-slate-900 p-1 rounded-lg border border-slate-800 text-xs" role="group" aria-label="Earnings period">
             <button
               onClick={() => setPeriod('today')}
-              className={`px-2.5 py-1 rounded-md transition-colors ${
+              aria-pressed={period === 'today'}
+              className={`px-2.5 py-1 min-h-[44px] min-w-[44px] flex items-center justify-center rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 ${
                 period === 'today' ? 'bg-indigo-600 text-white font-medium' : 'text-slate-400 hover:text-white'
               }`}
             >
@@ -32,7 +33,8 @@ export const EarningsCard: React.FC<EarningsCardProps> = ({ earnings, isConnecte
             </button>
             <button
               onClick={() => setPeriod('week')}
-              className={`px-2.5 py-1 rounded-md transition-colors ${
+              aria-pressed={period === 'week'}
+              className={`px-2.5 py-1 min-h-[44px] min-w-[44px] flex items-center justify-center rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 ${
                 period === 'week' ? 'bg-indigo-600 text-white font-medium' : 'text-slate-400 hover:text-white'
               }`}
             >
@@ -40,7 +42,8 @@ export const EarningsCard: React.FC<EarningsCardProps> = ({ earnings, isConnecte
             </button>
             <button
               onClick={() => setPeriod('month')}
-              className={`px-2.5 py-1 rounded-md transition-colors ${
+              aria-pressed={period === 'month'}
+              className={`px-2.5 py-1 min-h-[44px] min-w-[44px] flex items-center justify-center rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 ${
                 period === 'month' ? 'bg-indigo-600 text-white font-medium' : 'text-slate-400 hover:text-white'
               }`}
             >

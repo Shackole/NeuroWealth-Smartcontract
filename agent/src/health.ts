@@ -16,7 +16,7 @@
 
 import express from 'express';
 import { Pool } from 'pg';
-import { SorobanRpc } from '@stellar/stellar-sdk';
+import { rpc as SorobanRpc } from '@stellar/stellar-sdk';
 import { getPoolMetrics } from './db';
 import { openAiKeyManager } from './openAiKeyManager';
 import { lastRebalanceTimestamp, queueDepth } from './healthState';

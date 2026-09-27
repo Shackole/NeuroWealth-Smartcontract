@@ -5,9 +5,19 @@ import { evaluateYield } from './yieldComparison';
 import healthRouter, { configureHealthChecks } from './health';
 import logger from './logger';
 import { initializeTracing } from './tracing';
-import { createProductionYieldCheckJob, YieldCheckJob } from './yieldCheckJob';
 
-import { globalRateLimitStack, transactionLimiter } from './rateLimiter';
+import { ipRateLimiter, userRateLimiter } from './rateLimiter';
+
+// Issue #40: USDC issuer freeze contingency monitor
+import { issuerFreezeMonitor } from './issuerFreezeMonitor';
+
+// Issue #41: Strategy preference aggregator
+import {
+  strategyRouter,
+  aggregateStrategyPreferences,
+  setLatestDistribution,
+  createDefaultRpcAdapter,
+} from './strategyAggregator';
 
 // Initialize OpenTelemetry tracing
 initializeTracing();
@@ -16,22 +26,14 @@ const app = express();
 const PORT = parseInt(process.env.PORT || '3001', 10);
 
 app.use(express.json());
-
-// Apply burst guard → global IP limit → per-user authenticated limit
-app.use(...globalRateLimitStack);
-
+app.use(ipRateLimiter);
+app.use(userRateLimiter);
 app.use(healthRouter);
 
-// Transaction routes: additional 10 req/min per-user limit
-app.post('/deposit', transactionLimiter, (_req, res) => {
-  res.status(501).json({ error: 'Not implemented' });
-});
-app.post('/withdraw', transactionLimiter, (_req, res) => {
-  res.status(501).json({ error: 'Not implemented' });
-});
+// Mount strategy aggregator API route (Issue #41)
+app.use(strategyRouter);
 
 let decisionInterval: ReturnType<typeof setInterval> | null = null;
-let yieldCheckJob: YieldCheckJob | null = null;
 
 /**
  * Invokes the vault contract's `auto_compound(min_out)` function to harvest
@@ -62,6 +64,20 @@ function startDecisionLoop() {
   decisionInterval = setInterval(async () => {
     try {
       logger.info('Running hourly yield evaluation');
+
+      // Issue #41: Aggregate per-user strategy preferences and update cache.
+      const rpc = createDefaultRpcAdapter();
+      const distribution = await aggregateStrategyPreferences(rpc);
+      setLatestDistribution(distribution);
+      logger.info(
+        {
+          aggregateBlendBps: distribution.aggregateBlendBps,
+          aggregateDexBps: distribution.aggregateDexBps,
+          totalUsers: distribution.total,
+        },
+        'Strategy distribution updated',
+      );
+
       const decision = await evaluateYield('balanced', 'blend', 6.5);
 
       if (decision.shouldRebalance) {
@@ -84,11 +100,8 @@ async function main() {
   await startEventListener();
   startDecisionLoop();
 
-  // Issue #22 — Bull-style yield-check queue: runs every hour
-  yieldCheckJob = createProductionYieldCheckJob(pool);
-  await yieldCheckJob.ensureSchema();
-  yieldCheckJob.start();
-  logger.info('Yield check queue started (hourly APY comparison + rebalance trigger)');
+  // Issue #40: Start USDC issuer freeze monitor (polls every 10 minutes).
+  issuerFreezeMonitor.start();
 
   const serverInstance = app.listen(PORT, () => {
     logger.info({ port: PORT }, 'Agent HTTP server listening');
@@ -103,12 +116,10 @@ async function main() {
       decisionInterval = null;
     }
 
-    if (yieldCheckJob) {
-      yieldCheckJob.stop();
-      yieldCheckJob = null;
-    }
-
     stopEventListener();
+
+    // Issue #40: Stop freeze monitor cleanly.
+    issuerFreezeMonitor.stop();
 
     serverInstance.close(() => {
       logger.info('HTTP server closed');

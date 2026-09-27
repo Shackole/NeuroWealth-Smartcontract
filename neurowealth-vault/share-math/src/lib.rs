@@ -95,6 +95,15 @@ pub struct VaultModel {
     pub total_assets: i128,
     /// Per-user share balances. Length is fixed so Kani can unroll easily.
     pub user_shares: [i128; 2],
+    /// Total USDC principal deposited (never includes yield).
+    ///
+    /// This mirrors `DataKey::TotalDeposits` in the contract. It is bounded
+    /// above by `tvl_cap` at every successful `deposit` call.
+    pub total_deposits: i128,
+    /// Maximum total principal that the vault will accept (TVL cap).
+    ///
+    /// `0` means the cap is unset / unlimited. Mirrors `DataKey::TvLCap`.
+    pub tvl_cap: i128,
 }
 
 impl VaultModel {
@@ -105,6 +114,20 @@ impl VaultModel {
             total_shares: 0,
             total_assets: 0,
             user_shares: [0, 0],
+            total_deposits: 0,
+            tvl_cap: 0,
+        }
+    }
+
+    /// Empty vault with a TVL cap already set.
+    #[must_use]
+    pub const fn with_tvl_cap(tvl_cap: i128) -> Self {
+        Self {
+            total_shares: 0,
+            total_assets: 0,
+            user_shares: [0, 0],
+            total_deposits: 0,
+            tvl_cap,
         }
     }
 
@@ -120,6 +143,12 @@ impl VaultModel {
         self.user_shares[0] >= 0 && self.user_shares[1] >= 0 && self.total_shares >= 0
     }
 
+    /// Whether `total_deposits` respects the TVL cap (when the cap is set).
+    #[must_use]
+    pub fn respects_tvl_cap(&self) -> bool {
+        self.tvl_cap == 0 || self.total_deposits <= self.tvl_cap
+    }
+
     /// Accrue yield by increasing `total_assets` without minting shares.
     #[must_use]
     pub fn accrue_yield(self, yield_amount: i128) -> Option<Self> {
@@ -133,10 +162,23 @@ impl VaultModel {
     }
 
     /// Deposit `assets` for `user` (0 or 1) using floor mint.
+    ///
+    /// Returns `None` when:
+    /// - `user` is out of range
+    /// - `assets` is non-positive
+    /// - the deposit would push `total_deposits` above the TVL cap (when set)
+    /// - any arithmetic overflows
     #[must_use]
     pub fn deposit(self, user: usize, assets: i128) -> Option<Self> {
         if user > 1 || assets <= 0 {
             return None;
+        }
+        // TVL cap guard — mirrors the `ExceedsTvlCap` check in the contract.
+        if self.tvl_cap > 0 {
+            let new_deposits = self.total_deposits.checked_add(assets)?;
+            if new_deposits > self.tvl_cap {
+                return None;
+            }
         }
         let minted = shares_floor(assets, self.total_shares, self.total_assets)?;
         if minted < 0 {
@@ -146,6 +188,7 @@ impl VaultModel {
         next.user_shares[user] = next.user_shares[user].checked_add(minted)?;
         next.total_shares = next.total_shares.checked_add(minted)?;
         next.total_assets = next.total_assets.checked_add(assets)?;
+        next.total_deposits = next.total_deposits.checked_add(assets)?;
         Some(next)
     }
 
@@ -168,6 +211,8 @@ impl VaultModel {
         next.user_shares[user] = next.user_shares[user].checked_sub(burned)?;
         next.total_shares = next.total_shares.checked_sub(burned)?;
         next.total_assets = next.total_assets.checked_sub(returned)?;
+        // Withdrawals reduce total_deposits proportionally.
+        next.total_deposits = next.total_deposits.saturating_sub(returned);
         Some(next)
     }
 }
