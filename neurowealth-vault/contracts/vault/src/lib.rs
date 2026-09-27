@@ -318,17 +318,17 @@ pub enum VaultError {
     MultiProtocolEnabledError = 79,
 
     /// The configured call rate for an operation has been exhausted.
-    RateLimitExceeded = 80,
+    RateLimitExceeded = 77,
     /// The owner supplied an unsupported rate-limit category.
-    InvalidRateLimitCategory = 81,
+    InvalidRateLimitCategory = 78,
     /// A rate-limit window must be non-zero when a limit is enabled.
-    InvalidRateLimitConfig = 82,
+    InvalidRateLimitConfig = 79,
     /// A batch contains more entries than the configured maximum.
-    BatchSizeExceeded = 83,
+    BatchSizeExceeded = 80,
     /// No adapter contract is configured for the requested protocol (#656).
-    ProtocolAdapterNotConfigured = 84,
+    ProtocolAdapterNotConfigured = 81,
     /// The requested protocol is not on the owner-managed whitelist (#656).
-    ProtocolNotWhitelisted = 85,
+    ProtocolNotWhitelisted = 82,
 
 }
 
@@ -368,9 +368,10 @@ impl VaultError {
     pub const EmergencyWithdrawalNotAllowed: Self = Self::NotPaused;
     pub const HoldingPeriodNotElapsed: Self = Self::InvalidStrategy;
     pub const InvalidHoldingPeriod: Self = Self::InvalidStrategy;
-    /// Alias for `TimelockNotExpired` using the vocabulary from issue #58.
-    /// Both names map to the same on-chain error code (#50).
-    pub const TimelockNotElapsed: Self = Self::TimelockNotExpired;
+    /// No pending ownership transfer exists (`accept_ownership` called with nothing pending).
+    pub const NoPendingOwner: Self = Self::CallerIsNotPendingOwner;
+    /// The pending ownership transfer has expired and can no longer be accepted.
+    pub const OwnershipTransferExpired: Self = Self::CallerIsNotPendingOwner;
 }
 
 // ============================================================================
@@ -382,7 +383,7 @@ impl VaultError {
 /// This enum defines all keys used for both instance and persistent storage.
 /// Instance storage is used for contract-wide configuration, while persistent
 /// storage is used for per-user data that requires efficient access.
-#[contracttype(export = false)]
+#[contracttype]
 pub enum DataKey {
     /// Legacy user's principal USDC balance (key: user Address).
     ///
@@ -494,16 +495,6 @@ pub enum DataKey {
     LastRebalanceLedger,
     /// Number of ledgers added to the current ledger for protocol approvals.
     ApprovalTtl,
-    /// Ledger at which the last Blend token approval expires.
-    ///
-    /// Written by `supply_to_blend` whenever an approval is issued.
-    /// Read by `maybe_renew_blend_approval` to decide whether a near-expiry
-    /// renewal is needed before the next `rebalance` or `harvest` call (#57).
-    BlendApprovalExpiry,
-    /// Ledger at which the last DEX token approval expires.
-    ///
-    /// Analogous to `BlendApprovalExpiry` for the DEX supply path (#57).
-    DexApprovalExpiry,
     /// DEX liquidity pool contract address
     /// The address of the Stellar DEX liquidity pool contract used by the
     /// Balanced/Growth strategies for on-chain liquidity provision.
@@ -622,14 +613,13 @@ pub enum DataKey {
     /// `switch_to_standby_agent`. Appended to preserve serialized layout.
     StandbyAgent,
 
-    /// Guardian address for co-signing `execute_upgrade` (#44 / #607).
+    /// Ledger sequence at which the pending ownership transfer expires (#61).
     ///
-    /// When set, `execute_upgrade` requires **both** the owner signature and the
-    /// guardian signature. The guardian key provides defense-in-depth against a
-    /// compromised owner key: an attacker must steal both keys to execute a
-    /// malicious upgrade. Set by the owner via `set_guardian`; removed via
-    /// `remove_guardian`. Appended to preserve serialized discriminants.
-    Guardian,
+    /// Written atomically with `DataKey::PendingOwner` when `transfer_ownership`
+    /// is called. If `accept_ownership` is not called before this ledger, the
+    /// transfer is considered expired and the owner may re-propose without
+    /// calling `cancel_ownership_transfer` first.
+    PendingOwnerExpiry,
 }
 
 /// Owner-configured allowance for one rate-limit category.
@@ -1251,6 +1241,21 @@ pub struct OwnershipTransferCancelledEvent {
     pub cancelled_pending: Address,
 }
 
+/// Emitted when a stale pending ownership transfer is overwritten by a new
+/// proposal because the previous proposal's 48-hour window has expired (#61).
+///
+/// # Topics
+/// - `SymbolShort("own_expir")` (`TOPIC_OWNERSHIP_EXPIRED`) - Event identifier
+#[contracttype]
+pub struct PendingOwnerExpiredEvent {
+    /// Current owner who is re-proposing.
+    pub owner: Address,
+    /// Expired pending-owner address that was silently discarded.
+    pub expired_pending: Address,
+    /// The new proposed owner address replacing the expired one.
+    pub new_pending: Address,
+}
+
 /// Information about a pending ownership transfer.
 ///
 /// Returned by `get_pending_ownership` when a transfer is in progress.
@@ -1857,33 +1862,6 @@ pub struct RateLimitExceededEvent {
     pub calls: u32,
 }
 
-/// Emitted after `batch_touch_ttl` completes processing the full user batch (#48).
-///
-/// # Topics
-/// - `SymbolShort("batch_ttl")` (`TOPIC_BATCH_TTL_TOUCHED`)
-#[contracttype]
-pub struct BatchTtlTouchedEvent {
-    /// Total number of users in the batch.
-    pub count: u32,
-    /// Number of users whose `Shares` entry was extended (had an existing entry).
-    pub users_extended: u32,
-}
-
-/// Emitted when the guardian key is set or cleared via `set_guardian` /
-/// `remove_guardian` (#44 / #607).
-///
-/// # Topics
-/// - `SymbolShort("guard_set")` (`TOPIC_GUARDIAN_SET`)
-#[contracttype]
-pub struct GuardianSetEvent {
-    /// Previous guardian address, or `None` if no guardian was set.
-    pub old_guardian: Option<Address>,
-    /// New guardian address, or `None` if the guardian was removed.
-    pub new_guardian: Option<Address>,
-    /// Owner address that made the change.
-    pub owner: Address,
-}
-
 // ============================================================================
 // BLEND POOL CLIENT INTERFACE
 // ============================================================================
@@ -1923,14 +1901,6 @@ const MAX_DEPOSIT_CEILING: i128 = 100_000_000_000_i128;
 pub(crate) const DEFAULT_APPROVAL_TTL: u32 = 100_000;
 const MIN_APPROVAL_TTL: u32 = 1_000;
 const MAX_APPROVAL_TTL: u32 = 500_000;
-/// Ledgers-remaining threshold below which a token approval is proactively
-/// renewed before `rebalance` and `harvest` (#57).
-///
-/// When the stored approval expiry is within this many ledgers of the current
-/// ledger sequence, `rebalance` and `harvest` renew the approval to a full
-/// `ApprovalTtl` window before executing any protocol call.  This prevents
-/// protocol calls from reverting because a stale allowance expired mid-call.
-pub(crate) const APPROVAL_RENEWAL_THRESHOLD: u32 = 1_000;
 
 /// Default circuit-breaker threshold (#439): the number of consecutive failed
 /// rebalances that trips an automatic emergency pause when the owner has not
@@ -1940,6 +1910,12 @@ const DEFAULT_MAX_CONSECUTIVE_FAILURES: u32 = 3;
 /// Minimum ledger delay before a proposed agent update can be confirmed (~24 h on Stellar mainnet).
 /// 17,280 ledgers × ~5 s per ledger ≈ 86,400 s = 24 h.
 const AGENT_TIMELOCK_LEDGERS: u32 = 17_280;
+
+/// Number of ledgers after which a pending ownership transfer expires (#61).
+/// 34,560 ledgers × ~5 s per ledger ≈ 172,800 s = 48 h.
+/// If `accept_ownership` is not called within this window the proposal is
+/// considered expired and the owner can re-propose without cancelling first.
+const OWNERSHIP_TRANSFER_EXPIRY_LEDGERS: u32 = 34_560;
 
 /// Number of ledgers an upgrade must wait between `schedule_upgrade` and
 /// `execute_upgrade` (#316). Same 24-hour window as the agent timelock, giving
@@ -1963,12 +1939,6 @@ pub const RATE_LIMIT_TOUCH_TTL: Symbol = symbol_short!("touch_ttl");
 pub const RATE_LIMIT_PREVIEW: Symbol = symbol_short!("preview");
 /// Rate-limit category for `batch_deposit` calls.
 pub const RATE_LIMIT_BATCH_DEPOSIT: Symbol = symbol_short!("batch_dep");
-/// Rate-limit category for global agent `harvest` calls (Issue #46).
-///
-/// Unlike `rebalance`, `harvest` has its own independent global bucket so
-/// the owner can configure harvest frequency separately from rebalance
-/// frequency.  Both still share the rebalance cooldown guard.
-pub const RATE_LIMIT_HARVEST: Symbol = symbol_short!("harvest");
 
 /// Default single-user deposit allowance: 100 calls per 720 ledgers (~1 hour).
 const DEFAULT_DEPOSIT_RATE_LIMIT_MAX_CALLS: u32 = 100;
@@ -1992,11 +1962,6 @@ const DEFAULT_PREVIEW_RATE_LIMIT_WINDOW: u32 = 1;
 /// Default per-user batch-deposit allowance: 100 calls per 720 ledgers.
 const DEFAULT_BATCH_DEPOSIT_RATE_LIMIT_MAX_CALLS: u32 = 100;
 const DEFAULT_BATCH_DEPOSIT_RATE_LIMIT_WINDOW: u32 = 720;
-/// Default global harvest allowance: 100 calls per 720 ledgers (~1 hour).
-/// Deliberately generous to remain backwards-compatible; owners of production
-/// deployments should tighten this to match their harvest schedule (Issue #46).
-const DEFAULT_HARVEST_RATE_LIMIT_MAX_CALLS: u32 = 100;
-const DEFAULT_HARVEST_RATE_LIMIT_WINDOW: u32 = 720;
 /// Maximum number of `(token, amount)` entries accepted by `batch_deposit` by default.
 const DEFAULT_MAX_BATCH_SIZE: u32 = 50;
 
@@ -2022,8 +1987,44 @@ const USER_SHARES_TTL_EXTEND_TO: u32 = 100;
 /// `current_ledger_sequence + ApprovalTtl`.
 const DEFAULT_BLEND_APPROVAL_TTL: u32 = 100_000;
 
-pub use topics::*;
+use topics::{
+    TOPIC_AGENT_UPDATED, TOPIC_AGENT_UPDATE_CANCELLED, TOPIC_AGENT_UPDATE_CONFIRMED,
+    TOPIC_AGENT_UPDATE_PROPOSED, TOPIC_AGENT_KEY_ROTATED, TOPIC_APPROVAL_TTL_UPDATED,
+    TOPIC_ASSETS_UPDATED, TOPIC_ASSET_DEPOSIT, TOPIC_ASSET_WITHDRAW,
+    TOPIC_BATCH_SIZE_LIMIT_UPDATED, TOPIC_BLEND_POOL_CONFIGURED, TOPIC_BLEND_SUPPLY,
+    TOPIC_BLEND_WITHDRAW, TOPIC_CAPS_UPDATED, TOPIC_DEPOSIT, TOPIC_DEPOSIT_LIMITS_UPDATED,
+    TOPIC_DEX_POOL_CONFIGURED, TOPIC_DEX_SUPPLY, TOPIC_DEX_WITHDRAW, TOPIC_EMERGENCY_HARVEST,
+    TOPIC_EMERGENCY_PAUSED, TOPIC_EMERGENCY_WITHDRAWAL, TOPIC_HARVEST, TOPIC_INIT,
+    TOPIC_LIMITS_UPDATED, TOPIC_MAX_FAILURES_UPDATED, TOPIC_MIGRATE, TOPIC_MIGRATION_PAUSED,
+    TOPIC_MIGRATION_TARGET_UPDATED, TOPIC_OWNERSHIP_CANCELLED, TOPIC_OWNERSHIP_EXPIRED,
+    TOPIC_OWNERSHIP_INITIATED, TOPIC_OWNERSHIP_TRANSFERRED, TOPIC_PAUSED, TOPIC_PROTOCOL_CHANGED,
+    TOPIC_RATE_LIMIT_CONFIG_UPDATED, TOPIC_RATE_LIMIT_HIT, TOPIC_REBALANCE,
+    TOPIC_REBALANCE_COOLDOWN_UPDATED, TOPIC_REBALANCE_FAILED, TOPIC_SHARES_LOCKED,
+    TOPIC_SHARES_UNLOCKED, TOPIC_SUPPORTED_ASSETS_UPDATED, TOPIC_STANDBY_AGENT_UPDATED,
+    TOPIC_TVL_CAP_UPDATED, TOPIC_UNPAUSED, TOPIC_UPGRADED,
+    TOPIC_UPGRADE_CANCELLED, TOPIC_UPGRADE_SCHEDULED, TOPIC_USER_CAP_UPDATED,
+    TOPIC_USER_STRATEGY_UPDATED, TOPIC_WITHDRAW, TOPIC_YIELD_ATTRIBUTED,
+    TOPIC_USER_STRATEGY_UPDATED, TOPIC_WITHDRAW,
+    TOPIC_BLEND_POOL_CONFIGURED, TOPIC_BLEND_SUPPLY, TOPIC_BLEND_WITHDRAW, TOPIC_CAPS_UPDATED,
+    TOPIC_DEPOSIT, TOPIC_DEPOSIT_LIMITS_UPDATED, TOPIC_DEX_POOL_CONFIGURED, TOPIC_DEX_SUPPLY,
 
+    TOPIC_DEX_WITHDRAW, TOPIC_EMERGENCY_HARVEST, TOPIC_EMERGENCY_PAUSED, TOPIC_HARVEST, TOPIC_INIT,
+    TOPIC_LIMITS_UPDATED, TOPIC_MIGRATE, TOPIC_MIGRATION_PAUSED, TOPIC_MIGRATION_TARGET_UPDATED,
+    TOPIC_OWNERSHIP_CANCELLED, TOPIC_OWNERSHIP_INITIATED,
+    TOPIC_SHARES_LOCKED, TOPIC_SHARES_UNLOCKED, TOPIC_EMERGENCY_WITHDRAWAL,
+    TOPIC_MULTI_PROTOCOL_MODE, TOPIC_PROTOCOL_ALLOCATION_CHANGED, TOPIC_PROTOCOL_APY_UPDATED,
+
+    TOPIC_DEX_WITHDRAW, TOPIC_EMERGENCY_HARVEST, TOPIC_EMERGENCY_PAUSED, TOPIC_EMERGENCY_WITHDRAWAL,
+    TOPIC_HARVEST, TOPIC_INIT, TOPIC_LIMITS_UPDATED, TOPIC_MIGRATE, TOPIC_MIGRATION_PAUSED,
+    TOPIC_MIGRATION_TARGET_UPDATED, TOPIC_OWNERSHIP_CANCELLED, TOPIC_OWNERSHIP_INITIATED,
+
+    TOPIC_OWNERSHIP_TRANSFERRED, TOPIC_PAUSED, TOPIC_PROTOCOL_CHANGED, TOPIC_REBALANCE,
+    TOPIC_REBALANCE_COOLDOWN_UPDATED, TOPIC_REBALANCE_FAILED, TOPIC_TVL_CAP_UPDATED,
+    TOPIC_UNPAUSED, TOPIC_UPGRADED, TOPIC_UPGRADE_CANCELLED, TOPIC_UPGRADE_SCHEDULED,
+    TOPIC_USER_CAP_UPDATED, TOPIC_USER_STRATEGY_UPDATED, TOPIC_WITHDRAW,
+    TOPIC_MAX_FAILURES_UPDATED,
+
+};
 
 impl BlendPoolClient {
     /// Deposits assets to the Blend pool.
@@ -3975,12 +3976,6 @@ impl NeuroWealthVault {
         // calls, so a gracefully handled failed exit still counts as an attempt.
         Self::enforce_global_rate_limit(&env, RATE_LIMIT_REBALANCE);
 
-        // Near-expiry approval renewal (#57): proactively refresh token
-        // approvals for whichever protocol pool is configured before any
-        // protocol call is made, so approvals never lapse mid-call.
-        Self::maybe_renew_blend_approval(&env);
-        Self::maybe_renew_dex_approval(&env);
-
         let current_protocol: Symbol = env
             .storage()
             .instance()
@@ -4685,16 +4680,10 @@ impl NeuroWealthVault {
             panic_with_error!(&env, VaultError::UnsupportedProtocol);
         }
 
-        // Harvest uses its own dedicated global bucket (RATE_LIMIT_HARVEST)
-        // so the owner can configure harvest and rebalance frequencies
-        // independently (Issue #46). Both operations still respect the
-        // shared rebalance cooldown guard.
-        Self::enforce_global_rate_limit(&env, RATE_LIMIT_HARVEST);
-
-        // Near-expiry approval renewal (#57): proactively refresh token
-        // approvals before the withdraw-then-resupply round-trip.
-        Self::maybe_renew_blend_approval(&env);
-        Self::maybe_renew_dex_approval(&env);
+        // Harvest also performs an external protocol round-trip. Reuse the
+        // global rebalance bucket so it cannot bypass the frequency guard by
+        // alternating between `rebalance` and `harvest`.
+        Self::enforce_global_rate_limit(&env, RATE_LIMIT_REBALANCE);
 
         let withdrawn = Self::withdraw_from_protocol(&env, &current_protocol, min_out);
 
@@ -4932,16 +4921,10 @@ impl NeuroWealthVault {
             panic_with_error!(&env, VaultError::UnsupportedProtocol);
         }
 
-        // Harvest uses its own dedicated global bucket (RATE_LIMIT_HARVEST)
-        // so the owner can configure harvest and rebalance frequencies
-        // independently (Issue #46). Both operations still respect the
-        // shared rebalance cooldown guard.
-        Self::enforce_global_rate_limit(&env, RATE_LIMIT_HARVEST);
-
-        // Near-expiry approval renewal (#57): proactively refresh token
-        // approvals before the withdraw-then-resupply round-trip.
-        Self::maybe_renew_blend_approval(&env);
-        Self::maybe_renew_dex_approval(&env);
+        // Harvest also performs an external protocol round-trip. Reuse the
+        // global rebalance bucket so it cannot bypass the frequency guard by
+        // alternating between `rebalance` and `harvest`.
+        Self::enforce_global_rate_limit(&env, RATE_LIMIT_REBALANCE);
 
         let withdrawn = Self::withdraw_from_protocol(&env, &current_protocol, min_out);
 
@@ -5584,10 +5567,7 @@ impl NeuroWealthVault {
         // expires, which prevents a caller from bypassing a newly tightened
         // policy by relying on a stale reset. Avoid an unnecessary storage
         // operation for per-user categories.
-        if category == RATE_LIMIT_REBALANCE
-            || category == RATE_LIMIT_PREVIEW
-            || category == RATE_LIMIT_HARVEST
-        {
+        if category == RATE_LIMIT_REBALANCE || category == RATE_LIMIT_PREVIEW {
             env.storage()
                 .instance()
                 .remove(&DataKey::RateLimitGlobalState(category.clone()));
@@ -6159,36 +6139,6 @@ impl NeuroWealthVault {
         Self::get_max_deposit_internal(&env)
     }
 
-    /// Returns both the minimum and maximum per-transaction deposit limits as
-    /// a single `(min, max)` tuple.
-    ///
-    /// This is the recommended view function for deposit-limit validation
-    /// because it avoids two separate RPC round-trips when both values are
-    /// needed (e.g., frontend preview or off-chain validation).
-    ///
-    /// # Returns
-    ///
-    /// `(min_deposit, max_deposit)` where:
-    /// - `min_deposit` — minimum USDC per deposit (default 1,000,000 = 1 USDC)
-    /// - `max_deposit` — maximum USDC per deposit (default 10,000,000,000 = 10,000 USDC)
-    ///
-    /// Both values are in stroops (7 decimal places).
-    ///
-    /// # Errors
-    ///
-    /// None.
-    ///
-    /// # Panics
-    ///
-    /// - [`VaultError::NotInitialized`] if the vault has not been initialized.
-    pub fn get_deposit_limits(env: Env) -> (i128, i128) {
-        Self::require_initialized(&env);
-        (
-            Self::get_min_deposit_internal(&env),
-            Self::get_max_deposit_internal(&env),
-        )
-    }
-
     // ==========================================================================
     // USER STRATEGY PREFERENCE
     // ==========================================================================
@@ -6392,30 +6342,26 @@ impl NeuroWealthVault {
     /// Can only be called once `env.ledger().sequence() >= AgentTimelockExpiry`.
     /// On success the pending agent becomes the active agent and the proposal is cleared.
     ///
-    /// **Idempotency**: if no pending proposal exists (because the update was
-    /// already confirmed or there was never a proposal), this function returns
-    /// without error or events — it is a no-op. This makes double-confirm safe
-    /// and avoids spurious failures from replayed or retried transactions.
-    ///
     /// # Events
     ///
-    /// Emits (only when a pending proposal is actually applied):
+    /// Emits:
     /// - `AgentUpdateConfirmedEvent`
     /// - `AgentUpdatedEvent` (for backward-compatible indexers)
     ///
     /// # Panics
     ///
     /// - If the caller is not the owner.
-    /// - If the timelock delay has not yet elapsed (`TimelockNotElapsed` / `TimelockNotExpired`, error #50).
+    /// - If no pending proposal exists (`NoTimelockPending`).
+    /// - If the timelock delay has not yet elapsed (`TimelockNotExpired`).
     pub fn confirm_agent_update(env: Env) {
         Self::require_initialized(&env);
         Self::require_is_owner(&env);
 
-        // Idempotency: if no pending proposal exists, silently return.
-        // This makes double-confirm a safe no-op instead of a hard panic.
-        if !env.storage().instance().has(&DataKey::PendingAgent) {
-            return;
-        }
+        Self::require(
+            &env,
+            env.storage().instance().has(&DataKey::PendingAgent),
+            VaultError::NoTimelockPending,
+        );
 
         let expiry: u32 = env
             .storage()
@@ -6426,7 +6372,7 @@ impl NeuroWealthVault {
         Self::require(
             &env,
             env.ledger().sequence() >= expiry,
-            VaultError::TimelockNotElapsed,
+            VaultError::TimelockNotExpired,
         );
 
         let old_agent: Address = env.storage().instance().get(&DataKey::Agent).unwrap();
@@ -6463,9 +6409,7 @@ impl NeuroWealthVault {
     /// Cancels a pending agent update before it can be confirmed. (#317)
     ///
     /// Only the owner may cancel. Clears the pending proposal so a new one can
-    /// be proposed. Safe to call at any point — both **before** and **after**
-    /// the timelock expiry — giving the owner the option to simply discard a
-    /// proposal rather than confirming it even once the window has opened.
+    /// be proposed. Safe to call at any point during the timelock window.
     ///
     /// # Events
     ///
@@ -6513,14 +6457,6 @@ impl NeuroWealthVault {
     /// 24-hour timelock window opened by [`update_agent`](crate::NeuroWealthVault::update_agent), and decide
     /// whether to let it proceed or call [`cancel_agent_update`](crate::NeuroWealthVault::cancel_agent_update).
     ///
-    /// **Post-confirm / post-cancel behaviour (issue #58):** Both
-    /// [`confirm_agent_update`](crate::NeuroWealthVault::confirm_agent_update) and
-    /// [`cancel_agent_update`](crate::NeuroWealthVault::cancel_agent_update) remove the
-    /// `PendingAgent` and `AgentTimelockExpiry` storage entries before they
-    /// return. Therefore this function **always returns `None`** after either
-    /// of those operations completes — the `Some` variant can only be observed
-    /// while a proposal is still in flight.
-    ///
     /// # Arguments
     ///
     /// * `env` - The Soroban environment.
@@ -6530,10 +6466,8 @@ impl NeuroWealthVault {
     /// * `Some((new_agent, effective_ledger))` while a proposal is pending,
     ///   where `effective_ledger` is the first ledger at which
     ///   [`confirm_agent_update`](crate::NeuroWealthVault::confirm_agent_update) may be called.
-    /// * `None` when no proposal is pending — either:
-    ///   - No proposal has been submitted yet (`update_agent` not called), **or**
-    ///   - The proposal was confirmed via `confirm_agent_update`, **or**
-    ///   - The proposal was cancelled via `cancel_agent_update`.
+    /// * `None` when no proposal is pending — either none was made, or it was
+    ///   already confirmed or cancelled.
     ///
     /// Compare `effective_ledger` against `env.ledger().sequence()` to tell a
     /// still-waiting proposal from a ready-to-confirm one. The currently active
@@ -6563,11 +6497,9 @@ impl NeuroWealthVault {
     ///     Some((new_agent, effective_ledger)) => {
     ///         if env.ledger().sequence() >= effective_ledger {
     ///             vault_client.confirm_agent_update();
-    ///             // get_pending_agent_update() now returns None
     ///         } else {
     ///             // Still inside the timelock window; cancel if unexpected.
-    ///             vault_client.cancel_agent_update();
-    ///             // get_pending_agent_update() now returns None
+    ///             let _ = new_agent;
     ///         }
     ///     }
     /// }
@@ -6712,115 +6644,6 @@ impl NeuroWealthVault {
             },
         );
     }
-
-    // ==========================================================================
-    // GUARDIAN KEY — SECOND SIGNATURE FOR EXECUTE_UPGRADE (#44 / #607)
-    // ==========================================================================
-
-    /// Sets the guardian address that must co-sign `execute_upgrade` (#44).
-    ///
-    /// The guardian key is an additional defence-in-depth measure for the
-    /// upgrade flow: once set, `execute_upgrade` requires **both** the owner
-    /// signature and the guardian signature. An adversary who steals only the
-    /// owner key cannot execute a malicious upgrade without also stealing the
-    /// guardian key.
-    ///
-    /// The guardian key has **no other privileges**: it cannot pause, rebalance,
-    /// change configuration, or perform any owner-only action.
-    ///
-    /// Only the owner can call this function (no timelock required). Guardian
-    /// key rotation requires only the owner, so it is fast and does not risk
-    /// locking out legitimate upgrades.
-    ///
-    /// # Arguments
-    ///
-    /// * `env` - The Soroban environment.
-    /// * `new_guardian` - The new guardian address.
-    ///
-    /// # Events
-    ///
-    /// Emits `GuardianSetEvent`.
-    ///
-    /// # Panics
-    ///
-    /// - [`VaultError::CallerIsNotOwner`] if the caller is not the owner.
-    pub fn set_guardian(env: Env, new_guardian: Address) {
-        Self::require_initialized(&env);
-        Self::require_is_owner(&env);
-
-        let old_guardian: Option<Address> = env
-            .storage()
-            .instance()
-            .get(&DataKey::Guardian);
-
-        env.storage()
-            .instance()
-            .set(&DataKey::Guardian, &new_guardian);
-
-        let owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
-        env.events().publish(
-            (TOPIC_GUARDIAN_SET,),
-            GuardianSetEvent {
-                old_guardian,
-                new_guardian: Some(new_guardian),
-                owner,
-            },
-        );
-    }
-
-    /// Removes the guardian requirement from `execute_upgrade`.
-    ///
-    /// After calling this, `execute_upgrade` reverts to single-owner operation.
-    /// This is the emergency path if the guardian key is lost and upgrades need
-    /// to be applied before a new guardian key is available.
-    ///
-    /// Only the owner can call this.
-    ///
-    /// # Events
-    ///
-    /// Emits `GuardianSetEvent` with `new_guardian: None`.
-    ///
-    /// # Panics
-    ///
-    /// - [`VaultError::CallerIsNotOwner`] if the caller is not the owner.
-    pub fn remove_guardian(env: Env) {
-        Self::require_initialized(&env);
-        Self::require_is_owner(&env);
-
-        let old_guardian: Option<Address> = env
-            .storage()
-            .instance()
-            .get(&DataKey::Guardian);
-
-        env.storage().instance().remove(&DataKey::Guardian);
-
-        let owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
-        env.events().publish(
-            (TOPIC_GUARDIAN_SET,),
-            GuardianSetEvent {
-                old_guardian,
-                new_guardian: None,
-                owner,
-            },
-        );
-    }
-
-    /// Returns the current guardian address, if one is configured.
-    ///
-    /// Returns `None` when no guardian is set (single-owner upgrade path).
-    ///
-    /// # Events
-    ///
-    /// None.
-    ///
-    /// # Panics
-    ///
-    /// - [`VaultError::NotInitialized`] if the vault has not been initialized.
-    pub fn get_guardian(env: Env) -> Option<Address> {
-        Self::require_initialized(&env);
-        env.storage().instance().get(&DataKey::Guardian)
-    }
-
 // ==========================================================================
     // MULTI-ASSET SUPPORT (#646) — ADMINISTRATION
     // ==========================================================================
@@ -7247,9 +7070,50 @@ impl NeuroWealthVault {
 
         let current_owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
 
+        // If there is already a pending transfer, check whether it has expired.
+        // An expired pending transfer can be silently overwritten (re-proposed)
+        // without requiring an explicit cancel first (#61).
+        // A still-active (non-expired) pending transfer must be cancelled first.
+        if let Some(existing_pending) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Address>(&DataKey::PendingOwner)
+        {
+            let expiry: u32 = env
+                .storage()
+                .instance()
+                .get(&DataKey::PendingOwnerExpiry)
+                .unwrap_or(0);
+
+            if expiry == 0 || env.ledger().sequence() < expiry {
+                // Transfer is still active — owner must cancel first.
+                // We reuse TimelockAlreadyPending to signal "a proposal is
+                // already live and has not yet expired."
+                panic_with_error!(&env, VaultError::TimelockAlreadyPending);
+            }
+
+            // Expired: silently overwrite and emit PendingOwnerExpiredEvent.
+            env.events().publish(
+                (TOPIC_OWNERSHIP_EXPIRED,),
+                PendingOwnerExpiredEvent {
+                    owner: current_owner.clone(),
+                    expired_pending: existing_pending,
+                    new_pending: new_owner.clone(),
+                },
+            );
+        }
+
+        let expiry_ledger = env
+            .ledger()
+            .sequence()
+            .saturating_add(OWNERSHIP_TRANSFER_EXPIRY_LEDGERS);
+
         env.storage()
             .instance()
             .set(&DataKey::PendingOwner, &new_owner);
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingOwnerExpiry, &expiry_ledger);
 
         env.events().publish(
             (TOPIC_OWNERSHIP_INITIATED,),
@@ -7292,22 +7156,35 @@ impl NeuroWealthVault {
         Self::require_initialized(&env);
         new_owner.require_auth();
 
+        // Require that a pending transfer exists; otherwise NoPendingOwner.
         let pending: Address = env
             .storage()
             .instance()
             .get(&DataKey::PendingOwner)
-            .unwrap_or_else(|| panic_with_error!(&env, VaultError::CallerIsNotPendingOwner));
+            .unwrap_or_else(|| panic_with_error!(&env, VaultError::NoPendingOwner));
 
+        // Verify the caller matches the pending owner.
         Self::require(
             &env,
             new_owner == pending,
             VaultError::CallerIsNotPendingOwner,
         );
 
+        // Reject if the 48-hour acceptance window has elapsed (#61).
+        let expiry: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingOwnerExpiry)
+            .unwrap_or(0);
+        if expiry > 0 && env.ledger().sequence() >= expiry {
+            panic_with_error!(&env, VaultError::OwnershipTransferExpired);
+        }
+
         let old_owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
 
         env.storage().instance().set(&DataKey::Owner, &new_owner);
         env.storage().instance().remove(&DataKey::PendingOwner);
+        env.storage().instance().remove(&DataKey::PendingOwnerExpiry);
 
         env.events().publish(
             (TOPIC_OWNERSHIP_TRANSFERRED,),
@@ -7357,6 +7234,7 @@ impl NeuroWealthVault {
         let owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
 
         env.storage().instance().remove(&DataKey::PendingOwner);
+        env.storage().instance().remove(&DataKey::PendingOwnerExpiry);
 
         env.events().publish(
             (TOPIC_OWNERSHIP_CANCELLED,),
@@ -7393,9 +7271,16 @@ impl NeuroWealthVault {
     pub fn get_pending_ownership(env: Env) -> Option<PendingOwnershipInfo> {
         Self::require_initialized(&env);
         let pending_owner: Option<Address> = env.storage().instance().get(&DataKey::PendingOwner);
-        pending_owner.map(|owner| PendingOwnershipInfo {
-            pending_owner: owner,
-            timelock_expiry: 0,
+        pending_owner.map(|owner| {
+            let expiry: u32 = env
+                .storage()
+                .instance()
+                .get(&DataKey::PendingOwnerExpiry)
+                .unwrap_or(0);
+            PendingOwnershipInfo {
+                pending_owner: owner,
+                timelock_expiry: u64::from(expiry),
+            }
         })
     }
 
@@ -7676,20 +7561,6 @@ impl NeuroWealthVault {
 
         let stored_owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
         Self::require(&env, owner == stored_owner, VaultError::CallerIsNotOwner);
-
-        // --- Guardian co-signature requirement (#44 / #607) ---
-        // When a guardian key is configured, `execute_upgrade` requires BOTH the
-        // owner signature and the guardian signature. This raises the attack bar:
-        // an adversary must compromise two separate keys to execute a malicious
-        // upgrade. `cancel_upgrade` remains owner-only for agile incident response.
-        if let Some(guardian) = env
-            .storage()
-            .instance()
-            .get::<DataKey, Address>(&DataKey::Guardian)
-        {
-            guardian.require_auth();
-        }
-        // --- End guardian co-signature ---
 
         Self::require(
             &env,
@@ -8290,75 +8161,6 @@ impl NeuroWealthVault {
         }
         Self::extend_user_shares_ttl(&env, &user);
         true
-    }
-
-    /// Extends the `Shares` entry TTL for a batch of users in a single transaction.
-    ///
-    /// Reduces keeper-job overhead by batching up to `max_batch_size` TTL
-    /// maintenance calls into one transaction. Each user is processed
-    /// independently — a missing entry returns `false` for that slot but does
-    /// not abort the batch. The same `UserTTL` rate-limit bucket as
-    /// `touch_user_ttl` is consumed for every user in the batch, so the
-    /// combined per-user allowance applies.
-    ///
-    /// No authentication is required: anyone can extend TTL for any user.
-    ///
-    /// # Arguments
-    ///
-    /// * `env` - The Soroban environment.
-    /// * `users` - Addresses to touch, in the desired order. Must not exceed
-    ///   the configured `max_batch_size`.
-    ///
-    /// # Returns
-    ///
-    /// A `Vec<bool>` in the same order as `users`: `true` when the entry
-    /// existed and was extended, `false` when no `Shares` entry was found.
-    ///
-    /// # Events
-    ///
-    /// Emits:
-    /// - `BatchTtlTouchedEvent` with the total batch size and extension count.
-    ///
-    /// # Panics
-    ///
-    /// - [`VaultError::NotInitialized`] if the vault has not been initialized.
-    /// - [`VaultError::BatchSizeExceeded`] if `users.len() > max_batch_size`.
-    /// - [`VaultError::RateLimitExceeded`] if any user's TTL bucket is exhausted.
-    pub fn batch_touch_ttl(env: Env, users: Vec<Address>) -> Vec<bool> {
-        Self::require_initialized(&env);
-        let total = users.len();
-        Self::require_batch_size(&env, total);
-
-        let mut results: Vec<bool> = Vec::new(&env);
-        let mut users_extended: u32 = 0;
-
-        for i in 0..total {
-            let user = users.get(i).unwrap();
-            // Enforce per-user rate limit (same bucket as single touch_user_ttl).
-            // Count every probe, even for missing entries, to prevent DoS via probing.
-            Self::enforce_user_rate_limit(&env, &user, RATE_LIMIT_TOUCH_TTL);
-            if env
-                .storage()
-                .persistent()
-                .has(&DataKey::Shares(user.clone()))
-            {
-                Self::extend_user_shares_ttl(&env, &user);
-                results.push_back(true);
-                users_extended = users_extended.saturating_add(1);
-            } else {
-                results.push_back(false);
-            }
-        }
-
-        env.events().publish(
-            (TOPIC_BATCH_TTL_TOUCHED,),
-            BatchTtlTouchedEvent {
-                count: total,
-                users_extended,
-            },
-        );
-
-        results
     }
 
     /// Returns both the principal balance and share balance for a user.
@@ -9434,15 +9236,6 @@ impl NeuroWealthVault {
                 window_ledgers: DEFAULT_BATCH_DEPOSIT_RATE_LIMIT_WINDOW,
             },
         );
-        // Issue #46: Harvest bucket — independent of the rebalance bucket so
-        // the owner can tune their frequencies separately.
-        env.storage().instance().set(
-            &DataKey::RateLimitConfig(RATE_LIMIT_HARVEST),
-            &RateLimitConfig {
-                max_calls: DEFAULT_HARVEST_RATE_LIMIT_MAX_CALLS,
-                window_ledgers: DEFAULT_HARVEST_RATE_LIMIT_WINDOW,
-            },
-        );
         env.storage()
             .instance()
             .set(&DataKey::MaxBatchSize, &DEFAULT_MAX_BATCH_SIZE);
@@ -9457,7 +9250,6 @@ impl NeuroWealthVault {
             || category == &RATE_LIMIT_TOUCH_TTL
             || category == &RATE_LIMIT_PREVIEW
             || category == &RATE_LIMIT_BATCH_DEPOSIT
-            || category == &RATE_LIMIT_HARVEST
     }
 
     /// Rejects unknown category symbols before they can create arbitrary
@@ -9499,11 +9291,6 @@ impl NeuroWealthVault {
             RateLimitConfig {
                 max_calls: DEFAULT_PREVIEW_RATE_LIMIT_MAX_CALLS,
                 window_ledgers: DEFAULT_PREVIEW_RATE_LIMIT_WINDOW,
-            }
-        } else if category == &RATE_LIMIT_HARVEST {
-            RateLimitConfig {
-                max_calls: DEFAULT_HARVEST_RATE_LIMIT_MAX_CALLS,
-                window_ledgers: DEFAULT_HARVEST_RATE_LIMIT_WINDOW,
             }
         } else {
             RateLimitConfig {
@@ -9995,135 +9782,6 @@ impl NeuroWealthVault {
         }
     }
 
-    // ─── Near-expiry approval renewal helpers (#57) ───────────────────────────
-
-    /// Proactively renews the Blend token approval if the stored expiry is
-    /// within `APPROVAL_RENEWAL_THRESHOLD` ledgers of the current sequence.
-    ///
-    /// Called at the start of `rebalance` and `harvest` so that approvals
-    /// never expire mid-call even if many ledgers have elapsed between agent
-    /// invocations.  When no approval has been issued yet (no stored expiry)
-    /// this is a no-op — `supply_to_blend` will issue the first approval when
-    /// it is called.
-    ///
-    /// The renewal issues an approval for `i128::MAX` (the maximum possible
-    /// allowance) so the spender can consume whatever amount the subsequent
-    /// supply call requires without a second approval round-trip.
-    fn maybe_renew_blend_approval(env: &Env) {
-        let stored_expiry: u32 = env
-            .storage()
-            .instance()
-            .get(&DataKey::BlendApprovalExpiry)
-            .unwrap_or(0);
-
-        if stored_expiry == 0 {
-            // No approval has been issued yet; nothing to renew.
-            return;
-        }
-
-        let current = env.ledger().sequence();
-        let ledgers_remaining = stored_expiry.saturating_sub(current);
-
-        if ledgers_remaining <= APPROVAL_RENEWAL_THRESHOLD {
-            // Approval is near expiry — renew it now.
-            let pool_address: Option<Address> =
-                env.storage().instance().get(&DataKey::BlendPool);
-            let usdc_token: Option<Address> =
-                env.storage().instance().get(&DataKey::UsdcToken);
-
-            if let (Some(pool), Some(token)) = (pool_address, usdc_token) {
-                let vault_address = env.current_contract_address();
-                let new_expiry = current.saturating_add(Self::get_approval_ttl_internal(env));
-
-                let approval_args: Vec<Val> = vec![
-                    env,
-                    vault_address.clone().into_val(env),
-                    pool.clone().into_val(env),
-                    i128::MAX.into_val(env),
-                    new_expiry.into_val(env),
-                ];
-
-                env.authorize_as_current_contract(vec![
-                    env,
-                    InvokerContractAuthEntry::Contract(SubContractInvocation {
-                        context: ContractContext {
-                            contract: token.clone(),
-                            fn_name: Symbol::new(env, "approve"),
-                            args: approval_args,
-                        },
-                        sub_invocations: vec![env],
-                    }),
-                ]);
-
-                let token_client = token::Client::new(env, &token);
-                token_client.approve(&vault_address, &pool, &i128::MAX, &new_expiry);
-
-                // Update stored expiry.
-                env.storage()
-                    .instance()
-                    .set(&DataKey::BlendApprovalExpiry, &new_expiry);
-            }
-        }
-    }
-
-    /// Proactively renews the DEX token approval if the stored expiry is
-    /// within `APPROVAL_RENEWAL_THRESHOLD` ledgers of the current sequence (#57).
-    ///
-    /// Analogous to `maybe_renew_blend_approval` for the DEX supply path.
-    fn maybe_renew_dex_approval(env: &Env) {
-        let stored_expiry: u32 = env
-            .storage()
-            .instance()
-            .get(&DataKey::DexApprovalExpiry)
-            .unwrap_or(0);
-
-        if stored_expiry == 0 {
-            return;
-        }
-
-        let current = env.ledger().sequence();
-        let ledgers_remaining = stored_expiry.saturating_sub(current);
-
-        if ledgers_remaining <= APPROVAL_RENEWAL_THRESHOLD {
-            let pool_address: Option<Address> =
-                env.storage().instance().get(&DataKey::DexPool);
-            let usdc_token: Option<Address> =
-                env.storage().instance().get(&DataKey::UsdcToken);
-
-            if let (Some(pool), Some(token)) = (pool_address, usdc_token) {
-                let vault_address = env.current_contract_address();
-                let new_expiry = current.saturating_add(Self::get_approval_ttl_internal(env));
-
-                let approval_args: Vec<Val> = vec![
-                    env,
-                    vault_address.clone().into_val(env),
-                    pool.clone().into_val(env),
-                    i128::MAX.into_val(env),
-                    new_expiry.into_val(env),
-                ];
-
-                env.authorize_as_current_contract(vec![
-                    env,
-                    InvokerContractAuthEntry::Contract(SubContractInvocation {
-                        context: ContractContext {
-                            contract: token.clone(),
-                            fn_name: Symbol::new(env, "approve"),
-                            args: approval_args,
-                        },
-                        sub_invocations: vec![env],
-                    }),
-                ]);
-
-                let token_client = token::Client::new(env, &token);
-                token_client.approve(&vault_address, &pool, &i128::MAX, &new_expiry);
-
-                env.storage()
-                    .instance()
-                    .set(&DataKey::DexApprovalExpiry, &new_expiry);
-            }
-        }
-    }
-
     /// Internal helper: Supplies USDC to the Blend pool.
     ///
     /// This function handles the cross-contract call to Blend's supply function.
@@ -10207,12 +9865,6 @@ impl NeuroWealthVault {
             }),
         ]);
         token_client.approve(&vault_address, &pool_address, &amount, &approval_ledger);
-
-        // Record the expiry so the near-expiry renewal guard in rebalance/harvest
-        // can proactively refresh this approval before it lapses (#57).
-        env.storage()
-            .instance()
-            .set(&DataKey::BlendApprovalExpiry, &approval_ledger);
 
         // Authorize and execute Blend supply
         env.authorize_as_current_contract(vec![
@@ -10410,12 +10062,6 @@ impl NeuroWealthVault {
             }),
         ]);
         token_client.approve(&vault_address, &pool_address, &amount, &approval_ledger);
-
-        // Record the expiry so the near-expiry renewal guard in rebalance/harvest
-        // can proactively refresh this approval before it lapses (#57).
-        env.storage()
-            .instance()
-            .set(&DataKey::DexApprovalExpiry, &approval_ledger);
 
         // Authorize and execute the DEX add_liquidity (pulls USDC via transfer_from).
         env.authorize_as_current_contract(vec![
