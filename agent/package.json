@@ -25,7 +25,8 @@
     "express-rate-limit": "^7.5.0",
     "openai": "^7.0.0",
     "pg": "^8.22.0",
-    "pino": "^9.6.0"
+    "pino": "^9.6.0",
+    "redis": "^4.7.0"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",
