@@ -1,49 +1,15 @@
-import type { Metadata } from 'next';
-
-export const metadata: Metadata = {
-  title: 'Dashboard',
-  description:
-    'View your NeuroWealth portfolio, earnings, and AI yield optimization performance.',
-  openGraph: {
-    title: 'NeuroWealth | Dashboard',
-    description:
-      'View your NeuroWealth portfolio, earnings, and AI yield optimization performance.',
-  },
-  twitter: {
-    title: 'NeuroWealth | Dashboard',
-    description:
-      'View your NeuroWealth portfolio, earnings, and AI yield optimization performance.',
-  },
-};
-
-// JSON-LD structured data (SoftwareApplication schema)
-const jsonLd = {
-  '@context': 'https://schema.org',
-  '@type': 'SoftwareApplication',
-  name: 'NeuroWealth',
-  applicationCategory: 'FinanceApplication',
-  operatingSystem: 'Web',
-  description:
-    'Autonomous AI investment agent managing crypto yield on Stellar blockchain. Deposit once, earn up to 15% APY with automatic rebalancing.',
-  url: 'https://neurowealth.app',
-  offers: {
-    '@type': 'Offer',
-    price: '0',
-    priceCurrency: 'USD',
-  },
-};
-
 'use client';
 
 import React, { useState, useEffect } from 'react';
+import { Header } from '@/components/Header';
 import { BalanceCard } from '@/components/BalanceCard';
 import { EarningsCard } from '@/components/EarningsCard';
 import { StrategyBadge } from '@/components/StrategyBadge';
 import { PortfolioChart } from '@/components/PortfolioChart';
 import { TransactionHistory } from '@/components/TransactionHistory';
 import { ActionModal } from '@/components/ActionModal';
-import { ShareRateCard } from '@/components/ShareRateCard';
-import { MessageSquare, Bot, ArrowRight, Zap } from 'lucide-react';
+import { WithdrawalModal } from '@/components/WithdrawalModal';
+import { MessageSquare, Bot, ArrowRight, ShieldCheck, Zap, Layers } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { connectFreighterWallet } from '@/lib/freighter';
 import { fetchVaultState, VaultState } from '@/lib/stellar';
@@ -53,91 +19,78 @@ import {
   getRecentTransactions,
   EarningsSummary,
   ChartDataPoint,
-  TransactionRecord,
+  TransactionRecord
 } from '@/lib/database';
-
-const PLACEHOLDER_CHART: ChartDataPoint[] = [
-  { date: 'Jul 21', value: 1000, yield: 0 },
-  { date: 'Jul 24', value: 1200, yield: 15 },
-  { date: 'Jul 28', value: 1450, yield: 45 },
-];
 
 export default function DashboardPage() {
   const t = useTranslations('Index');
-
   const [publicKey, setPublicKey] = useState<string | null>(null);
   const [vaultState, setVaultState] = useState<VaultState>({
     balance: 0,
     strategy: 'Balanced',
     exchangeRate: 1.042,
-    apy: 8.4,
+    apy: 8.4
   });
   const [earnings, setEarnings] = useState<EarningsSummary>({ today: 0, week: 0, month: 0 });
   const [chartData, setChartData] = useState<ChartDataPoint[]>([]);
   const [transactions, setTransactions] = useState<TransactionRecord[]>([]);
 
-  // Controls when ShareRateCard re-fetches — bumped after each transaction
-  const [shareRefreshKey, setShareRefreshKey] = useState(0);
-
-  const [isModalOpen, setIsModalOpen] = useState(false);
+  // Modal State
+  const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
   const [modalType, setModalType] = useState<'deposit' | 'withdraw'>('deposit');
+  const [isWithdrawModalOpen, setIsWithdrawModalOpen] = useState<boolean>(false);
 
   const handleConnect = async () => {
     const key = await connectFreighterWallet();
-    if (key) setPublicKey(key);
+    if (key) {
+      setPublicKey(key);
+    }
   };
 
-  const handleDisconnect = () => setPublicKey(null);
+  const handleDisconnect = () => {
+    setPublicKey(null);
+  };
 
   useEffect(() => {
-    if (!publicKey) {
-      setVaultState({ balance: 0, strategy: 'Balanced', exchangeRate: 1.042, apy: 8.4 });
-      setEarnings({ today: 0, week: 0, month: 0 });
-      setChartData([]);
-      setTransactions([]);
-      return;
-    }
-
-    let cancelled = false;
     async function loadData() {
-      const [state, earnData, chart, txs] = await Promise.all([
-        fetchVaultState(publicKey!),
-        getEarningsSummary(publicKey!),
-        getPortfolioValueHistory(publicKey!),
-        getRecentTransactions(publicKey!),
-      ]);
-      if (!cancelled) {
+      if (publicKey) {
+        const state = await fetchVaultState(publicKey);
         setVaultState(state);
+
+        const earnData = await getEarningsSummary(publicKey);
         setEarnings(earnData);
+
+        const chart = await getPortfolioValueHistory(publicKey);
         setChartData(chart);
+
+        const txs = await getRecentTransactions(publicKey);
         setTransactions(txs);
+      } else {
+        setVaultState({ balance: 0, strategy: 'Balanced', exchangeRate: 1.042, apy: 8.4 });
+        setEarnings({ today: 0, week: 0, month: 0 });
+        setChartData([]);
+        setTransactions([]);
       }
     }
     loadData();
-    return () => { cancelled = true; };
   }, [publicKey]);
 
   const openModal = (type: 'deposit' | 'withdraw') => {
-    setModalType(type);
-    setIsModalOpen(true);
-  };
-
-  /** Called when ActionModal closes after a transaction — refresh share data */
-  const handleModalClose = () => {
-    setIsModalOpen(false);
-    setShareRefreshKey((k) => k + 1);
+    if (type === 'withdraw') {
+      setIsWithdrawModalOpen(true);
+    } else {
+      setModalType(type);
+      setIsModalOpen(true);
+    }
   };
 
   return (
     <div className="min-h-screen bg-[#080b11] text-slate-100 flex flex-col justify-between">
-      {/* JSON-LD structured data */}
-      <script
-        type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
-      />
       <div>
+        <Header publicKey={publicKey} onConnect={handleConnect} onDisconnect={handleDisconnect} />
+
         <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
-          {/* Hero Banner */}
+          {/* Hero Banner / Wallet Banner */}
           {!publicKey && (
             <div className="glass-panel rounded-3xl p-8 relative overflow-hidden border border-emerald-500/20 bg-gradient-to-r from-emerald-950/30 via-slate-900/60 to-indigo-950/30 shadow-glow-emerald">
               <div className="max-w-2xl relative z-10">
@@ -161,7 +114,7 @@ export default function DashboardPage() {
             </div>
           )}
 
-          {/* Top row: Balance, Earnings, Strategy */}
+          {/* Top 3 Cards Grid */}
           <section id="dashboard" className="grid grid-cols-1 md:grid-cols-3 gap-6">
             <BalanceCard
               balance={vaultState.balance}
@@ -171,26 +124,23 @@ export default function DashboardPage() {
               onOpenWithdraw={() => openModal('withdraw')}
               isConnected={!!publicKey}
             />
+
             <EarningsCard earnings={earnings} isConnected={!!publicKey} />
+
             <StrategyBadge
               strategy={vaultState.strategy}
               apy={vaultState.apy}
-              onSelectStrategy={(newSt) =>
-                setVaultState((prev) => ({ ...prev, strategy: newSt }))
-              }
+              onSelectStrategy={(newSt) => setVaultState((prev) => ({ ...prev, strategy: newSt }))}
             />
           </section>
 
-          {/* Share Rate Card — full-width row below the top cards */}
-          <section id="shares" aria-label="Vault shares and exchange rate">
-            <ShareRateCard publicKey={publicKey} refreshKey={shareRefreshKey} />
-          </section>
-
-          {/* Portfolio Chart */}
+          {/* Portfolio Chart Section */}
           <section id="strategies">
-            <PortfolioChart
-              data={chartData.length > 0 ? chartData : PLACEHOLDER_CHART}
-            />
+            <PortfolioChart data={chartData.length > 0 ? chartData : [
+              { date: 'Jul 21', value: 1000, yield: 0 },
+              { date: 'Jul 24', value: 1200, yield: 15 },
+              { date: 'Jul 28', value: 1450, yield: 45 }
+            ]} />
           </section>
 
           {/* Transaction History & WhatsApp Banner */}
@@ -199,34 +149,31 @@ export default function DashboardPage() {
               <TransactionHistory transactions={transactions} />
             </div>
 
-            <div
-              id="whatsapp"
-              className="glass-panel-interactive rounded-2xl p-6 relative overflow-hidden flex flex-col justify-between border border-emerald-500/20"
-            >
+            {/* WhatsApp Integration Callout Card */}
+            <div id="whatsapp" className="glass-panel-interactive rounded-2xl p-6 relative overflow-hidden flex flex-col justify-between border border-emerald-500/20">
               <div>
                 <div className="flex items-center justify-between mb-4">
                   <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-                    <MessageSquare size={14} className="text-emerald-400" aria-hidden="true" />
-                    WhatsApp Integration
+                    <MessageSquare size={14} className="text-emerald-400" /> WhatsApp Integration
                   </span>
                   <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
                     Live Bot
                   </span>
                 </div>
+
                 <h3 className="text-lg font-bold text-white mb-2">
                   Interact via WhatsApp Chat
                 </h3>
                 <p className="text-xs text-slate-300 leading-relaxed mb-4">
-                  No browser or wallet needed! Simply text our Twilio bot to verify
-                  with OTP, check balance, deposit, or withdraw on the go.
+                  No browser or wallet needed! Simply text our Twilio bot to verify with OTP, check balance, deposit, or withdraw on the go.
                 </p>
+
                 <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 font-mono text-xs text-emerald-400 space-y-1 mb-4">
                   <div>User: deposit 100 USDC</div>
-                  <div className="text-slate-300">
-                    Agent: Got it! Deposited 100 USDC into Balanced strategy. ✅
-                  </div>
+                  <div className="text-slate-300">Agent: Got it! Deposited 100 USDC into Balanced strategy. ✅</div>
                 </div>
               </div>
+
               <div className="pt-4 border-t border-slate-800">
                 <span className="text-xs text-slate-400 block mb-2">Webhook URL:</span>
                 <code className="text-[11px] bg-slate-900 px-2 py-1 rounded border border-slate-800 text-slate-300 block truncate">
@@ -238,34 +185,39 @@ export default function DashboardPage() {
         </main>
       </div>
 
-      {/* Action Modal — on close, bump shareRefreshKey to re-fetch share data */}
+      {/* Action Modal — deposit only */}
       <ActionModal
         isOpen={isModalOpen}
-        onClose={handleModalClose}
+        onClose={() => setIsModalOpen(false)}
         type={modalType}
         userPublicKey={publicKey}
         balance={vaultState.balance}
         exchangeRate={vaultState.exchangeRate}
       />
 
+      {/* Withdrawal Modal — full withdrawal flow with preview and pause support */}
+      <WithdrawalModal
+        isOpen={isWithdrawModalOpen}
+        onClose={() => setIsWithdrawModalOpen(false)}
+        userPublicKey={publicKey}
+        balance={vaultState.balance}
+        exchangeRate={vaultState.exchangeRate}
+        isPaused={false}
+        onSuccess={(newBalance) => setVaultState((prev) => ({ ...prev, balance: newBalance }))}
+      />
+
       {/* Footer */}
       <footer className="border-t border-slate-800/80 bg-[#06080e] py-6 mt-12 text-center text-xs text-slate-400">
         <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-4">
           <div className="flex items-center gap-2">
-            <Bot size={16} className="text-emerald-400" aria-hidden="true" />
+            <Bot size={16} className="text-emerald-400" />
             <span className="font-semibold text-slate-300">NeuroWealth AI Vault</span>
             <span>— Soroban Smart Contract Architecture</span>
           </div>
           <div className="flex items-center gap-6">
-            <a href="https://stellar.org" target="_blank" rel="noreferrer" className="hover:text-emerald-400 transition-colors">
-              Stellar Network
-            </a>
-            <a href="https://soroban.stellar.org" target="_blank" rel="noreferrer" className="hover:text-emerald-400 transition-colors">
-              Soroban SDK
-            </a>
-            <a href="https://freighter.app" target="_blank" rel="noreferrer" className="hover:text-emerald-400 transition-colors">
-              Freighter Wallet
-            </a>
+            <a href="https://stellar.org" target="_blank" rel="noreferrer" className="hover:text-emerald-400 transition-colors">Stellar Network</a>
+            <a href="https://soroban.stellar.org" target="_blank" rel="noreferrer" className="hover:text-emerald-400 transition-colors">Soroban SDK</a>
+            <a href="https://freighter.app" target="_blank" rel="noreferrer" className="hover:text-emerald-400 transition-colors">Freighter Wallet</a>
           </div>
         </div>
       </footer>
