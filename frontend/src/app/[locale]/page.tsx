@@ -232,6 +232,7 @@ export default function DashboardPage() {
         userPublicKey={publicKey}
         balance={vaultState.balance}
         exchangeRate={vaultState.exchangeRate}
+        strategy={vaultState.strategy}
       />
 
       {/* Footer */}
