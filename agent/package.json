@@ -6,11 +6,8 @@
   "scripts": {
     "build": "tsc",
     "test": "ts-node --transpile-only src/openAiKeyManager.test.ts && ts-node --transpile-only src/rateLimiter.test.ts && ts-node --transpile-only src/db.test.ts",
-    "start:prod": "pm2 start ecosystem.config.js --env production",
-    "start:staging": "pm2 start ecosystem.config.js --env staging",
-    "stop": "pm2 stop neurowealth-agent",
-    "logs": "pm2 logs neurowealth-agent",
-    "healthcheck": "bash scripts/healthcheck.sh"
+    "start:prod": "npx ts-node src/index.ts",
+    "start:dev": "ts-node src/index.ts"
   },
   "keywords": [],
   "author": "",
@@ -25,23 +22,15 @@
     "@opentelemetry/sdk-trace-node": "^1.18.1",
     "@opentelemetry/semantic-conventions": "^1.18.1",
     "@stellar/stellar-sdk": "^16.1.0",
-    "bcrypt": "^5.1.1",
-    "bull": "^4.16.5",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "express-rate-limit": "^7.5.0",
-    "ioredis": "^5.6.1",
-    "jsonwebtoken": "^9.0.2",
     "openai": "^7.0.0",
     "pg": "^8.22.0",
-    "pino": "^9.6.0",
-    "twilio": "^5.7.0"
+    "pino": "^9.6.0"
   },
   "devDependencies": {
-    "@types/bcrypt": "^5.0.2",
-    "@types/bull": "^4.10.4",
     "@types/express": "^5.0.6",
-    "@types/jsonwebtoken": "^9.0.9",
     "@types/mocha": "^10.0.10",
     "@types/node": "^26.1.2",
     "@types/pg": "^8.20.0",

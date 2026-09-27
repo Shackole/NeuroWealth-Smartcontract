@@ -1,0 +1,268 @@
+name: Deploy Agent to Railway
+
+# Continuous deployment pipeline for the NeuroWealth AI Agent backend (#114).
+#
+# Triggers:
+#   - Push to `staging` branch  → deploys to Railway staging environment
+#   - Push to `main` branch     → deploys to Railway production environment
+#                                 (requires manual approval via the `production`
+#                                  GitHub Actions environment)
+#
+# Required repository secrets (Settings → Secrets → Actions):
+#   RAILWAY_TOKEN                  API token from Railway dashboard
+#   RAILWAY_SERVICE_ID_STAGING     Service ID of the staging agent service
+#   RAILWAY_SERVICE_ID_PRODUCTION  Service ID of the production agent service
+#   RAILWAY_PROJECT_URL_PRODUCTION URL of the production deployment (for health check)
+#   RAILWAY_PROJECT_URL_STAGING    URL of the staging deployment (for health check)
+#   DEPLOY_SLACK_WEBHOOK_URL       Slack incoming webhook URL for deploy notifications
+#
+# Rollback:
+#   In the Railway dashboard, navigate to the service → Deployments tab →
+#   find the last known-good deployment → click "Redeploy".
+#   See docs/RAILWAY_DEPLOYMENT.md for the full rollback procedure.
+
+on:
+  push:
+    branches:
+      - main
+      - staging
+    paths:
+      - "agent/**"
+      - ".github/workflows/deploy-agent.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Staging deployment — runs on push to the `staging` branch
+  # ---------------------------------------------------------------------------
+  deploy-staging:
+    name: Deploy to Railway Staging
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/staging'
+    environment:
+      name: staging
+      url: ${{ secrets.RAILWAY_PROJECT_URL_STAGING }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli@latest
+
+      - name: Deploy to staging
+        id: deploy
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          echo "Deploying to Railway staging service: ${{ secrets.RAILWAY_SERVICE_ID_STAGING }}"
+          railway up \
+            --service "${{ secrets.RAILWAY_SERVICE_ID_STAGING }}" \
+            --detach
+
+      - name: Wait for deployment to stabilise
+        run: sleep 30
+
+      - name: Verify health check (staging)
+        id: healthcheck
+        run: |
+          MAX_RETRIES=10
+          RETRY_DELAY=15
+          HEALTH_URL="${{ secrets.RAILWAY_PROJECT_URL_STAGING }}/health/ready"
+
+          echo "Polling ${HEALTH_URL} ..."
+          for i in $(seq 1 $MAX_RETRIES); do
+            HTTP_CODE=$(curl --silent --output /dev/null --write-out "%{http_code}" \
+              --connect-timeout 5 --max-time 10 "$HEALTH_URL" || echo "000")
+            echo "Attempt ${i}/${MAX_RETRIES}: HTTP ${HTTP_CODE}"
+            if [ "$HTTP_CODE" = "200" ]; then
+              echo "Health check passed."
+              echo "healthy=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep "$RETRY_DELAY"
+          done
+
+          echo "Health check failed after ${MAX_RETRIES} attempts."
+          echo "healthy=false" >> "$GITHUB_OUTPUT"
+          exit 1
+
+      - name: Write deploy summary
+        if: always()
+        run: |
+          STATUS="${{ steps.healthcheck.outputs.healthy == 'true' && '✅ Success' || '❌ Failed' }}"
+          echo "## Railway Staging Deploy — ${STATUS}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Environment | staging |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Branch | \`${{ github.ref_name }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Commit | \`${{ github.sha }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Actor | \`${{ github.actor }}\` |" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Notify Slack — staging deploy result
+        if: always()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.DEPLOY_SLACK_WEBHOOK_URL }}
+          HEALTHY: ${{ steps.healthcheck.outputs.healthy }}
+        run: |
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then
+            echo "DEPLOY_SLACK_WEBHOOK_URL not set — skipping Slack notification."
+            exit 0
+          fi
+
+          if [ "$HEALTHY" = "true" ]; then
+            ICON=":white_check_mark:"
+            STATUS="*Staging deploy succeeded*"
+          else
+            ICON=":x:"
+            STATUS="*Staging deploy FAILED*"
+          fi
+
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          PAYLOAD=$(cat <<EOF
+          {
+            "text": "${ICON} ${STATUS}",
+            "blocks": [
+              {
+                "type": "section",
+                "text": {
+                  "type": "mrkdwn",
+                  "text": "${ICON} ${STATUS}\nBranch: \`${{ github.ref_name }}\`  Commit: \`${{ github.sha }}\`\n<${RUN_URL}|View workflow run>"
+                }
+              }
+            ]
+          }
+          EOF
+          )
+          curl -fsSL -X POST -H "Content-Type: application/json" -d "$PAYLOAD" "$SLACK_WEBHOOK_URL"
+
+  # ---------------------------------------------------------------------------
+  # Production deployment — runs on push to `main`, requires manual approval
+  # ---------------------------------------------------------------------------
+  deploy-production:
+    name: Deploy to Railway Production
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    # The `production` GitHub Actions environment must be configured with a
+    # required reviewer before this job runs.
+    # Settings → Environments → production → Required reviewers
+    environment:
+      name: production
+      url: ${{ secrets.RAILWAY_PROJECT_URL_PRODUCTION }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli@latest
+
+      - name: Run database migrations
+        # The agent uses pg directly — run any pending SQL migrations here.
+        # Replace this placeholder with the actual migration command once the
+        # migration tooling (e.g. db-migrate, golang-migrate) is in place.
+        run: |
+          echo "Running database migrations..."
+          echo "TODO: replace with: npx db-migrate up --config db/database.json"
+          echo "Migration step complete (placeholder)."
+
+      - name: Deploy to production
+        id: deploy
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          echo "Deploying to Railway production service: ${{ secrets.RAILWAY_SERVICE_ID_PRODUCTION }}"
+          railway up \
+            --service "${{ secrets.RAILWAY_SERVICE_ID_PRODUCTION }}" \
+            --detach
+
+      - name: Wait for deployment to stabilise
+        # Railway uses rolling restarts — give it time before health checking.
+        run: sleep 45
+
+      - name: Verify health check (production)
+        id: healthcheck
+        run: |
+          MAX_RETRIES=12
+          RETRY_DELAY=15
+          HEALTH_URL="${{ secrets.RAILWAY_PROJECT_URL_PRODUCTION }}/health/ready"
+
+          echo "Polling ${HEALTH_URL} ..."
+          for i in $(seq 1 $MAX_RETRIES); do
+            HTTP_CODE=$(curl --silent --output /dev/null --write-out "%{http_code}" \
+              --connect-timeout 5 --max-time 10 "$HEALTH_URL" || echo "000")
+            echo "Attempt ${i}/${MAX_RETRIES}: HTTP ${HTTP_CODE}"
+            if [ "$HTTP_CODE" = "200" ]; then
+              echo "Health check passed."
+              echo "healthy=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep "$RETRY_DELAY"
+          done
+
+          echo "Health check failed after ${MAX_RETRIES} attempts."
+          echo "healthy=false" >> "$GITHUB_OUTPUT"
+          exit 1
+
+      - name: Write deploy summary + rollback instructions
+        if: always()
+        run: |
+          HEALTHY="${{ steps.healthcheck.outputs.healthy }}"
+          STATUS="$( [ "$HEALTHY" = "true" ] && echo '✅ Success' || echo '❌ Failed' )"
+          echo "## Railway Production Deploy — ${STATUS}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Environment | production |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Branch | \`${{ github.ref_name }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Commit | \`${{ github.sha }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Actor | \`${{ github.actor }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Rollback procedure" >> "$GITHUB_STEP_SUMMARY"
+          echo "1. Open the Railway dashboard → select the agent production service." >> "$GITHUB_STEP_SUMMARY"
+          echo "2. Navigate to **Deployments**." >> "$GITHUB_STEP_SUMMARY"
+          echo "3. Find the last known-good deployment." >> "$GITHUB_STEP_SUMMARY"
+          echo "4. Click **Redeploy** on that deployment." >> "$GITHUB_STEP_SUMMARY"
+          echo "5. Monitor \`/health/ready\` until it returns HTTP 200." >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "See [docs/RAILWAY_DEPLOYMENT.md](../docs/RAILWAY_DEPLOYMENT.md) for the full runbook." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Notify Slack — production deploy result
+        if: always()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.DEPLOY_SLACK_WEBHOOK_URL }}
+          HEALTHY: ${{ steps.healthcheck.outputs.healthy }}
+        run: |
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then
+            echo "DEPLOY_SLACK_WEBHOOK_URL not set — skipping Slack notification."
+            exit 0
+          fi
+
+          if [ "$HEALTHY" = "true" ]; then
+            ICON=":rocket:"
+            STATUS="*Production deploy succeeded*"
+          else
+            ICON=":rotating_light:"
+            STATUS="*Production deploy FAILED — consider rollback*"
+          fi
+
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          PAYLOAD=$(cat <<EOF
+          {
+            "text": "${ICON} ${STATUS}",
+            "blocks": [
+              {
+                "type": "section",
+                "text": {
+                  "type": "mrkdwn",
+                  "text": "${ICON} ${STATUS}\nBranch: \`${{ github.ref_name }}\`  Commit: \`${{ github.sha }}\`\n<${RUN_URL}|View workflow run>"
+                }
+              }
+            ]
+          }
+          EOF
+          )
+          curl -fsSL -X POST -H "Content-Type: application/json" -d "$PAYLOAD" "$SLACK_WEBHOOK_URL"
