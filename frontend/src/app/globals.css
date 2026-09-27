@@ -15,20 +15,26 @@ body {
   overflow-x: hidden;
 }
 
-/* ─── Light mode ─────────────────────────────────────────── */
-:root,
-.light {
-  color-scheme: light;
+.dark body,
+body {
+  background-color: #080b11;
+  color: #f8fafc;
 }
 
-/* ─── Dark mode ─────────────────────────────────────────── */
-.dark {
-  color-scheme: dark;
+@media (prefers-color-scheme: light) {
+  body:not(.dark *) {
+    background-color: #ffffff;
+    color: #0f172a;
+  }
 }
 
-/* ─── Glass panels ───────────────────────────────────────── */
+.dark body {
+  background-color: #080b11;
+  color: #f8fafc;
+}
+
 .glass-panel {
-  background: rgba(248, 250, 252, 0.85);
+  background: rgba(248, 250, 252, 0.8);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
   border: 1px solid rgba(0, 0, 0, 0.08);
@@ -40,7 +46,7 @@ body {
 }
 
 .glass-panel-interactive {
-  background: rgba(248, 250, 252, 0.85);
+  background: rgba(248, 250, 252, 0.8);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
   border: 1px solid rgba(0, 0, 0, 0.08);
@@ -58,7 +64,48 @@ body {
   box-shadow: 0 10px 30px -10px rgba(16, 185, 129, 0.15);
 }
 
-/* ─── Custom scrollbar ──────────────────────────────────── */
+/* ─── Skeleton shimmer ──────────────────────────────────────────────────── */
+@keyframes shimmer {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+.skeleton-shimmer {
+  position: relative;
+  overflow: hidden;
+  background: rgba(30, 41, 59, 0.5);
+}
+
+.skeleton-shimmer::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.06) 50%,
+    transparent 100%
+  );
+  animation: shimmer 1.6s ease-in-out infinite;
+}
+
+/* ─── Reduced-motion: disable ALL decorative animations ─────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .skeleton-shimmer::after {
+    animation: none;
+  }
+}
+
+/* Custom scrollbar */
 ::-webkit-scrollbar {
   width: 6px;
 }
@@ -77,10 +124,4 @@ body {
 }
 .dark ::-webkit-scrollbar-thumb:hover {
   background: #334155;
-}
-
-/* ─── Focus ring (WCAG AA) ──────────────────────────────── */
-:focus-visible {
-  outline: 2px solid #10b981;
-  outline-offset: 2px;
 }

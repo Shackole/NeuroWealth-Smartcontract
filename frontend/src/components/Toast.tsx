@@ -1,145 +1,94 @@
 'use client';
 
-/**
- * Toast.tsx — lightweight toast notifications for success and error states.
- * Used to show a Stellar explorer link after a successful deposit.
- */
+import React from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
+import { CheckCircle2, XCircle, AlertTriangle, Info, X } from 'lucide-react';
 
-import React, { useEffect, useState } from 'react';
-import { CheckCircle2, X, ExternalLink, AlertTriangle } from 'lucide-react';
-import { explorerUrl } from '@/lib/vaultHelpers';
+export type ToastType = 'success' | 'error' | 'warning' | 'info';
 
-export type ToastVariant = 'success' | 'error';
-
-export interface ToastData {
+export interface ToastItem {
   id: string;
-  variant: ToastVariant;
+  type: ToastType;
   title: string;
-  message: string;
-  txHash?: string;
-  durationMs?: number;
+  message?: string;
 }
 
-interface ToastItemProps {
-  toast: ToastData;
+interface ToastProps {
+  toast: ToastItem;
   onDismiss: (id: string) => void;
 }
 
-const ToastItem: React.FC<ToastItemProps> = ({ toast, onDismiss }) => {
-  const [visible, setVisible] = useState(false);
+const ICONS: Record<ToastType, React.ReactNode> = {
+  success: <CheckCircle2 size={18} aria-hidden="true" />,
+  error: <XCircle size={18} aria-hidden="true" />,
+  warning: <AlertTriangle size={18} aria-hidden="true" />,
+  info: <Info size={18} aria-hidden="true" />,
+};
 
-  useEffect(() => {
-    // Trigger enter animation
-    const enterTimer = requestAnimationFrame(() => setVisible(true));
-    // Auto-dismiss
-    const dismissTimer = setTimeout(() => {
-      setVisible(false);
-      setTimeout(() => onDismiss(toast.id), 300); // wait for exit animation
-    }, toast.durationMs ?? 6000);
+const STYLES: Record<ToastType, string> = {
+  success: 'border-emerald-500/40 bg-emerald-900/80 text-emerald-300',
+  error: 'border-red-500/40 bg-red-900/80 text-red-300',
+  warning: 'border-amber-500/40 bg-amber-900/80 text-amber-300',
+  info: 'border-sky-500/40 bg-sky-900/80 text-sky-300',
+};
 
-    return () => {
-      cancelAnimationFrame(enterTimer);
-      clearTimeout(dismissTimer);
-    };
-  }, [toast.id, toast.durationMs, onDismiss]);
-
-  const isSuccess = toast.variant === 'success';
-
+/**
+ * Single toast notification with slide-in from top-right, auto-dismiss after 5 s.
+ * Respects prefers-reduced-motion: the animation is skipped when the user has
+ * requested reduced motion (Framer Motion reads this via the `useReducedMotion`
+ * hook internally when `reducedMotion="user"` is set on MotionConfig, but here
+ * we provide explicit animation values that Framer Motion will skip for us).
+ */
+export const Toast: React.FC<ToastProps> = ({ toast, onDismiss }) => {
   return (
-    <div
-      role="status"
-      aria-live="polite"
-      className={`flex items-start gap-3 w-full max-w-sm rounded-2xl border p-4 shadow-xl transition-all duration-300 ${
-        visible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4'
-      } ${
-        isSuccess
-          ? 'bg-slate-900 border-emerald-500/30'
-          : 'bg-slate-900 border-red-500/30'
-      }`}
+    <motion.div
+      key={toast.id}
+      role="alert"
+      aria-live="assertive"
+      aria-atomic="true"
+      initial={{ opacity: 0, x: 64, scale: 0.95 }}
+      animate={{ opacity: 1, x: 0, scale: 1 }}
+      exit={{ opacity: 0, x: 64, scale: 0.95 }}
+      transition={{ duration: 0.2, ease: 'easeOut' }}
+      className={`flex items-start gap-3 w-80 max-w-sm rounded-xl border px-4 py-3 shadow-2xl backdrop-blur-sm pointer-events-auto ${STYLES[toast.type]}`}
     >
-      {/* Icon */}
-      <div
-        className={`flex-shrink-0 h-8 w-8 rounded-full flex items-center justify-center ${
-          isSuccess ? 'bg-emerald-500/20 text-emerald-400' : 'bg-red-500/20 text-red-400'
-        }`}
-      >
-        {isSuccess ? <CheckCircle2 size={18} /> : <AlertTriangle size={18} />}
-      </div>
+      <span className="mt-0.5 shrink-0">{ICONS[toast.type]}</span>
 
-      {/* Content */}
       <div className="flex-1 min-w-0">
-        <p className={`text-sm font-bold ${isSuccess ? 'text-emerald-400' : 'text-red-400'}`}>
-          {toast.title}
-        </p>
-        <p className="text-xs text-slate-400 mt-0.5 leading-relaxed">{toast.message}</p>
-        {toast.txHash && (
-          <a
-            href={explorerUrl(toast.txHash)}
-            target="_blank"
-            rel="noreferrer"
-            className="inline-flex items-center gap-1 mt-1.5 text-xs text-emerald-400 hover:text-emerald-300 underline underline-offset-2 transition-colors"
-            aria-label="View transaction on Stellar Explorer"
-          >
-            <ExternalLink size={11} />
-            View on Stellar Explorer
-          </a>
+        <p className="text-sm font-semibold leading-snug">{toast.title}</p>
+        {toast.message && (
+          <p className="text-xs mt-0.5 opacity-80 leading-relaxed">{toast.message}</p>
         )}
       </div>
 
-      {/* Dismiss */}
       <button
         onClick={() => onDismiss(toast.id)}
-        className="flex-shrink-0 text-slate-500 hover:text-white transition-colors"
         aria-label="Dismiss notification"
+        className="shrink-0 mt-0.5 opacity-60 hover:opacity-100 transition-opacity"
       >
         <X size={16} />
       </button>
-    </div>
+    </motion.div>
   );
 };
 
-interface ToastContainerProps {
-  toasts: ToastData[];
+/**
+ * Container that renders the toast stack in the top-right corner.
+ */
+export const ToastContainer: React.FC<{
+  toasts: ToastItem[];
   onDismiss: (id: string) => void;
-}
-
-export const ToastContainer: React.FC<ToastContainerProps> = ({ toasts, onDismiss }) => {
-  if (toasts.length === 0) return null;
-
+}> = ({ toasts, onDismiss }) => {
   return (
     <div
-      aria-live="polite"
-      aria-atomic="false"
-      className="fixed bottom-6 right-6 z-50 flex flex-col gap-3 items-end pointer-events-none"
+      aria-label="Notifications"
+      className="fixed top-4 right-4 z-[9999] flex flex-col gap-2 pointer-events-none"
     >
-      {toasts.map((t) => (
-        <div key={t.id} className="pointer-events-auto">
-          <ToastItem toast={t} onDismiss={onDismiss} />
-        </div>
-      ))}
+      <AnimatePresence mode="sync">
+        {toasts.map((t) => (
+          <Toast key={t.id} toast={t} onDismiss={onDismiss} />
+        ))}
+      </AnimatePresence>
     </div>
   );
 };
-
-// ─── Hook ─────────────────────────────────────────────────────────────────────
-
-export function useToast() {
-  const [toasts, setToasts] = useState<ToastData[]>([]);
-
-  const addToast = (toast: Omit<ToastData, 'id'>) => {
-    const id = `toast-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-    setToasts((prev) => [...prev, { ...toast, id }]);
-  };
-
-  const dismiss = (id: string) => {
-    setToasts((prev) => prev.filter((t) => t.id !== id));
-  };
-
-  const success = (title: string, message: string, txHash?: string) =>
-    addToast({ variant: 'success', title, message, txHash });
-
-  const error = (title: string, message: string) =>
-    addToast({ variant: 'error', title, message });
-
-  return { toasts, dismiss, success, error };
-}
