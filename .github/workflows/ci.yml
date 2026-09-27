@@ -315,7 +315,7 @@ jobs:
         # already visible on the PR itself, while a scheduled failure has no
         # PR to surface it and would otherwise go unnoticed.
         if: failure() && github.event_name == 'schedule'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const title = 'Scheduled cargo-deny audit is failing (dependency advisory drift)';
