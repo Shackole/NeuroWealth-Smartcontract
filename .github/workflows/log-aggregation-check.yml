@@ -1,0 +1,36 @@
+name: Log Hygiene Check
+
+on:
+  push:
+    branches: ["main", "develop", "feat/**"]
+  pull_request:
+    branches: ["main", "develop"]
+
+jobs:
+  log-hygiene:
+    name: No bare console.log in agent source
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check for bare console.log calls in agent source
+        run: |
+          # Fail if any non-test TypeScript source file in agent/src/ uses
+          # console.log directly. All logging must go through the structured
+          # pino logger (agent/src/logger.ts).
+          MATCHES=$(grep -rn 'console\.log' agent/src/ \
+            --include='*.ts' \
+            --exclude='*.test.ts' \
+            --exclude='*.spec.ts' || true)
+
+          if [[ -n "$MATCHES" ]]; then
+            echo "❌ Raw console.log found in agent source files."
+            echo "   Use the structured logger from agent/src/logger.ts instead."
+            echo ""
+            echo "$MATCHES"
+            exit 1
+          fi
+
+          echo "✅ No bare console.log calls found in agent source files."
