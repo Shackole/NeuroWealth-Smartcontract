@@ -24,7 +24,7 @@
     "@stellar/stellar-sdk": "^16.1.0",
     "dotenv": "^18.0.3",
     "express": "^5.2.1",
-    "express-rate-limit": "^7.5.0",
+    "express-rate-limit": "^8.7.0",
     "openai": "^7.0.0",
     "pg": "^8.22.0",
     "pino": "^10.3.1"
