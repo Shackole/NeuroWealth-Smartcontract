@@ -16,7 +16,7 @@ jobs:
     name: RustSec audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Audit Cargo.lock for high and critical advisories
         uses: rustsec/audit-check@v2.0.0
         with:
