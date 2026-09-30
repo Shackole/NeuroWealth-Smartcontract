@@ -6,6 +6,7 @@ import { Shield, AlertTriangle, Lock, Unlock, Clock } from 'lucide-react';
 
 export default function AdminPage() {
   const [isPaused, setIsPaused] = useState<boolean>(false);
+  const [pauseReason, setPauseReason] = useState<string>('');
   const [tvlCap, setTvlCap] = useState<string>('5000000');
   const [capFeedback, setCapFeedback] = useState<string | null>(null);
 
@@ -65,19 +66,50 @@ export default function AdminPage() {
               <p className="text-sm text-slate-400 mt-1">
                 Pausing halts all deposits and rebalances while withdrawals remain accessible.
               </p>
+              {isPaused && pauseReason && (
+                <p className="text-sm text-amber-400 mt-2 flex items-center gap-1.5">
+                  <AlertTriangle size={14} aria-hidden="true" />
+                  <span>Pause reason: <strong>{pauseReason}</strong></span>
+                </p>
+              )}
             </div>
-            <button
-              type="button"
-              onClick={() => setIsPaused(!isPaused)}
-              className={`px-6 py-2.5 rounded-xl font-bold text-sm flex items-center gap-2 transition-colors focus-visible:outline focus-visible:outline-2 ${
-                isPaused
-                  ? 'bg-emerald-500 text-black hover:bg-emerald-400 focus-visible:outline-emerald-400'
-                  : 'bg-rose-600 text-white hover:bg-rose-500 focus-visible:outline-rose-400'
-              }`}
-            >
-              {isPaused ? <Unlock size={16} aria-hidden="true" /> : <Lock size={16} aria-hidden="true" />}
-              <span>{isPaused ? 'Resume Vault' : 'Pause Vault Emergency'}</span>
-            </button>
+            <div className="flex flex-col gap-3 min-w-[220px]">
+              {!isPaused && (
+                <div>
+                  <label htmlFor="pause-reason" className="block text-xs font-semibold text-slate-400 mb-1">
+                    Reason for pause (optional)
+                  </label>
+                  <input
+                    id="pause-reason"
+                    type="text"
+                    value={pauseReason}
+                    onChange={(e) => setPauseReason(e.target.value)}
+                    placeholder="e.g. Scheduled maintenance"
+                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-400"
+                    aria-describedby="pause-reason-hint"
+                    maxLength={120}
+                  />
+                  <p id="pause-reason-hint" className="text-xs text-slate-500 mt-1">
+                    Shown in the site-wide pause banner.
+                  </p>
+                </div>
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  setIsPaused(!isPaused);
+                  if (isPaused) setPauseReason('');
+                }}
+                className={`px-6 py-2.5 rounded-xl font-bold text-sm flex items-center gap-2 transition-colors focus-visible:outline focus-visible:outline-2 ${
+                  isPaused
+                    ? 'bg-emerald-500 text-black hover:bg-emerald-400 focus-visible:outline-emerald-400'
+                    : 'bg-rose-600 text-white hover:bg-rose-500 focus-visible:outline-rose-400'
+                }`}
+              >
+                {isPaused ? <Unlock size={16} aria-hidden="true" /> : <Lock size={16} aria-hidden="true" />}
+                <span>{isPaused ? 'Resume Vault' : 'Pause Vault Emergency'}</span>
+              </button>
+            </div>
           </div>
         </section>
 
