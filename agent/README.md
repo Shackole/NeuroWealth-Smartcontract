@@ -4,6 +4,86 @@ The NeuroWealth agent is an autonomous background service that continuously moni
 
 ---
 
+## Local Development (Docker Compose)
+
+Spin up the complete local environment — Node.js agent, PostgreSQL 15, Redis 7,
+and RedisInsight — with a single command.
+
+### Prerequisites
+
+- [Docker](https://docs.docker.com/get-docker/) ≥ 24
+- [Docker Compose](https://docs.docker.com/compose/install/) ≥ 2.20 (bundled with Docker Desktop)
+
+### Quick start
+
+```bash
+# 1. Copy the environment template and fill in your secrets
+cp agent/.env.local.template agent/.env.local
+#    Edit agent/.env.local — at minimum set OPENAI_API_KEYS and VAULT_CONTRACT_ID
+
+# 2. Start all services (from the repo root or the agent/ directory)
+docker-compose up
+
+# 3. The agent is now available at http://localhost:3001
+#    RedisInsight UI is available at  http://localhost:8001
+#    PostgreSQL is available at       localhost:5432
+
+# 4. Start the Next.js frontend in a separate terminal (optional)
+cd frontend && npm run dev
+```
+
+> **Hot-reload**: agent source files in `agent/src/` are mounted as volumes. Any
+> change you save is automatically picked up by `ts-node-dev` without restarting
+> the container.
+
+### Services
+
+| Service      | Port  | Description                          |
+|-------------|-------|--------------------------------------|
+| agent        | 3001  | AI agent HTTP API                    |
+| postgres     | 5432  | PostgreSQL 15 (named volume `pgdata`)|
+| redis        | 6379  | Redis 7 queue / cache                |
+| redisinsight | 8001  | RedisInsight browser UI              |
+
+### Prisma migrations
+
+Prisma migrations run **automatically** on agent container start
+(`prisma migrate deploy`). To create a new migration after editing the schema:
+
+```bash
+# Run inside the running container
+docker-compose exec agent npx prisma migrate dev --name describe-your-change
+```
+
+### Useful commands
+
+```bash
+# Tail agent logs only
+docker-compose logs -f agent
+
+# Open a psql shell
+docker-compose exec postgres psql -U postgres -d neurowealth
+
+# Stop all services (keep volumes)
+docker-compose down
+
+# Stop and remove all data volumes (clean slate)
+docker-compose down -v
+```
+
+### Environment variables
+
+All variables are loaded from `agent/.env.local` (git-ignored).
+Copy `agent/.env.local.template` and fill in your values. The Docker Compose
+file also sets safe defaults for database credentials so a fresh checkout works
+without any extra configuration.
+
+---
+
+The NeuroWealth agent is an autonomous background service that continuously monitors yield opportunities across Stellar DeFi protocols (Blend Protocol, Soroswap/Phoenix DEX pools) and executes rebalancing for vault participants.
+
+---
+
 ## Key Modules
 
 - **Yield Comparison Engine** (`src/yieldComparison.ts`): Aggregates real-time and historical (7d/30d/90d) APYs, calculating risk-adjusted return ratios (Sharpe-like metric) and enforcing the 0.5% minimum improvement threshold.
