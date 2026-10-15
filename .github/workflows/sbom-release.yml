@@ -1,0 +1,65 @@
+name: Generate SBOM for Release
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  sbom:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # to upload release assets
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+          components: clippy, rustfmt
+
+      - name: Install cargo-sbom
+        run: cargo install cargo-sbom --version 0.4.0
+
+      - name: Generate Rust SBOM
+        working-directory: ./neurowealth-vault
+        run: cargo sbom --output-format=cyclonedxxml > sbom-rust.xml
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install syft
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin v0.90.0
+
+      - name: Generate Node SBOM for agent
+        working-directory: ./agent
+        run: syft packages . -o cyclonedxxml > sbom-agent.xml
+
+      - name: Generate Node SBOM for frontend
+        working-directory: ./frontend
+        run: syft packages . -o cyclonedxxml > sbom-frontend.xml
+
+      - name: Generate Node SBOM for whatsapp
+        working-directory: ./whatsapp
+        run: syft packages . -o cyclonedxxml > sbom-whatsapp.xml
+
+      - name: Generate Node SBOM for monitoring
+        working-directory: ./packages/monitoring
+        run: syft packages . -o cyclonedxxml > sbom-monitoring.xml
+
+      - name: Upload SBOMs to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            sbom-rust.xml
+            sbom-agent.xml
+            sbom-frontend.xml
+            sbom-whatsapp.xml
+            sbom-monitoring.xml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
