@@ -378,6 +378,9 @@ Our CI pipeline (`.github/workflows/ci.yml`) runs on every push and pull request
 | Vault UI tests | `packages/vault-ui` `npm test` (axe-core WCAG 2.1 AA + notification unit tests) |
 | Public-function auth gate | `scripts/check-pub-fn-auth.sh` — every new state-changing function must have a `SECURITY.md` row |
 
+### Release SBOM Generation
+The SBOM workflow (`.github/workflows/sbom-release.yml`) generates Software Bill of Materials (SBOM) for Rust crates and Node.js services when a GitHub release is published. The SBOMs are attached as assets to the release.
+
 ### Adding a new state-changing function
 
 When you add a new `pub fn` that modifies state, you must do **both** of the
