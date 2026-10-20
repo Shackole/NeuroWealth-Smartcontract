@@ -300,6 +300,95 @@ await test('handles APY fetch failure gracefully (partial results)', async () =>
   assert.strictEqual(result.rebalanceTriggered, false, 'should not rebalance with only 1 protocol');
 });
 
+await test('ignores malformed APY data instead of using it for an allocation', async () => {
+  let submits = 0;
+  const hooks = makeHooks({
+    apyFetchers: {
+      blend: async () => blendApyData(0.065),
+      dex: async () => ({ ...dexApyData(0.9), currentApy: Number.NaN }),
+    },
+    submitRebalance: async () => { submits++; return { txHash: 'unexpected' }; },
+  });
+  const result = await new YieldCheckJob(makeConfig(), hooks, makePoolStub()).runOnce();
+  assert.strictEqual(result.rebalanceTriggered, false);
+  assert.strictEqual(submits, 0);
+});
+
+await test('rejects stale APY observations and does not allocate from them', async () => {
+  let submits = 0;
+  const hooks = makeHooks({
+    apyFetchers: {
+      blend: async () => ({ ...blendApyData(0.065), fetchedAt: 0 }),
+      dex: async () => ({ ...dexApyData(0.09), fetchedAt: 999_999 }),
+    },
+    submitRebalance: async () => { submits++; return { txHash: 'unexpected' }; },
+  });
+  const result = await new YieldCheckJob(makeConfig({ maxApyAgeMs: 1_000 }), hooks, makePoolStub()).runOnce();
+  assert.strictEqual(result.rebalanceTriggered, false);
+  assert.strictEqual(result.skipReason, 'current_protocol_apy_unavailable');
+  assert.strictEqual(submits, 0);
+});
+
+await test('reconciles an uncertain submission before reporting or attempting any retry', async () => {
+  let submits = 0;
+  let reconciles = 0;
+  const hooks = makeHooks({
+    apyFetchers: { blend: async () => blendApyData(0.065), dex: async () => dexApyData(0.09) },
+    submitRebalance: async () => { submits++; throw new Error('RPC timeout after submission'); },
+    reconcileRebalance: async (protocol) => {
+      reconciles++;
+      assert.strictEqual(protocol, 'dex');
+      return { txHash: 'reconciled-chain-hash' };
+    },
+  });
+  const result = await new YieldCheckJob(makeConfig(), hooks, makePoolStub()).runOnce();
+  assert.strictEqual(result.rebalanceTriggered, true);
+  assert.strictEqual(result.txHash, 'reconciled-chain-hash');
+  assert.strictEqual(submits, 1);
+  assert.strictEqual(reconciles, 1);
+});
+
+await test('bounds a timed-out submission and reconciles its result before finishing', async () => {
+  let reconciles = 0;
+  const hooks = makeHooks({
+    apyFetchers: { blend: async () => blendApyData(0.065), dex: async () => dexApyData(0.09) },
+    submitRebalance: async () => new Promise<{ txHash: string }>(() => {}),
+    reconcileRebalance: async () => { reconciles++; return { txHash: 'confirmed-after-timeout' }; },
+  });
+  const result = await new YieldCheckJob(makeConfig({ dependencyTimeoutMs: 5 }), hooks, makePoolStub()).runOnce();
+  assert.strictEqual(result.rebalanceTriggered, true);
+  assert.strictEqual(result.txHash, 'confirmed-after-timeout');
+  assert.strictEqual(reconciles, 1);
+});
+
+await test('bounds current-state RPC timeouts and returns an inspectable failure', async () => {
+  const hooks = makeHooks({ getCurrentProtocol: async () => new Promise(() => {}) });
+  const result = await new YieldCheckJob(makeConfig({ dependencyTimeoutMs: 5 }), hooks, makePoolStub()).runOnce();
+  assert.strictEqual(result.rebalanceTriggered, false);
+  assert.ok(result.error?.includes('current vault state timed out'));
+});
+
+await test('returns a bounded partial outcome when Redis-backed APY fetch fails', async () => {
+  const hooks = makeHooks({
+    apyFetchers: {
+      blend: async () => blendApyData(0.065),
+      dex: async () => { throw new Error('Redis unavailable'); },
+    },
+  });
+  const result = await new YieldCheckJob(makeConfig(), hooks, makePoolStub()).runOnce();
+  assert.strictEqual(result.rebalanceTriggered, false);
+  assert.strictEqual(result.bestProtocol, 'blend');
+});
+
+await test('exposes database persistence failures in the returned result', async () => {
+  const pool = makePoolStub(async (sql) => {
+    if (sql.includes('INSERT INTO yield_check_history')) throw new Error('database unavailable');
+    return { rows: [] };
+  });
+  const result = await new YieldCheckJob(makeConfig(), makeHooks(), pool).runOnce();
+  assert.ok(result.error?.includes('result_persist_failed: database unavailable'));
+});
+
 await test('start() and stop() manage the timer lifecycle', async () => {
   const pool = makePoolStub();
   const hooks = makeHooks();

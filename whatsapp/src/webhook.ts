@@ -35,15 +35,29 @@ const TWILIO_WHATSAPP_FROM =
 // Bull queue — async intent processing
 // ─────────────────────────────────────────────────────────
 const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
+export const INTENT_JOB_ATTEMPTS = 1;
 
 export const intentQueue = new Queue<IntentJobData>('whatsapp-intent', REDIS_URL, {
   defaultJobOptions: {
-    attempts: 3,
+    // A timed-out financial operation may already have settled on-chain. Do not
+    // resubmit it automatically; require a fresh user command after resolution.
+    attempts: INTENT_JOB_ATTEMPTS,
     backoff: { type: 'exponential', delay: 2000 },
-    removeOnComplete: true,
+    // Keep completed job IDs as the idempotency ledger; a bounded cleaner below
+    // retains them for the provider retry window.
+    removeOnComplete: false,
     removeOnFail: false,
   },
 });
+
+const PROVIDER_RETRY_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+export const INTENT_WORKER_CONCURRENCY = 1;
+const completedJobCleanup = setInterval(() => {
+  void intentQueue.clean(PROVIDER_RETRY_RETENTION_MS, 'completed').catch((error) => {
+    console.error('[intentQueue] completed-job cleanup failed:', error);
+  });
+}, 6 * 60 * 60 * 1000);
+completedJobCleanup.unref();
 
 export interface IntentJobData {
   phoneHash: string;
@@ -51,6 +65,11 @@ export interface IntentJobData {
   messageBody: string;
   mediaUrl?: string;
   sessionState: UserState;
+  messageSid: string;
+}
+
+export function canExecuteIntent(phoneHash: string): boolean {
+  return getSession(phoneHash).state === UserState.VERIFIED && Boolean(getWallet(phoneHash));
 }
 
 // ─────────────────────────────────────────────────────────
@@ -146,9 +165,10 @@ export async function handleWhatsAppWebhook(
   const fromNumber: string = (req.body.From as string) || '';
   const messageBody: string = ((req.body.Body as string) || '').trim();
   const mediaUrl: string | undefined = req.body.MediaUrl0 as string | undefined;
+  const messageSid = typeof req.body.MessageSid === 'string' ? req.body.MessageSid.trim() : '';
 
-  if (!fromNumber) {
-    res.status(400).send('Missing sender phone number');
+  if (!fromNumber || !messageSid) {
+    res.status(400).send(!fromNumber ? 'Missing sender phone number' : 'Missing provider message id');
     return;
   }
 
@@ -267,6 +287,11 @@ export async function handleWhatsAppWebhook(
       messageBody,
       mediaUrl,
       sessionState: session.state,
+      messageSid,
+    }, {
+      // MessageSid is provider-scoped and independent of mutable body/sender
+      // fields, so a retried or altered delivery cannot create a second job.
+      jobId: `twilio-${crypto.createHash('sha256').update(messageSid).digest('hex')}`,
     });
     return;
   }
@@ -280,11 +305,13 @@ export async function handleWhatsAppWebhook(
 // Bull worker — processes intent jobs
 // ─────────────────────────────────────────────────────────
 
-intentQueue.process(async (job) => {
+intentQueue.process(INTENT_WORKER_CONCURRENCY, async (job) => {
   const { phoneHash, fromNumber, messageBody } = job.data;
 
   let replyText: string;
-  try {
+  if (!canExecuteIntent(phoneHash)) {
+    replyText = 'Session expired. Send "hi" to re-verify before requesting another transaction.';
+  } else try {
     replyText = await processVerifiedIntent(phoneHash, messageBody);
   } catch (err) {
     replyText =
