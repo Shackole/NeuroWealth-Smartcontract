@@ -1,19 +1,30 @@
-FROM node:20-alpine
+FROM node:22.23.2-alpine3.24 AS builder
 
+WORKDIR /workspace
+
+COPY packages/vault-client/package.json packages/vault-client/package-lock.json ./packages/vault-client/
+RUN npm ci --prefix packages/vault-client
+COPY packages/vault-client/ ./packages/vault-client/
+RUN npm run build --prefix packages/vault-client
+
+COPY packages/monitoring/package.json packages/monitoring/package-lock.json ./packages/monitoring/
+RUN npm ci --prefix packages/monitoring
+COPY packages/monitoring/ ./packages/monitoring/
+RUN npm run build --prefix packages/monitoring
+RUN npm prune --omit=dev --prefix packages/monitoring
+
+FROM node:22.23.2-alpine3.24 AS runner
 WORKDIR /app
+ENV NODE_ENV=production
+RUN mkdir -p /app/logs && chown node:node /app/logs
+COPY --from=builder --chown=node:node /workspace/packages/monitoring/node_modules ./node_modules
+COPY --from=builder --chown=node:node /workspace/packages/monitoring/dist ./dist
+COPY --from=builder --chown=node:node /workspace/packages/vault-client/dist ./node_modules/@neurowealth/vault-client/dist
+COPY --from=builder --chown=node:node /workspace/packages/vault-client/package.json ./node_modules/@neurowealth/vault-client/package.json
+EXPOSE 3000
 
-# Install dependencies
-COPY package*.json ./
-RUN npm ci --only=production && npm run build
-
-# Copy source
-COPY src ./src
-COPY tsconfig.json ./
-RUN npm run build
-
-# Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-  CMD node -e "require('http').get('http://localhost:3000/health', (r) => {if (r.statusCode !== 200) throw new Error(r.statusCode)})"
+  CMD node -e "require('http').get('http://127.0.0.1:3000/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
 
-# Run monitoring
-CMD ["npm", "start"]
+USER node
+CMD ["node", "dist/index.js"]

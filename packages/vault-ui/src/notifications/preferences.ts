@@ -40,8 +40,14 @@ export function loadPreferences(storage: Storage | null = defaultStorage()): Not
 export function savePreferences(
   prefs: NotificationPreferences,
   storage: Storage | null = defaultStorage(),
-): void {
-  storage?.setItem(PREFERENCES_STORAGE_KEY, JSON.stringify(prefs));
+): boolean {
+  if (!storage) return false;
+  try {
+    storage.setItem(PREFERENCES_STORAGE_KEY, JSON.stringify(prefs));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function isTypeEnabled(prefs: NotificationPreferences, type: NotificationEventType): boolean {
