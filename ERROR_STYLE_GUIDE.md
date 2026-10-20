@@ -96,6 +96,7 @@ Where:
 | 64 | `AgentCannotBeZeroAddress` | `vault: agent cannot be zero address` |
 | 65 | `UsdcTokenCannotBeZeroAddress` | `vault: usdc token cannot be zero address` |
 | 66 | `MaximumDepositExceedsCeiling` | `vault: maximum deposit exceeds ceiling` |
+| 83 | `OwnerAndAgentMustDiffer` | `vault: owner and agent must be separate authorities` |
 
 ## Error Categories
 

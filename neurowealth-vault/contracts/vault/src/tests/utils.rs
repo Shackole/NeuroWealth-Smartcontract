@@ -25,6 +25,7 @@ pub use soroban_sdk::testutils::Events;
 #[contracttype]
 enum TokenDataKey {
     Balance(Address),
+    Frozen(Address),
     Allowance(Address, Address),
     AllowanceExpiration(Address, Address),
 }
@@ -78,6 +79,10 @@ pub mod token {
         pub fn transfer(env: Env, from: Address, to: Address, amount: i128) {
             from.require_auth();
             assert!(amount > 0, "amount must be positive");
+            assert!(
+                !Self::is_frozen(&env, &from) && !Self::is_frozen(&env, &to),
+                "issuer authorization revoked"
+            );
 
             let from_balance: i128 = env
                 .storage()
@@ -154,9 +159,26 @@ pub mod token {
                 .unwrap_or(0)
         }
 
+        pub fn set_frozen(env: Env, account: Address, frozen: bool) {
+            env.storage()
+                .persistent()
+                .set(&TokenDataKey::Frozen(account), &frozen);
+        }
+
+        fn is_frozen(env: &Env, account: &Address) -> bool {
+            env.storage()
+                .persistent()
+                .get(&TokenDataKey::Frozen(account.clone()))
+                .unwrap_or(false)
+        }
+
         pub fn transfer_from(env: Env, spender: Address, from: Address, to: Address, amount: i128) {
             spender.require_auth();
             assert!(amount > 0, "amount must be positive");
+            assert!(
+                !Self::is_frozen(&env, &from) && !Self::is_frozen(&env, &to),
+                "issuer authorization revoked"
+            );
 
             let allowance = Self::allowance(env.clone(), from.clone(), spender.clone());
             assert!(allowance >= amount, "insufficient allowance");
