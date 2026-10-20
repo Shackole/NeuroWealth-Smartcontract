@@ -5,6 +5,8 @@ import { evaluateYield } from './yieldComparison';
 import healthRouter, { configureHealthChecks } from './health';
 import logger from './logger';
 import { initializeTracing } from './tracing';
+import { getQueueStats, closeQueues } from './transactionQueue';
+import { renderOperationalMetrics } from './operationalMetrics';
 
 import { ipRateLimiter, userRateLimiter } from './rateLimiter';
 
@@ -29,11 +31,15 @@ app.use(express.json());
 app.use(ipRateLimiter);
 app.use(userRateLimiter);
 app.use(healthRouter);
+app.get('/metrics', (_req, res) => {
+  res.type('text/plain; version=0.0.4; charset=utf-8').send(renderOperationalMetrics());
+});
 
 // Mount strategy aggregator API route (Issue #41)
 app.use(strategyRouter);
 
 let decisionInterval: ReturnType<typeof setInterval> | null = null;
+let queueMetricsInterval: ReturnType<typeof setInterval> | null = null;
 
 /**
  * Invokes the vault contract's `auto_compound(min_out)` function to harvest
@@ -100,6 +106,16 @@ async function main() {
   await startEventListener();
   startDecisionLoop();
 
+  const refreshQueueMetrics = async () => {
+    try {
+      await getQueueStats();
+    } catch (error) {
+      logger.warn({ error: error instanceof Error ? error.message : error }, 'Queue metrics refresh failed');
+    }
+  };
+  await refreshQueueMetrics();
+  queueMetricsInterval = setInterval(refreshQueueMetrics, 15_000);
+
   // Issue #40: Start USDC issuer freeze monitor (polls every 10 minutes).
   issuerFreezeMonitor.start();
 
@@ -115,6 +131,10 @@ async function main() {
       clearInterval(decisionInterval);
       decisionInterval = null;
     }
+    if (queueMetricsInterval) {
+      clearInterval(queueMetricsInterval);
+      queueMetricsInterval = null;
+    }
 
     stopEventListener();
 
@@ -126,6 +146,7 @@ async function main() {
     });
 
     try {
+      await closeQueues();
       await pool.end();
       logger.info('Database pool closed');
     } catch {

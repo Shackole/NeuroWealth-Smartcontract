@@ -19,8 +19,13 @@
 
 version: "3.9"
 
-x-restart: &restart-policy
+x-monitoring-service: &monitoring-service
   restart: unless-stopped
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
 
 networks:
   monitoring:
@@ -35,7 +40,7 @@ services:
   # ── Prometheus ─────────────────────────────────────────────────────────────
   prometheus:
     image: prom/prometheus:v2.51.0
-    <<: *restart-policy
+    <<: *monitoring-service
     networks: [monitoring]
     ports:
       - "9090:9090"
@@ -52,11 +57,6 @@ services:
       - "--storage.tsdb.retention.time=30d"
       - "--web.enable-lifecycle"
       - "--web.enable-remote-write-receiver"
-    environment:
-      # These are substituted into prometheus.yml via envsubst or directly
-      # if you use --enable-feature=expand-external-labels
-      AGENT_HOST: "${AGENT_HOST:-host.docker.internal}"
-      AGENT_PORT: "${AGENT_PORT:-3000}"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
@@ -68,7 +68,7 @@ services:
   # ── Alertmanager ───────────────────────────────────────────────────────────
   alertmanager:
     image: prom/alertmanager:v0.27.0
-    <<: *restart-policy
+    <<: *monitoring-service
     networks: [monitoring]
     ports:
       - "9093:9093"
@@ -86,7 +86,7 @@ services:
   # ── Grafana ────────────────────────────────────────────────────────────────
   grafana:
     image: grafana/grafana:10.4.2
-    <<: *restart-policy
+    <<: *monitoring-service
     networks: [monitoring]
     ports:
       - "3030:3000"

@@ -94,6 +94,94 @@ groups:
             The backlog is severe — user transactions may be delayed. Scale
             the agent or investigate failures immediately.
 
+      # A single stuck financial job must signal even with a shallow backlog.
+      - alert: QueueOldestFinancialJobStuck
+        expr: |
+          (neurowealth_queue_pending_jobs > 0)
+          and on (environment, network, queue_name)
+          (neurowealth_queue_oldest_pending_age_seconds > 120)
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Oldest transaction job stuck in {{ $labels.environment }} ({{ $labels.network }})"
+          description: >
+            The oldest pending financial job in {{ $labels.queue_name }} has
+            been waiting for {{ $value | humanizeDuration }}. The explicit
+            pending-job condition suppresses empty-queue noise.
+          runbook: "docs/runbooks/queue-backlog.md"
+
+      - alert: QueueWorkersSaturated
+        expr: |
+          (neurowealth_queue_pending_jobs > 0)
+          and on (environment, network, queue_name)
+          (neurowealth_queue_active_workers >= 5)
+          and on (environment, network, queue_name)
+          (neurowealth_queue_oldest_pending_age_seconds > 60)
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Transaction workers saturated in {{ $labels.environment }} ({{ $labels.network }})"
+          description: "All five workers are active while transaction jobs remain queued."
+          runbook: "docs/runbooks/queue-backlog.md"
+
+      - alert: QueueRepeatedSubmissionFailures
+        expr: increase(neurowealth_queue_submission_failures_total[10m]) >= 3
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Repeated transaction failures in {{ $labels.environment }} ({{ $labels.network }})"
+          description: "At least three transaction job attempts failed in the last 10 minutes for {{ $labels.queue_name }}."
+          runbook: "docs/runbooks/queue-backlog.md"
+
+      - alert: QueueDeadLetterGrowth
+        expr: increase(neurowealth_queue_dead_letter_growth_total[10m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Financial jobs entered the dead-letter queue in {{ $labels.environment }} ({{ $labels.network }})"
+          description: "A transaction exhausted retries and was moved to {{ $labels.queue_name }}'s dead-letter queue."
+          runbook: "docs/runbooks/queue-backlog.md"
+
+  - name: event_ingestion_health
+    rules:
+
+      - alert: EventIngestionLedgerLag
+        expr: |
+          (neurowealth_event_listener_latest_observed_ledger
+            - on (environment, network)
+          neurowealth_event_listener_last_processed_ledger) > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Event listener is behind in {{ $labels.environment }} ({{ $labels.network }})"
+          description: "The listener is more than 10 ledgers behind the latest ledger observed from RPC."
+          runbook: "docs/runbooks/event-ingestion.md"
+
+      - alert: EventIngestionCheckpointStale
+        expr: neurowealth_event_listener_checkpoint_age_seconds > 60
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Event checkpoint stale in {{ $labels.environment }} ({{ $labels.network }})"
+          description: "No successful poll and processing pass completed for {{ $value | humanizeDuration }}. HTTP health alone does not prove event ingestion is advancing."
+          runbook: "docs/runbooks/event-ingestion.md"
+
+      - alert: EventIngestionProcessingFailures
+        expr: increase(neurowealth_event_listener_processing_failures_total[5m]) > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Event ingestion failures in {{ $labels.environment }} ({{ $labels.network }})"
+          description: "The event listener recorded a polling or processing failure in the last five minutes."
+          runbook: "docs/runbooks/event-ingestion.md"
+
   # ──────────────────────────────────────────────────────────────────────────
   # Vault On-Chain Metrics
   # ──────────────────────────────────────────────────────────────────────────
