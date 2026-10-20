@@ -86,6 +86,12 @@ test = false
 doc = false
 
 [[bin]]
+name = "asset_lifecycle"
+path = "fuzz_targets/asset_lifecycle.rs"
+test = false
+doc = false
+
+[[bin]]
 name = "share_math_overflow"
 path = "fuzz_targets/share_math_overflow.rs"
 test = false
