@@ -34,7 +34,7 @@ export async function startEventListener() {
 
   try {
     const latestLedgerResponse = await withRetry(
-      () => rpcCall((s) => s.getLatestLedger()),
+      () => rpcCall((s) => s.getLatestLedger(), { retryOnFallback: true }),
       'getLatestLedger',
     );
     let startLedger = latestLedgerResponse.sequence;
@@ -52,7 +52,7 @@ export async function startEventListener() {
               }
             ],
             limit: 100,
-          })),
+          }), { retryOnFallback: true }),
           'getEvents',
         );
 

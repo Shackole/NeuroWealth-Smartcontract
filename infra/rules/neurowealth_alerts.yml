@@ -27,7 +27,7 @@ groups:
             (last seen {{ $value | humanizeDuration }} ago). The vault will
             not be rebalanced and yield may not be harvested. Check the agent
             process and logs immediately.
-          runbook: "https://github.com/your-org/NeuroWealth-Smartcontract/blob/main/SECURITY.md"
+          runbook: "docs/INCIDENT_RUNBOOK.md#51-agent-down-or-heartbeat-stale-p1"
 
       # HTTP error rate above 5%
       - alert: AgentHighErrorRate
