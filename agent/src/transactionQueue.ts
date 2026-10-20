@@ -15,6 +15,7 @@
 
 import Bull from 'bull';
 import type { Job, Queue } from 'bull';
+import crypto from 'crypto';
 import {
   Keypair,
   Networks,
@@ -114,27 +115,35 @@ const server = new Horizon.Server(STELLAR_RPC_URL);
 // ─────────────────────────────────────────────────────────────────────────────
 
 function dedupKey(key: string): string {
-  return `dedup:tx:${key}`;
+  const namespace = (process.env.TRANSACTION_DEDUP_NAMESPACE || 'default').replace(/[^a-zA-Z0-9:_-]/g, '_');
+  return `dedup:tx:${namespace}:${key}`;
 }
 
-async function isDuplicate(
+async function reserveDedupKey(
   queue: Queue<TransactionJobData>,
   key: string,
+  reservation: string,
 ): Promise<boolean> {
-  // Access Bull's internal Redis client (type-cast needed — Bull exposes it)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const client = (queue as any).client as import('ioredis').Redis;
-  const result = await client.get(dedupKey(key));
-  return result !== null;
+  return (await client.set(dedupKey(key), reservation, 'PX', DEDUP_TTL_MS, 'NX')) === 'OK';
 }
 
-async function markSeen(
+async function releaseDedupReservation(
   queue: Queue<TransactionJobData>,
   key: string,
+  reservation: string,
 ): Promise<void> {
+  // Compare-and-delete means a failed enqueue cannot remove another caller's
+  // reservation if this one expired and was replaced in the meantime.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const client = (queue as any).client as import('ioredis').Redis;
-  await client.set(dedupKey(key), '1', 'PX', DEDUP_TTL_MS);
+  await client.eval(
+    "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
+    1,
+    dedupKey(key),
+    reservation,
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -148,7 +157,16 @@ async function markSeen(
 export async function enqueueTransaction(
   data: TransactionJobData,
 ): Promise<Job<TransactionJobData> | null> {
-  if (await isDuplicate(transactionQueue, data.deduplicationKey)) {
+  return enqueueTransactionOnQueue(transactionQueue, data);
+}
+
+/** Queue-injected entry point used by isolated Redis integration coverage. */
+export async function enqueueTransactionOnQueue(
+  queue: Queue<TransactionJobData>,
+  data: TransactionJobData,
+): Promise<Job<TransactionJobData> | null> {
+  const reservation = crypto.randomUUID();
+  if (!(await reserveDedupKey(queue, data.deduplicationKey, reservation))) {
     logger.warn(
       { deduplicationKey: data.deduplicationKey },
       'Transaction deduplicated — already queued',
@@ -156,8 +174,16 @@ export async function enqueueTransaction(
     return null;
   }
 
-  await markSeen(transactionQueue, data.deduplicationKey);
-  const job = await transactionQueue.add(data);
+  // Bull job IDs are deterministic per dedup key, covering the ambiguous case
+  // where Redis accepts queue.add but the caller loses its response.
+  const jobId = `dedup-${crypto.createHash('sha256').update(data.deduplicationKey).digest('hex')}`;
+  let job: Job<TransactionJobData>;
+  try {
+    job = await queue.add(data, { jobId });
+  } catch (error) {
+    await releaseDedupReservation(queue, data.deduplicationKey, reservation);
+    throw error;
+  }
 
   logger.info(
     { jobId: job.id, type: data.type, userAddress: data.userAddress },

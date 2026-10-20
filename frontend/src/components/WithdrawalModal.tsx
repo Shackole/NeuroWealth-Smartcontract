@@ -10,7 +10,7 @@ import {
   ShieldAlert,
   Banknote,
 } from 'lucide-react';
-import { signWithFreighter } from '@/lib/freighter';
+import { executeWithdrawal, explorerUrl, previewWithdrawShares } from '@/lib/vaultHelpers';
 
 interface WithdrawalModalProps {
   isOpen: boolean;
@@ -22,7 +22,7 @@ interface WithdrawalModalProps {
   exchangeRate: number;
   /** Whether the vault is currently paused */
   isPaused?: boolean;
-  /** Called on success so the dashboard can refresh balance immediately (optimistic update) */
+  /** Called after the Soroban transaction is confirmed in a ledger. */
   onSuccess?: (newBalance: number) => void;
 }
 
@@ -33,7 +33,6 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
   onClose,
   userPublicKey,
   balance,
-  exchangeRate,
   isPaused = false,
   onSuccess,
 }) => {
@@ -47,11 +46,6 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
   if (!isOpen) return null;
 
   const numAmount = isWithdrawAll ? balance : parseFloat(amount) || 0;
-
-  // preview_withdraw: shares burned = amount / exchangeRate (ceiling division)
-  // ERC-4626 convention: shares burned round UP to protect the vault
-  const estimatedSharesToBurn =
-    exchangeRate > 0 ? Math.ceil((numAmount / exchangeRate) * 1e7) / 1e7 : 0;
 
   const isValidAmount = numAmount > 0 && numAmount <= balance;
 
@@ -67,11 +61,16 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
 
   /** Step 1 → 2: compute share preview then show confirmation screen */
   const handlePreview = useCallback(async () => {
-    if (!isValidAmount) return;
-    // In production: call vault.preview_withdraw(amount_in_stroops) via RPC simulation
-    setPreviewShares(estimatedSharesToBurn);
-    setStep('preview');
-  }, [isValidAmount, estimatedSharesToBurn]);
+    if (!isValidAmount || !userPublicKey) return;
+    setErrorMsg('');
+    try {
+      setPreviewShares(await previewWithdrawShares(userPublicKey, numAmount));
+      setStep('preview');
+    } catch (err: unknown) {
+      setErrorMsg(err instanceof Error ? err.message : 'Could not preview this withdrawal.');
+      setStep('error');
+    }
+  }, [isValidAmount, userPublicKey, numAmount]);
 
   /** Step 2 → 3 → success/error: sign and submit */
   const handleConfirm = useCallback(async () => {
@@ -81,23 +80,8 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
     setErrorMsg('');
 
     try {
-      // Build Soroban XDR for either withdraw(user, amount) or withdraw_all(user)
-      const fnName = isWithdrawAll ? 'withdraw_all' : 'withdraw';
-      const mockXdr = `AAAAAgAAAAD...SorobanVault.${fnName}(${userPublicKey.slice(0, 8)}...)...`;
-
-      const signed = await signWithFreighter(mockXdr);
-      if (!signed) throw new Error('Transaction signing was rejected.');
-
-      // Simulate Stellar ledger confirmation (~3-5 s)
-      await new Promise<void>((res) => setTimeout(res, 2500));
-
-      const hash = `0x${Array.from({ length: 64 }, () =>
-        Math.floor(Math.random() * 16).toString(16)
-      ).join('')}`;
-      setTxHash(hash);
-
-      // Optimistic dashboard update: reflect new balance immediately
-      const newBalance = Math.max(0, balance - numAmount);
+      const { txHash, newBalance } = await executeWithdrawal(userPublicKey, numAmount, isWithdrawAll);
+      setTxHash(txHash);
       onSuccess?.(newBalance);
 
       setStep('success');
@@ -107,7 +91,7 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
       setErrorMsg(message);
       setStep('error');
     }
-  }, [userPublicKey, isWithdrawAll, numAmount, balance, onSuccess]);
+  }, [userPublicKey, isWithdrawAll, numAmount, onSuccess]);
 
   const handleClose = () => {
     setStep('input');
@@ -330,8 +314,17 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
               {txHash.substring(0, 14)}…{txHash.substring(txHash.length - 10)}
             </p>
             <p className="text-xs text-emerald-400 bg-emerald-500/10 py-2 px-3 rounded-lg border border-emerald-500/20 mb-6">
-              Confirmed in ~3.8 seconds on Stellar Network
+              Confirmed on Stellar Network
             </p>
+            <a
+              href={explorerUrl(txHash)}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-block text-xs text-indigo-300 underline mb-5"
+              aria-label="View on Stellar Expert"
+            >
+              View transaction on Stellar Expert
+            </a>
             <button
               onClick={handleClose}
               className="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold py-3 rounded-xl transition-all"

@@ -188,6 +188,29 @@ export async function previewDepositToShares(
   return fromRawUnits(rawShares);
 }
 
+/** Simulate preview_withdraw against Soroban and return shares to be burned. */
+export async function previewWithdrawShares(publicKey: string, amountUsdc: number): Promise<number> {
+  const server = getServer();
+  const account = await server.getAccount(publicKey);
+  const tx = new TransactionBuilder(account, {
+    fee: '100',
+    networkPassphrase: NETWORK_PASSPHRASE,
+  })
+    .addOperation(getContract().call(
+      'preview_withdraw',
+      nativeToScVal(toRawUnits(amountUsdc), { type: 'i128' }),
+    ))
+    .setTimeout(30)
+    .build();
+  const simulation = await server.simulateTransaction(tx);
+  if (SorobanRpc.Api.isSimulationError(simulation)) {
+    throw new Error((simulation as SorobanRpc.Api.SimulateTransactionErrorResponse).error ?? 'Withdrawal preview failed');
+  }
+  const result = (simulation as SorobanRpc.Api.SimulateTransactionSuccessResponse).result;
+  if (!result) throw new Error('Withdrawal preview returned no result');
+  return fromRawUnits(scValToNative(result.retval) as bigint);
+}
+
 // ─── Build + sign helpers ─────────────────────────────────────────────────────
 
 /**
@@ -267,7 +290,34 @@ async function submitAndConfirm(signedXdr: string): Promise<string> {
     throw new Error('Transaction timed out — it may still be pending. Check the explorer.');
   }
 
+  if (getResp.status !== SorobanRpc.Api.GetTransactionStatus.SUCCESS) {
+    throw new Error('Transaction was submitted but has not been confirmed yet. Check the explorer before retrying.');
+  }
+
   return sendResp.hash;
+}
+
+/** Submit a real partial or full withdrawal and wait for ledger confirmation. */
+export async function executeWithdrawal(
+  publicKey: string,
+  amountUsdc: number,
+  withdrawAll: boolean,
+): Promise<{ txHash: string; newBalance: number }> {
+  if (!publicKey) throw new Error('Connect the wallet that owns this vault position.');
+  if (!withdrawAll && (!Number.isFinite(amountUsdc) || amountUsdc <= 0)) {
+    throw new Error('Enter a withdrawal amount greater than zero.');
+  }
+  const contract = getContract();
+  const operation = withdrawAll
+    ? contract.call('withdraw_all', new Address(publicKey).toScVal())
+    : contract.call(
+      'withdraw',
+      new Address(publicKey).toScVal(),
+      nativeToScVal(toRawUnits(amountUsdc), { type: 'i128' }),
+    );
+  const signedXdr = await buildAndSignTx(publicKey, operation);
+  const txHash = await submitAndConfirm(signedXdr);
+  return { txHash, newBalance: await getVaultBalance(publicKey) };
 }
 
 // ─── Deposit flow ─────────────────────────────────────────────────────────────
