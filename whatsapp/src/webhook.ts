@@ -213,18 +213,13 @@ export async function handleWhatsAppWebhook(
     if (digits.length === 6) {
       const result = verifyOTP(phoneHash, digits);
       if (result.success) {
-        updateState(phoneHash, UserState.VERIFIED);
-        const wallet = createCustodialWallet(phoneHash);
-
+        updateState(phoneHash, UserState.AWAITING_CUSTODIAL_CONSENT);
         twiml.message(
-          `✅ Phone verified!\n\n` +
-            `🔒 Your Stellar wallet:\n` +
-            `${wallet.publicKey.substring(0, 8)}…${wallet.publicKey.slice(-8)}\n\n` +
-            `Try:\n` +
-            `• "deposit 100 USDC"\n` +
-            `• "what's my balance"\n` +
-            `• "withdraw 50"\n` +
-            `• "switch to growth"`,
+          `✅ Phone verified. Before we create a wallet, please review how this WhatsApp account works.\n\n` +
+            `NeuroWealth creates and operates a custodial Stellar wallet for you. The signing key is encrypted and held by NeuroWealth's backend; you do not control or receive the secret key. Transfers are signed by the service after your WhatsApp request.\n\n` +
+            `Recovery is limited: if the service loses the key or cannot verify your phone, it may not be possible to recover wallet access. Keep your phone number secure and contact support before changing it. Do not send passwords, OTPs, or secret keys in chat.\n\n` +
+            `After setup you can ask for help, check balance or earnings, deposit USDC, withdraw USDC, and change your strategy. To fund the wallet, first create it, then send USDC on Stellar to the address we provide.\n\n` +
+            `Reply AGREE to create this custodial wallet, or DECLINE to stop. Reply HELP for these details again.`,
         );
       } else {
         twiml.message(`❌ ${result.message}`);
@@ -233,6 +228,34 @@ export async function handleWhatsAppWebhook(
       twiml.message(
         'Please enter the 6-digit verification code (digits only).',
       );
+    }
+
+    const outbound = twiml.toString();
+    await logMessageToDb(phoneHash, 'outbound', outbound);
+    res.type('text/xml').send(outbound);
+    return;
+  }
+
+  if (session.state === UserState.AWAITING_CUSTODIAL_CONSENT) {
+    const answer = messageBody.toLowerCase().trim();
+    if (answer === 'help') {
+      twiml.message(
+        `This WhatsApp service uses a custodial Stellar wallet: NeuroWealth holds the encrypted signing key and signs transactions after your requests. Recovery can be limited if the key or verified phone access is lost. Once created, supported actions are balance, earnings, deposit USDC, withdraw USDC, and change strategy. Fund it by sending USDC on Stellar to the wallet address shown after setup.\n\nReply AGREE to create the wallet or DECLINE to stop.`,
+      );
+    } else if (answer === 'agree' || answer === 'yes') {
+      const wallet = createCustodialWallet(phoneHash);
+      updateState(phoneHash, UserState.VERIFIED);
+      twiml.message(
+        `✅ Custodial wallet created on Stellar.\n` +
+          `Wallet address: ${wallet.publicKey}\n\n` +
+          `To fund it, send USDC on the Stellar network to this address. Check the network and token before sending; transfers on the wrong network or asset may be unrecoverable.\n\n` +
+          `You can now ask for help, check your balance or earnings, deposit USDC, withdraw USDC, or change your strategy.`,
+      );
+    } else if (answer === 'decline' || answer === 'no') {
+      updateState(phoneHash, UserState.UNVERIFIED);
+      twiml.message('No wallet was created. You can message START if you want to begin again.');
+    } else {
+      twiml.message('No wallet has been created yet. Reply AGREE to accept custodial wallet use, DECLINE to stop, or HELP for details.');
     }
 
     const outbound = twiml.toString();

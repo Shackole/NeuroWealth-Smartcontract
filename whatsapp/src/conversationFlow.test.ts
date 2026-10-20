@@ -23,7 +23,8 @@ import {
 } from './webhook';
 import { hashPhoneNumber } from './cryptoUtils';
 import { getSession, updateState, UserState } from './stateManager';
-import { createCustodialWallet } from './walletService';
+import { createCustodialWallet, getWallet } from './walletService';
+import { generateOTP } from './otpService';
 
 // ── Test harness ─────────────────────────────────────────────────────────────
 let passed = 0;
@@ -130,6 +131,44 @@ async function runAllTests() {
       process.env.TWILIO_AUTH_TOKEN = savedToken;
       process.env.WEBHOOK_BASE_URL = savedBaseUrl;
     }
+  });
+
+  await runTest('verified phone must consent before custodial wallet creation', async () => {
+    const fromPhone = 'whatsapp:+15550001112';
+    const phoneHash = hashPhoneNumber(fromPhone);
+    updateState(phoneHash, UserState.AWAITING_OTP);
+    const otp = generateOTP(phoneHash);
+    const verifyRes = createMockRes();
+    await handleWhatsAppWebhook(
+      createMockReq({ From: fromPhone, Body: otp }),
+      verifyRes as unknown as Response,
+    );
+
+    assert.strictEqual(getSession(phoneHash).state, UserState.AWAITING_CUSTODIAL_CONSENT);
+    assert.strictEqual(getWallet(phoneHash), undefined, 'OTP verification must not create a wallet');
+    assert.ok(String(verifyRes.bodyData).includes('Reply AGREE'));
+
+    const agreeRes = createMockRes();
+    await handleWhatsAppWebhook(
+      createMockReq({ From: fromPhone, Body: 'AGREE' }),
+      agreeRes as unknown as Response,
+    );
+    assert.strictEqual(getSession(phoneHash).state, UserState.VERIFIED);
+    assert.ok(getWallet(phoneHash), 'explicit consent creates the custodial wallet');
+  });
+
+  await runTest('declining custodial consent leaves wallet uncreated', async () => {
+    const fromPhone = 'whatsapp:+15550001113';
+    const phoneHash = hashPhoneNumber(fromPhone);
+    updateState(phoneHash, UserState.AWAITING_CUSTODIAL_CONSENT);
+    const res = createMockRes();
+    await handleWhatsAppWebhook(
+      createMockReq({ From: fromPhone, Body: 'DECLINE' }),
+      res as unknown as Response,
+    );
+    assert.strictEqual(getSession(phoneHash).state, UserState.UNVERIFIED);
+    assert.strictEqual(getWallet(phoneHash), undefined);
+    assert.ok(String(res.bodyData).includes('No wallet was created'));
   });
 
   // ── Scenario 2: New user message -> OTP flow triggered ───────────────────────

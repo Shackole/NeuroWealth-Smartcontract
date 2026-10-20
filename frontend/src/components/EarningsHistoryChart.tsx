@@ -16,6 +16,7 @@ import { useQuery } from '@tanstack/react-query';
 import { TrendingUp, BarChart2 } from 'lucide-react';
 import { getEarningsHistory, type EarningsDataPoint } from '@/lib/database';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { useReducedMotion } from '@/lib/useReducedMotion';
 
 // Stable QueryClient (created once per page load; avoids reinit on re-renders)
 const qc = new QueryClient();
@@ -79,6 +80,7 @@ interface ChartInnerProps {
 }
 
 function ChartInner({ publicKey }: ChartInnerProps) {
+  const reducedMotion = useReducedMotion();
   const [range, setRange] = React.useState<Range>('1M');
 
   const { data: rawData = [], isLoading } = useQuery({
@@ -152,9 +154,9 @@ function ChartInner({ publicKey }: ChartInnerProps) {
       ) : (
         <motion.div
           key={range}
-          initial={{ opacity: 0, y: 12 }}
+          initial={reducedMotion ? false : { opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.4, ease: 'easeOut' }}
+          transition={{ duration: reducedMotion ? 0 : 0.4, ease: 'easeOut' }}
           className="h-72 w-full"
         >
           <ResponsiveContainer width="100%" height="100%">
@@ -207,7 +209,8 @@ function ChartInner({ publicKey }: ChartInnerProps) {
                 dot={false}
                 activeDot={{ r: 5, fill: '#10b981', stroke: '#064e3b' }}
                 name="Cumulative Earnings"
-                animationDuration={600}
+                isAnimationActive={!reducedMotion}
+                animationDuration={reducedMotion ? 0 : 600}
               />
             </AreaChart>
           </ResponsiveContainer>

@@ -10,6 +10,7 @@ import {
   Tooltip,
   CartesianGrid,
 } from 'recharts';
+import { useReducedMotion } from '@/lib/useReducedMotion';
 
 export interface RateDataPoint {
   date: string;
@@ -17,6 +18,7 @@ export interface RateDataPoint {
 }
 
 export function ExchangeRateChart({ data }: { data: RateDataPoint[] }) {
+  const reducedMotion = useReducedMotion();
   return (
     <div className="h-64 w-full">
       <ResponsiveContainer width="100%" height="100%">
@@ -54,6 +56,7 @@ export function ExchangeRateChart({ data }: { data: RateDataPoint[] }) {
             strokeWidth={2.5}
             dot={false}
             activeDot={{ r: 4, fill: '#10b981' }}
+            isAnimationActive={!reducedMotion}
           />
         </LineChart>
       </ResponsiveContainer>

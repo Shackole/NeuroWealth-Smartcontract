@@ -44,6 +44,8 @@ import {
   explorerUrl,
   fromRawUnits,
 } from '@/lib/vaultHelpers';
+import { TransactionIdentity } from './TransactionIdentity';
+import { useWalletStore } from '@/lib/walletStore';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -93,6 +95,7 @@ const STRATEGY_META: Record<
 // ─── Preview Modal ────────────────────────────────────────────────────────────
 
 interface PreviewModalProps {
+  userPublicKey: string;
   amount: number;
   strategy: Strategy;
   estimatedShares: number | null;
@@ -103,6 +106,7 @@ interface PreviewModalProps {
 }
 
 const PreviewModal: React.FC<PreviewModalProps> = ({
+  userPublicKey,
   amount,
   strategy,
   estimatedShares,
@@ -133,6 +137,10 @@ const PreviewModal: React.FC<PreviewModalProps> = ({
           >
             <X size={18} />
           </button>
+        </div>
+
+        <div className="mb-5">
+          <TransactionIdentity publicKey={userPublicKey} />
         </div>
 
         {/* Summary rows */}
@@ -359,6 +367,7 @@ export const DepositForm: React.FC<DepositFormProps> = ({
   userPublicKey,
   onDepositSuccess,
 }) => {
+  const currentWalletKey = useWalletStore((state) => state.publicKey);
   // Form
   const {
     register,
@@ -410,6 +419,13 @@ export const DepositForm: React.FC<DepositFormProps> = ({
     };
   }, [isOpen, userPublicKey]);
 
+  // Any wallet change invalidates a preview created for the previous signer.
+  useEffect(() => {
+    setShowPreview(false);
+    setEstimatedShares(null);
+    if (view !== 'signing') setView('form');
+  }, [userPublicKey]);
+
   // ── Fetch preview shares when amount changes ─────────────────────────────
   const fetchPreview = useCallback(
     async (amount: string) => {
@@ -451,6 +467,12 @@ export const DepositForm: React.FC<DepositFormProps> = ({
 
   // ── Execute deposit ───────────────────────────────────────────────────────
   const handleConfirmDeposit = async () => {
+    if (!userPublicKey || (currentWalletKey && currentWalletKey !== userPublicKey)) {
+      setShowPreview(false);
+      setErrorMessage('The connected account changed. Review the deposit again with the current wallet.');
+      setView('error');
+      return;
+    }
     setShowPreview(false);
     setView('signing');
     setSigningStep(0);
@@ -727,6 +749,7 @@ export const DepositForm: React.FC<DepositFormProps> = ({
       {/* Preview modal (layered on top of the main modal) */}
       {showPreview && (
         <PreviewModal
+            userPublicKey={userPublicKey}
           amount={numAmount}
           strategy={watchedStrategy}
           estimatedShares={estimatedShares}

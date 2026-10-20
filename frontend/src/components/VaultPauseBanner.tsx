@@ -14,7 +14,11 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertTriangle, X } from 'lucide-react';
 
 export interface VaultStatus {
+  availability: 'available' | 'unavailable';
+  mode: 'normal' | 'pause' | 'emergency' | 'recovery' | 'unknown';
   paused: boolean;
+  deposits_allowed: boolean | null;
+  withdrawals_allowed: boolean | null;
   reason: string | null;
   expected_resume: string | null;
 }
@@ -78,14 +82,23 @@ export function VaultPauseBanner() {
     sessionStorage.setItem(SESSION_KEY, '1');
   };
 
-  if (!status?.paused || dismissed) return null;
+  const activeStatus = status && (status.paused || status.mode === 'emergency' || status.mode === 'recovery');
+  if (!status || (status.availability === 'available' && !activeStatus) || dismissed) return null;
 
   const resumeIn = formatResume(status.expected_resume);
+  const unavailable = status.availability === 'unavailable';
+  const heading = unavailable
+    ? 'Vault status is temporarily unavailable'
+    : status.mode === 'emergency'
+      ? 'Emergency pause is active'
+      : status.mode === 'recovery'
+        ? 'Vault recovery is in progress'
+        : 'Vault is paused';
 
   return (
     <div
-      role="alert"
-      aria-live="assertive"
+      role="status"
+      aria-live="polite"
       aria-atomic="true"
       className="sticky top-0 z-50 w-full bg-amber-500/95 text-amber-950 backdrop-blur-sm"
       style={{ boxShadow: '0 2px 8px rgba(0,0,0,0.3)' }}
@@ -99,26 +112,33 @@ export function VaultPauseBanner() {
           />
           <div className="min-w-0">
             <p className="font-bold text-sm leading-tight">
-              Vault is temporarily paused — withdrawals and deposits are disabled.
-              Funds are safe.
+              {heading}
             </p>
             <p className="text-xs mt-0.5 opacity-80 leading-tight">
-              {status.reason
-                ? `Reason: ${status.reason}.`
-                : 'The vault owner has triggered an emergency pause.'}
-              {resumeIn && ` Expected resolution: ${resumeIn}.`}
+              {unavailable
+                ? 'We cannot currently confirm which vault actions are available. Check again shortly; this status does not mean your funds are locked.'
+                : <>
+                    {status.reason ? `Reason: ${status.reason}. ` : 'Some vault actions may be restricted. '}
+                    Deposits {status.deposits_allowed === false ? 'are unavailable' : status.deposits_allowed === true ? 'remain available' : 'availability is unknown'}; withdrawals {status.withdrawals_allowed === false ? 'are unavailable' : status.withdrawals_allowed === true ? 'remain available' : 'availability is unknown'}. Funds are not necessarily locked by a pause.
+                    {resumeIn && ` Expected resolution: ${resumeIn}.`}
+                  </>}
             </p>
+            {status.withdrawals_allowed === true && (
+              <a href="/withdraw" className="inline-flex mt-2 text-xs font-semibold underline underline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-900">
+                Review available withdrawals
+              </a>
+            )}
           </div>
         </div>
 
-        <button
+        {!unavailable && <button
           type="button"
           onClick={handleDismiss}
           className="flex-shrink-0 p-1 rounded hover:bg-amber-600/30 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-900"
           aria-label="Dismiss pause notification"
         >
           <X size={16} aria-hidden="true" />
-        </button>
+        </button>}
       </div>
     </div>
   );
