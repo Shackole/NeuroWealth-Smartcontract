@@ -91,17 +91,20 @@ Bot:   💸 Sending deposit request...
        I'll notify you the moment it arrives and starts earning. ✅
 ```
 
-> **Note:** For WhatsApp-onboarded users, NeuroWealth manages a **custodial** Stellar
-> keypair on your behalf. Your wallet address is unique to you, but the secret key is
-> held by NeuroWealth's backend until non-custodial key export is supported.
-> See the [FAQ](#faq) for more on custody and security.
+> **Custody and prototype status:** WhatsApp uses a server-managed, custodial
+> Stellar keypair. The current implementation keeps encrypted wallet records
+> in process memory, so a restart loses them; the key encryption code also
+> includes an unsafe development fallback. Do not use this prototype for real
+> funds. Phone verification is not key recovery or proof of wallet ownership.
+> See [`SECURITY.md`](../SECURITY.md) for the full trust boundary.
 
 ---
 
 ## Supported Commands
 
-The bot understands natural language — you do not need to use exact phrases. These
-examples show the intent and the types of variations that work.
+The intended bot interface accepts natural-language commands. The examples
+below describe the prototype's intended intents; they do not guarantee that a
+live transfer or yield operation is available.
 
 | Intent | Example Messages |
 |--------|-----------------|
