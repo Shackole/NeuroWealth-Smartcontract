@@ -27,6 +27,7 @@ const REFRESH_INTERVAL_MS = 30_000; // 30 seconds
  */
 async function fetchPortfolio(
   _key: string,
+  _network: string,
   publicKey: string
 ): Promise<PortfolioData> {
   const [vaultState, earnings, chartData, transactions] = await Promise.all([
@@ -52,16 +53,16 @@ const EMPTY_DATA: PortfolioData = {
  * - Revalidates on window focus.
  * - Exposes `isLoading`, `error`, and a `refresh` function.
  */
-export function usePortfolio(publicKey: string | null) {
+export function usePortfolio(publicKey: string | null, network = 'unknown') {
   const { data, error, isLoading, mutate } = useSWR<PortfolioData>(
-    publicKey ? ['portfolio', publicKey] : null,
-    ([_key, pk]: [string, string]) => fetchPortfolio(_key, pk),
+    publicKey ? ['portfolio', network, publicKey] : null,
+    ([_key, activeNetwork, pk]: [string, string, string]) => fetchPortfolio(_key, activeNetwork, pk),
     {
       refreshInterval: REFRESH_INTERVAL_MS,
       revalidateOnFocus: true,
       dedupingInterval: 5_000,
-      // Keep previous data while revalidating so the UI doesn't flash blank
-      keepPreviousData: true,
+      // Never carry an old account/network's portfolio into the new cache key.
+      keepPreviousData: false,
     }
   );
 

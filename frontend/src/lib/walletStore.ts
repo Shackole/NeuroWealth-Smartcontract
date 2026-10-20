@@ -13,6 +13,8 @@ export interface WalletState {
   isFreighterInstalled: boolean;
   networkMismatch: boolean;
   error: string | null;
+  /** Changes whenever the account/network context changes. */
+  revision: number;
 
   setPublicKey: (key: string | null) => void;
   setNetwork: (network: NetworkType) => void;
@@ -37,13 +39,21 @@ export const useWalletStore = create<WalletState>()(
       isFreighterInstalled: false,
       networkMismatch: false,
       error: null,
+      revision: 0,
 
-      setPublicKey: (key) => set({ publicKey: key }),
-      setNetwork: (network) =>
-        set({
-          network,
-          networkMismatch: network !== 'unknown' && network !== EXPECTED_NETWORK,
-        }),
+      setPublicKey: (key) => set((state) => key === state.publicKey ? {} : ({
+        publicKey: key,
+        xlmBalance: null,
+        error: null,
+        revision: state.revision + 1,
+      })),
+      setNetwork: (network) => set((state) => network === state.network ? {} : ({
+        network,
+        xlmBalance: null,
+        error: null,
+        networkMismatch: network !== 'unknown' && network !== EXPECTED_NETWORK,
+        revision: state.revision + 1,
+      })),
       setXlmBalance: (balance) => set({ xlmBalance: balance }),
       setIsConnecting: (val) => set({ isConnecting: val }),
       setIsFreighterInstalled: (val) => set({ isFreighterInstalled: val }),
@@ -51,13 +61,15 @@ export const useWalletStore = create<WalletState>()(
       setError: (err) => set({ error: err }),
 
       disconnect: () =>
-        set({
+        set((state) => ({
           publicKey: null,
           xlmBalance: null,
           network: 'unknown',
           networkMismatch: false,
           error: null,
-        }),
+          isConnecting: false,
+          revision: state.revision + 1,
+        })),
     }),
     {
       name: 'neurowealth-wallet',

@@ -1,8 +1,9 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { ArrowUpRight, Loader2, CheckCircle2 } from 'lucide-react';
 import { withdrawFromVault, withdrawAllFromVault } from '@/lib/contract';
+import { parseUsdcAmount } from '@/lib/moneyInput';
 
 export interface WithdrawFormProps {
   userPublicKey: string | null;
@@ -22,9 +23,23 @@ export const WithdrawForm: React.FC<WithdrawFormProps> = ({
   const [actionType, setActionType] = useState<'withdraw' | 'withdraw_all' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [successTx, setSuccessTx] = useState<string | null>(null);
+  const operationGeneration = useRef(0);
+  const currentAccount = useRef(userPublicKey);
 
-  const numAmount = parseFloat(amount);
-  const isPositive = !isNaN(numAmount) && numAmount > 0;
+  useEffect(() => {
+    if (currentAccount.current === userPublicKey) return;
+    currentAccount.current = userPublicKey;
+    operationGeneration.current += 1;
+    setAmount('');
+    setLoading(false);
+    setActionType(null);
+    setError(null);
+    setSuccessTx(null);
+  }, [userPublicKey]);
+
+  const parsedAmount = parseUsdcAmount(amount);
+  const numAmount = parsedAmount ?? 0;
+  const isPositive = parsedAmount !== null && numAmount > 0;
   const isWithinBalance = isPositive && numAmount <= balance;
   const canWithdrawPartial = isWithinBalance && !!userPublicKey;
   const canWithdrawAll = balance > 0 && !!userPublicKey;
@@ -38,18 +53,24 @@ export const WithdrawForm: React.FC<WithdrawFormProps> = ({
     setLoading(true);
     setActionType('withdraw');
     setError(null);
+    const account = userPublicKey;
+    const generation = ++operationGeneration.current;
 
     try {
-      const res = await withdrawFromVault(userPublicKey!, numAmount);
+      const res = await withdrawFromVault(account!, numAmount);
+      if (generation !== operationGeneration.current || account !== currentAccount.current) return;
       if (res.success && res.txHash) {
         setSuccessTx(res.txHash);
         if (onSuccess) onSuccess(res.txHash);
       }
     } catch (err: any) {
+      if (generation !== operationGeneration.current || account !== currentAccount.current) return;
       setError(err?.message || 'Withdrawal failed');
     } finally {
-      setLoading(false);
-      setActionType(null);
+      if (generation === operationGeneration.current) {
+        setLoading(false);
+        setActionType(null);
+      }
     }
   };
 
@@ -59,18 +80,24 @@ export const WithdrawForm: React.FC<WithdrawFormProps> = ({
     setLoading(true);
     setActionType('withdraw_all');
     setError(null);
+    const account = userPublicKey;
+    const generation = ++operationGeneration.current;
 
     try {
-      const res = await withdrawAllFromVault(userPublicKey!);
+      const res = await withdrawAllFromVault(account!);
+      if (generation !== operationGeneration.current || account !== currentAccount.current) return;
       if (res.success && res.txHash) {
         setSuccessTx(res.txHash);
         if (onSuccess) onSuccess(res.txHash);
       }
     } catch (err: any) {
+      if (generation !== operationGeneration.current || account !== currentAccount.current) return;
       setError(err?.message || 'Withdraw All failed');
     } finally {
-      setLoading(false);
-      setActionType(null);
+      if (generation === operationGeneration.current) {
+        setLoading(false);
+        setActionType(null);
+      }
     }
   };
 
@@ -100,10 +127,8 @@ export const WithdrawForm: React.FC<WithdrawFormProps> = ({
         <div className="relative">
           <input
             id="withdraw-amount-input"
-            type="number"
-            step="0.01"
-            min="0.01"
-            max={balance}
+            type="text"
+            inputMode="decimal"
             value={amount}
             onChange={(e) => setAmount(e.target.value)}
             placeholder="0.00"

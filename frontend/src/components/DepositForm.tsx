@@ -13,7 +13,7 @@
  *   7. Failure state with human-readable error messages
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useForm, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import {
@@ -44,6 +44,8 @@ import {
   explorerUrl,
   fromRawUnits,
 } from '@/lib/vaultHelpers';
+import { useDialogFocus } from '@/lib/useDialogFocus';
+import { parseUsdcAmount } from '@/lib/moneyInput';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -111,6 +113,8 @@ const PreviewModal: React.FC<PreviewModalProps> = ({
   onCancel,
   isSigning,
 }) => {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialogFocus(dialogRef, true, isSigning ? undefined : onCancel);
   const meta = STRATEGY_META[strategy];
   const Icon: LucideIcon = meta.icon;
 
@@ -120,8 +124,9 @@ const PreviewModal: React.FC<PreviewModalProps> = ({
       role="dialog"
       aria-modal="true"
       aria-labelledby="preview-modal-title"
+      tabIndex={-1}
     >
-      <div className="w-full max-w-sm rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl animate-in fade-in zoom-in duration-150">
+      <div ref={dialogRef} className="w-full max-w-sm rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl animate-in fade-in zoom-in duration-150">
         <div className="flex items-center justify-between mb-5">
           <h3 id="preview-modal-title" className="text-base font-bold text-white">
             Transaction Preview
@@ -359,6 +364,12 @@ export const DepositForm: React.FC<DepositFormProps> = ({
   userPublicKey,
   onDepositSuccess,
 }) => {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const operationGeneration = useRef(0);
+  const previewGeneration = useRef(0);
+  const lastAccount = useRef(userPublicKey);
+  const activeAccount = useRef(userPublicKey);
+  activeAccount.current = userPublicKey;
   // Form
   const {
     register,
@@ -388,6 +399,34 @@ export const DepositForm: React.FC<DepositFormProps> = ({
   const [depositResult, setDepositResult] = useState<{ depositHash: string; strategyHash?: string } | null>(null);
   const [errorMessage, setErrorMessage] = useState<string>('');
 
+  const handleClose = useCallback(() => {
+    operationGeneration.current += 1;
+    previewGeneration.current += 1;
+    reset();
+    setView('form');
+    setShowPreview(false);
+    setEstimatedShares(null);
+    setDepositResult(null);
+    setErrorMessage('');
+    setSigningStep(0);
+    onClose();
+  }, [onClose, reset]);
+  useDialogFocus(dialogRef, isOpen && !showPreview, handleClose);
+
+  useEffect(() => {
+    if (lastAccount.current === userPublicKey) return;
+    lastAccount.current = userPublicKey;
+    operationGeneration.current += 1;
+    previewGeneration.current += 1;
+    reset({ amount: '', strategy: 'Balanced' });
+    setView('form');
+    setShowPreview(false);
+    setEstimatedShares(null);
+    setDepositResult(null);
+    setErrorMessage('');
+    setUsdcBalance(0);
+  }, [userPublicKey, reset]);
+
   // ── Load USDC balance when modal opens ───────────────────────────────────
   useEffect(() => {
     if (!isOpen || !userPublicKey) return;
@@ -412,27 +451,30 @@ export const DepositForm: React.FC<DepositFormProps> = ({
 
   // ── Fetch preview shares when amount changes ─────────────────────────────
   const fetchPreview = useCallback(
-    async (amount: string) => {
-      const num = parseFloat(amount);
-      if (!num || num <= 0 || !userPublicKey) {
+    async (amount: string, generation: number) => {
+      const num = parseUsdcAmount(amount);
+      if (num === null || num <= 0 || !userPublicKey) {
         setEstimatedShares(null);
         return;
       }
       setPreviewLoading(true);
       try {
         const shares = await previewDepositToShares(userPublicKey, num);
+        if (generation !== previewGeneration.current) return;
         setEstimatedShares(shares);
       } catch {
+        if (generation !== previewGeneration.current) return;
         setEstimatedShares(null);
       } finally {
-        setPreviewLoading(false);
+        if (generation === previewGeneration.current) setPreviewLoading(false);
       }
     },
     [userPublicKey],
   );
 
   useEffect(() => {
-    const timer = setTimeout(() => fetchPreview(watchedAmount), 600);
+    const generation = ++previewGeneration.current;
+    const timer = setTimeout(() => fetchPreview(watchedAmount, generation), 600);
     return () => clearTimeout(timer);
   }, [watchedAmount, fetchPreview]);
 
@@ -451,48 +493,46 @@ export const DepositForm: React.FC<DepositFormProps> = ({
 
   // ── Execute deposit ───────────────────────────────────────────────────────
   const handleConfirmDeposit = async () => {
+    const account = userPublicKey;
+    const generation = ++operationGeneration.current;
     setShowPreview(false);
     setView('signing');
     setSigningStep(0);
 
-    const amount = parseFloat(watchedAmount);
+    const amount = parseUsdcAmount(watchedAmount);
+    if (amount === null) return;
     const strategy = watchedStrategy;
 
+    let progressInterval: ReturnType<typeof setInterval> | undefined;
     try {
       // Simulate progress steps during signing
-      const progressInterval = setInterval(() => {
+      progressInterval = setInterval(() => {
         setSigningStep((s) => Math.min(s + 1, SIGNING_STEPS.length - 2));
       }, 2500);
 
-      const result = await executeDeposit(userPublicKey, amount, strategy);
+      const result = await executeDeposit(account, amount, strategy);
 
       clearInterval(progressInterval);
+      if (generation !== operationGeneration.current || account !== activeAccount.current) return;
       setSigningStep(SIGNING_STEPS.length - 1);
 
       // Brief pause so the last step message is visible
       await new Promise((r) => setTimeout(r, 400));
+      if (generation !== operationGeneration.current || account !== activeAccount.current) return;
 
       setDepositResult(result);
       setView('success');
       onDepositSuccess?.();
     } catch (err) {
+      if (generation !== operationGeneration.current || account !== activeAccount.current) return;
       setErrorMessage(humanizeError(err));
       setView('error');
+    } finally {
+      if (progressInterval) clearInterval(progressInterval);
     }
   };
 
   // ── Reset and close ───────────────────────────────────────────────────────
-  const handleClose = () => {
-    reset();
-    setView('form');
-    setShowPreview(false);
-    setEstimatedShares(null);
-    setDepositResult(null);
-    setErrorMessage('');
-    setSigningStep(0);
-    onClose();
-  };
-
   const handleRetry = () => {
     setView('form');
     setErrorMessage('');
@@ -501,7 +541,7 @@ export const DepositForm: React.FC<DepositFormProps> = ({
 
   if (!isOpen) return null;
 
-  const numAmount = parseFloat(watchedAmount) || 0;
+  const numAmount = parseUsdcAmount(watchedAmount) ?? 0;
   const strategyMeta = STRATEGY_META[watchedStrategy];
   const StrategyIcon = strategyMeta.icon;
 
@@ -519,6 +559,8 @@ export const DepositForm: React.FC<DepositFormProps> = ({
           role="dialog"
           aria-modal="true"
           aria-labelledby="deposit-modal-title"
+          tabIndex={-1}
+          ref={dialogRef}
         >
           {/* Close button — visible except during signing */}
           {view !== 'signing' && (

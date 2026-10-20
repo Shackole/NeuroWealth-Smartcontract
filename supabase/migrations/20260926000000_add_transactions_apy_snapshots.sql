@@ -127,14 +127,37 @@ END $$;
 ALTER TABLE "transactions"  ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "apy_snapshots" ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY IF NOT EXISTS "transactions_select_own" ON "transactions"
-    FOR SELECT USING (user_id = auth.uid()::uuid);
-
-CREATE POLICY IF NOT EXISTS "apy_snapshots_select_all" ON "apy_snapshots"
-    FOR SELECT USING (true);
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_policies
+        WHERE schemaname = 'public' AND tablename = 'transactions'
+          AND policyname = 'transactions_select_own'
+    ) THEN
+        CREATE POLICY "transactions_select_own" ON "transactions"
+            FOR SELECT USING (user_id = auth.uid()::uuid);
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_policies
+        WHERE schemaname = 'public' AND tablename = 'apy_snapshots'
+          AND policyname = 'apy_snapshots_select_all'
+    ) THEN
+        CREATE POLICY "apy_snapshots_select_all" ON "apy_snapshots"
+            FOR SELECT USING (true);
+    END IF;
+END $$;
 
 -- ─────────────────────────────────────────────
 -- Realtime subscriptions
 -- ─────────────────────────────────────────────
-ALTER PUBLICATION supabase_realtime ADD TABLE "transactions";
-ALTER PUBLICATION supabase_realtime ADD TABLE "apy_snapshots";
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_publication WHERE pubname = 'supabase_realtime') THEN
+        IF NOT EXISTS (SELECT 1 FROM pg_publication_tables WHERE pubname = 'supabase_realtime' AND schemaname = 'public' AND tablename = 'transactions') THEN
+            EXECUTE 'ALTER PUBLICATION supabase_realtime ADD TABLE "transactions"';
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_publication_tables WHERE pubname = 'supabase_realtime' AND schemaname = 'public' AND tablename = 'apy_snapshots') THEN
+            EXECUTE 'ALTER PUBLICATION supabase_realtime ADD TABLE "apy_snapshots"';
+        END IF;
+    END IF;
+END $$;

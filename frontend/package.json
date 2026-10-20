@@ -7,6 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
+    "check:i18n": "node scripts/check-i18n-keys.js && node scripts/check-transaction-locales.js",
     "test:e2e": "playwright test"
   },
   "dependencies": {
