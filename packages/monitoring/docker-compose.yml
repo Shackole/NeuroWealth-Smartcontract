@@ -2,7 +2,9 @@ version: "3.8"
 
 services:
   neurowealth-monitor:
-    build: .
+    build:
+      context: ../..
+      dockerfile: packages/monitoring/Dockerfile
     container_name: neurowealth-monitor
     environment:
       VAULT_CONTRACT_ID: ${VAULT_CONTRACT_ID}

@@ -184,3 +184,24 @@ Remote state is stored in S3 with DynamoDB locking:
 
 State contains sensitive values (KMS key IDs, Railway service IDs). Never
 commit `.tfstate` files or share state access broadly.
+
+## Monitoring stack limits and recovery
+
+`docker-compose.monitoring.yml` bounds Prometheus to 1 CPU / 512 MiB,
+Alertmanager to 0.5 CPU / 128 MiB, and Grafana to 0.5 CPU / 256 MiB. Process
+limits and JSON log rotation also cap local host consumption. Prometheus,
+Alertmanager, and Grafana use named volumes for their state; `docker compose
+down` preserves the volumes, while `docker compose down -v` deletes them.
+
+All three services restart with `unless-stopped` and have health checks. Review
+their current status with `docker compose -f infra/docker-compose.monitoring.yml
+ps`; inspect a specific service with
+`docker inspect --format '{{.State.Health.Status}}' <container>`. An `unhealthy`
+service blocks dependent Grafana startup where configured and must be treated
+as an alert until its cause is corrected. Prometheus scrape targets and
+Alertmanager delivery health are also visible in their respective UIs.
+
+For an isolated staging recovery drill, use
+[`docs/STAGING_RECOVERY_EXERCISE.md`](../docs/STAGING_RECOVERY_EXERCISE.md).
+Do not declare the event-replay portion complete while the runbook's durable
+checkpoint gate is blocked.

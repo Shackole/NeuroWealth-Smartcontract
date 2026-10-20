@@ -1,5 +1,8 @@
 # Disaster Recovery & Failover Runbook (#655)
 
+For the staging Redis/database interruption drill and evidence record, see
+[`STAGING_RECOVERY_EXERCISE.md`](STAGING_RECOVERY_EXERCISE.md).
+
 Maximum acceptable downtime (**RTO**): **5 minutes**.
 Recovery point objective (**RPO**): last agent state backup (default: every
 heartbeat, ≤ 15 s stale).
