@@ -11,10 +11,12 @@ name: CD — Vercel Deploy
 # On merge to main:
 #   - Deploys to the production Vercel URL.
 #
-# Prerequisites (GitHub repository secrets):
+# Prerequisites (GitHub Actions environments):
 #   VERCEL_TOKEN          — Vercel personal access token (Settings → Tokens)
 #   VERCEL_ORG_ID         — Found in Vercel project settings
 #   VERCEL_PROJECT_ID     — Found in Vercel project settings
+#   Configure preview values in `vercel-preview` and production values in
+#   `vercel-production`; the production environment should allow only `main`.
 #
 # Optional:
 #   LHCI_GITHUB_APP_TOKEN — Lighthouse CI GitHub App token for rich PR annotations
@@ -37,6 +39,12 @@ permissions:
   contents: read
   pull-requests: write   # needed to post preview URL comment
 
+# Serialize revisions within each ref. Do not cancel an active production
+# deployment; later main revisions remain queued for the same group.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   # ───────────────────────────────────────────────────────────────────────────
   # Build & deploy
@@ -44,6 +52,8 @@ jobs:
   deploy:
     name: Build & Deploy to Vercel
     runs-on: ubuntu-latest
+    environment:
+      name: ${{ github.ref == 'refs/heads/main' && 'vercel-production' || 'vercel-preview' }}
     outputs:
       preview_url: ${{ steps.deploy.outputs.preview_url }}
       is_production: ${{ steps.context.outputs.is_production }}

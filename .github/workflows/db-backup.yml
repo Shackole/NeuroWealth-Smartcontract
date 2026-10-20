@@ -18,6 +18,12 @@ jobs:
     name: Backup PostgreSQL Database
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    environment:
+      name: database-backup
+    permissions:
+      contents: read
+      id-token: write
 
     steps:
       - name: Checkout
@@ -31,16 +37,17 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_DEFAULT_REGION || 'us-east-1' }}
+          role-to-assume: ${{ vars.AWS_BACKUP_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_DEFAULT_REGION || secrets.AWS_DEFAULT_REGION || 'us-east-1' }}
+          role-session-name: database-backup-${{ github.run_id }}
+          role-duration-seconds: 3600
 
       - name: Run backup
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           BACKUP_S3_BUCKET: ${{ secrets.BACKUP_S3_BUCKET }}
           BACKUP_ENCRYPTION_KEY: ${{ secrets.BACKUP_ENCRYPTION_KEY }}
-          AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION || 'us-east-1' }}
+          AWS_DEFAULT_REGION: ${{ vars.AWS_DEFAULT_REGION || secrets.AWS_DEFAULT_REGION || 'us-east-1' }}
         run: |
           chmod +x scripts/backup/backup-db.sh
           ./scripts/backup/backup-db.sh
@@ -48,7 +55,7 @@ jobs:
       - name: Apply retention policy
         env:
           BACKUP_S3_BUCKET: ${{ secrets.BACKUP_S3_BUCKET }}
-          AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION || 'us-east-1' }}
+          AWS_DEFAULT_REGION: ${{ vars.AWS_DEFAULT_REGION || secrets.AWS_DEFAULT_REGION || 'us-east-1' }}
           DRY_RUN: ${{ github.event.inputs.dry_run_retention || 'false' }}
         run: |
           chmod +x scripts/backup/retention.sh
@@ -58,7 +65,7 @@ jobs:
         env:
           BACKUP_S3_BUCKET: ${{ secrets.BACKUP_S3_BUCKET }}
           PAGERDUTY_ROUTING_KEY: ${{ secrets.PAGERDUTY_ROUTING_KEY }}
-          AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION || 'us-east-1' }}
+          AWS_DEFAULT_REGION: ${{ vars.AWS_DEFAULT_REGION || secrets.AWS_DEFAULT_REGION || 'us-east-1' }}
         run: |
           chmod +x scripts/backup/check-backup-health.sh
           ./scripts/backup/check-backup-health.sh

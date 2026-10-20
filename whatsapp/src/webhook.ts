@@ -97,7 +97,12 @@ export function twilioSignatureMiddleware(
   const authToken = process.env.TWILIO_AUTH_TOKEN;
 
   if (!authToken) {
-    // Skip validation in test/dev environments
+    // Local tests and development can run without provider credentials, but a
+    // production webhook must fail closed rather than accept unsigned requests.
+    if (process.env.NODE_ENV === 'production') {
+      res.status(503).json({ error: 'Webhook signature validation is not configured' });
+      return;
+    }
     next();
     return;
   }
