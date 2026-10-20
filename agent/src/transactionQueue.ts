@@ -25,6 +25,8 @@ import {
   Horizon,
 } from '@stellar/stellar-sdk';
 import logger from './logger';
+import { withAccountSequenceLock, type RedisLockClient } from './accountSequence';
+import { shouldRetrySequenceMismatch, SubmissionOutcomeUnknownError, submitExactlyOnceOnTimeout } from './transactionSubmission';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -44,6 +46,8 @@ export interface TransactionJobData {
   destinationAddress?: string;
   /** Optional: Soroban contract invocation XDR (if pre-built by caller) */
   xdrEnvelope?: string;
+  /** Optional public key selecting a signer configured in SIGNER_SECRET_KEYS_JSON. */
+  signerAddress?: string;
   /** ISO timestamp when this job was created by the caller. */
   requestedAt: string;
 }
@@ -66,6 +70,7 @@ const NETWORK_PASSPHRASE =
     ? Networks.PUBLIC
     : Networks.TESTNET;
 const AGENT_SECRET = process.env.AGENT_SECRET_KEY || '';
+const SIGNER_SECRET_KEYS_JSON = process.env.SIGNER_SECRET_KEYS_JSON || '{}';
 
 const QUEUE_NAME = 'transactions';
 const DLQ_NAME = 'transactions:failed';
@@ -174,15 +179,6 @@ export async function enqueueTransaction(
  * Returns true when the error message indicates a sequence number conflict —
  * the only case where we re-fetch sequence and retry within the same attempt.
  */
-function isSequenceMismatch(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message : String(err);
-  return (
-    msg.toLowerCase().includes('tx_bad_seq') ||
-    msg.toLowerCase().includes('sequence') ||
-    msg.toLowerCase().includes('bad_seq')
-  );
-}
-
 /**
  * Build and sign a Stellar transaction.
  * Fetches a fresh sequence number before each call.
@@ -194,8 +190,6 @@ async function buildAndSignTransaction(
   // If the caller already built and serialised the XDR, just re-sign with
   // a fresh sequence number rather than rebuilding from scratch.
   if (data.xdrEnvelope) {
-    // Re-fetch sequence and rebuild with latest account state
-    const account = await server.loadAccount(keypair.publicKey());
     const tx = TransactionBuilder.fromXDR(data.xdrEnvelope, NETWORK_PASSPHRASE);
 
     // Re-sign with this keypair
@@ -224,7 +218,7 @@ async function buildAndSignTransaction(
         Operation.payment({
           destination,
           asset: usdcAsset,
-          amount: (parseInt(data.amountStroops, 10) / 1e7).toFixed(7),
+          amount: formatStroops(data.amountStroops),
         }),
       );
       break;
@@ -248,6 +242,21 @@ async function buildAndSignTransaction(
   return tx.toEnvelope().toXDR('base64');
 }
 
+function formatStroops(amountStroops: string): string {
+  if (!/^\d+$/.test(amountStroops)) throw new Error('INVALID_STROOPS_AMOUNT');
+  const units = BigInt(amountStroops);
+  const scale = 10_000_000n;
+  const whole = units / scale;
+  const fraction = (units % scale).toString().padStart(7, '0');
+  return `${whole}.${fraction}`;
+}
+
+function isSubmissionTimeout(error: unknown): boolean {
+  const value = error as { message?: string; status?: number; statusCode?: number };
+  const message = value?.message ?? String(error);
+  return value?.status === 504 || value?.statusCode === 504 || /timeout|timed out|ETIMEDOUT|ECONNRESET/i.test(message);
+}
+
 /**
  * Submit a signed transaction XDR to Horizon with sequence-number retry logic.
  */
@@ -255,39 +264,83 @@ async function submitWithSequenceRetry(
   keypair: Keypair,
   data: TransactionJobData,
 ): Promise<TransactionJobResult> {
-  let lastError: unknown;
+  // Bull exposes this Redis connection; the token-checked lease coordinates
+  // sequence use across worker processes sharing the same queue backend.
+  const redis = (transactionQueue as unknown as { client: RedisLockClient }).client;
+  return withAccountSequenceLock(keypair.publicKey(), async () => {
+    let lastError: unknown;
 
-  for (let attempt = 0; attempt < MAX_SEQUENCE_RETRIES; attempt++) {
-    try {
-      const xdr = await buildAndSignTransaction(keypair, data);
-      const response = await server.submitTransaction(
-        TransactionBuilder.fromXDR(xdr, NETWORK_PASSPHRASE),
-      );
-
-      return {
-        txHash: response.hash,
-        ledger: response.ledger,
-        submittedAt: new Date().toISOString(),
-      };
-    } catch (err) {
-      lastError = err;
-
-      if (isSequenceMismatch(err) && attempt < MAX_SEQUENCE_RETRIES - 1) {
-        logger.warn(
-          { attempt: attempt + 1, userAddress: data.userAddress },
-          'Sequence mismatch — re-fetching sequence and retrying',
+    for (let attempt = 0; attempt < MAX_SEQUENCE_RETRIES; attempt++) {
+      try {
+        const xdr = await buildAndSignTransaction(keypair, data);
+        const transaction = TransactionBuilder.fromXDR(xdr, NETWORK_PASSPHRASE);
+        const txHash = transaction.hash().toString('hex');
+        const response = await submitExactlyOnceOnTimeout(
+          async () => {
+            const submitted = await server.submitTransaction(transaction);
+            return { txHash: submitted.hash, ledger: submitted.ledger };
+          },
+          async () => {
+            try {
+              const accepted = await server.transactions().transaction(txHash).call();
+              return {
+                txHash: accepted.hash ?? txHash,
+                ledger: accepted.ledger,
+              };
+            } catch {
+              return null;
+            }
+          },
+          isSubmissionTimeout,
+          txHash,
         );
-        // Small jitter before next attempt
-        await new Promise((r) => setTimeout(r, 200 + Math.random() * 300));
-        continue;
-      }
 
-      // For non-sequence errors, re-throw immediately so Bull handles retries
-      throw err;
+        return {
+          txHash: response.txHash,
+          ledger: response.ledger,
+          submittedAt: new Date().toISOString(),
+        };
+      } catch (err) {
+        lastError = err;
+
+        if (shouldRetrySequenceMismatch(err, attempt, MAX_SEQUENCE_RETRIES)) {
+          logger.warn(
+            { attempt: attempt + 1, userAddress: data.userAddress, signerAddress: keypair.publicKey() },
+            'Sequence mismatch — re-fetching sequence and retrying',
+          );
+          await new Promise((r) => setTimeout(r, 200 + Math.random() * 300));
+          continue;
+        }
+
+        throw err;
+      }
+    }
+
+    throw lastError;
+  }, redis);
+}
+
+function resolveSigningKeypair(data: TransactionJobData): Keypair {
+  let secret = AGENT_SECRET;
+  if (data.signerAddress) {
+    let configured: Record<string, string>;
+    try {
+      configured = JSON.parse(SIGNER_SECRET_KEYS_JSON);
+    } catch {
+      throw new Error('SIGNER_SECRET_KEYS_JSON must be a JSON object keyed by public key');
+    }
+    secret = configured[data.signerAddress] ?? '';
+    if (!secret && AGENT_SECRET) {
+      const defaultKeypair = Keypair.fromSecret(AGENT_SECRET);
+      if (defaultKeypair.publicKey() === data.signerAddress) secret = AGENT_SECRET;
     }
   }
-
-  throw lastError;
+  if (!secret) throw new Error(`No configured transaction signer for ${data.signerAddress ?? 'default account'}`);
+  const keypair = Keypair.fromSecret(secret);
+  if (data.signerAddress && keypair.publicKey() !== data.signerAddress) {
+    throw new Error('Configured signer secret does not match signerAddress');
+  }
+  return keypair;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -302,12 +355,14 @@ transactionQueue.process(CONCURRENCY, async (job: Job<TransactionJobData>) => {
     'Processing transaction job',
   );
 
-  if (!AGENT_SECRET) {
-    throw new Error('AGENT_SECRET_KEY environment variable is not set');
+  const keypair = resolveSigningKeypair(data);
+  let result: TransactionJobResult;
+  try {
+    result = await submitWithSequenceRetry(keypair, data);
+  } catch (error) {
+    if (error instanceof SubmissionOutcomeUnknownError) job.discard();
+    throw error;
   }
-
-  const keypair = Keypair.fromSecret(AGENT_SECRET);
-  const result = await submitWithSequenceRetry(keypair, data);
 
   logger.info(
     { jobId: job.id, txHash: result.txHash, ledger: result.ledger },
