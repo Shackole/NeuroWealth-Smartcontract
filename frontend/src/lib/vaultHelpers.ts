@@ -20,6 +20,7 @@ import {
 
 import { signWithFreighter } from '@/lib/freighter';
 import type { Strategy } from '@/lib/depositSchema';
+import { getVaultErrorPresentation } from '@/lib/vaultErrors';
 
 export const DECIMAL_PLACES = 7;
 export const STROOP = 10 ** DECIMAL_PLACES; // 1 USDC in raw units
@@ -322,35 +323,6 @@ export async function executeDeposit(
  * Translate raw contract / SDK error messages into user-friendly strings.
  */
 export function humanizeError(error: unknown): string {
-  const raw = error instanceof Error ? error.message : String(error);
-
-  if (raw.includes('rejected') || raw.includes('Freighter')) {
-    return 'Transaction was cancelled. Please approve the transaction in your Freighter wallet.';
-  }
-  if (raw.includes('InvalidAmountError') || raw.includes('Error(Contract, #105)')) {
-    return 'Invalid amount. Please enter between 1 and 10,000 USDC.';
-  }
-  if (raw.includes('DepositCapExceededError') || raw.includes('Error(Contract, #106)')) {
-    return 'Your deposit would exceed the per-user cap of 10,000 USDC.';
-  }
-  if (raw.includes('TvlCapExceededError') || raw.includes('Error(Contract, #107)')) {
-    return 'The vault is at capacity. Please try a smaller amount or try again later.';
-  }
-  if (raw.includes('PausedError') || raw.includes('Error(Contract, #101)')) {
-    return 'The vault is currently paused for maintenance. Please try again later.';
-  }
-  if (raw.includes('InsufficientLiquidity')) {
-    return 'Insufficient liquidity in the vault. Please try a smaller amount.';
-  }
-  if (raw.includes('timed out')) {
-    return 'Transaction timed out. Your funds are safe — check the Stellar explorer for the latest status.';
-  }
-  if (raw.includes('simulation failed') || raw.includes('Preview failed')) {
-    return 'Could not estimate transaction. The network may be busy — please try again.';
-  }
-  if (raw.includes('getAccount') || raw.includes('404')) {
-    return 'Wallet not found on the Stellar network. Make sure your account is funded.';
-  }
-
-  return `Transaction failed: ${raw.length > 120 ? raw.slice(0, 120) + '…' : raw}`;
+  const presentation = getVaultErrorPresentation(error);
+  return `${presentation.message} ${presentation.action}`;
 }

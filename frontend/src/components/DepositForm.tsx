@@ -35,15 +35,16 @@ import {
   type DepositFormValues,
   STRATEGY_OPTIONS,
   type Strategy,
+  MAX_DEPOSIT_USDC,
 } from '@/lib/depositSchema';
 import {
   fetchUsdcWalletBalance,
   previewDepositToShares,
   executeDeposit,
-  humanizeError,
   explorerUrl,
   fromRawUnits,
 } from '@/lib/vaultHelpers';
+import { getVaultErrorPresentation, type VaultErrorPresentation } from '@/lib/vaultErrors';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -168,8 +169,8 @@ const PreviewModal: React.FC<PreviewModalProps> = ({
             )}
           </div>
           <div className="flex justify-between items-center text-slate-300">
-            <span className="text-slate-400">Network Fee</span>
-            <span className="text-slate-400">&lt; 0.00001 XLM</span>
+            <span className="text-slate-400">Network fee (separate)</span>
+            <span className="text-slate-400">Paid in XLM; Freighter shows the final fee</span>
           </div>
         </div>
 
@@ -274,20 +275,26 @@ const SuccessState: React.FC<SuccessStateProps> = ({
 // ─── Error State ──────────────────────────────────────────────────────────────
 
 interface ErrorStateProps {
-  message: string;
-  onRetry: () => void;
+  presentation: VaultErrorPresentation;
+  onReview: () => void;
   onClose: () => void;
 }
 
-const ErrorState: React.FC<ErrorStateProps> = ({ message, onRetry, onClose }) => (
+const ErrorState: React.FC<ErrorStateProps> = ({ presentation, onReview, onClose }) => (
   <div className="text-center py-4" role="alert" aria-live="assertive">
     <div className="h-16 w-16 bg-red-500/20 text-red-400 rounded-full flex items-center justify-center mx-auto mb-4 border border-red-500/30">
       <AlertTriangle size={36} aria-hidden="true" />
     </div>
-    <h3 className="text-xl font-bold text-white mb-2">Transaction Failed</h3>
+    <h3 className="text-xl font-bold text-white mb-2">{presentation.title}</h3>
     <p className="text-sm text-slate-300 bg-slate-900/80 rounded-xl border border-slate-700 p-3 mb-6 text-left leading-relaxed">
-      {message}
+      {presentation.message} {presentation.action}
     </p>
+    {presentation.technicalDetails && (
+      <details className="mb-4 text-left text-xs text-slate-500">
+        <summary className="cursor-pointer">Error details</summary>
+        <code className="mt-2 block break-all">{presentation.technicalDetails}</code>
+      </details>
+    )}
     <div className="flex gap-3">
       <button
         onClick={onClose}
@@ -296,10 +303,10 @@ const ErrorState: React.FC<ErrorStateProps> = ({ message, onRetry, onClose }) =>
         Close
       </button>
       <button
-        onClick={onRetry}
+        onClick={onReview}
         className="flex-1 py-3 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-slate-950 font-bold transition-all"
       >
-        Try Again
+        {presentation.retryable ? 'Create a new preview' : 'Review amount'}
       </button>
     </div>
   </div>
@@ -386,7 +393,7 @@ export const DepositForm: React.FC<DepositFormProps> = ({
   const [previewLoading, setPreviewLoading] = useState<boolean>(false);
   const [signingStep, setSigningStep] = useState<number>(0);
   const [depositResult, setDepositResult] = useState<{ depositHash: string; strategyHash?: string } | null>(null);
-  const [errorMessage, setErrorMessage] = useState<string>('');
+  const [errorPresentation, setErrorPresentation] = useState<VaultErrorPresentation | null>(null);
 
   // ── Load USDC balance when modal opens ───────────────────────────────────
   useEffect(() => {
@@ -438,8 +445,8 @@ export const DepositForm: React.FC<DepositFormProps> = ({
 
   // ── Max button ────────────────────────────────────────────────────────────
   const handleMax = () => {
-    const maxAllowed = Math.min(usdcBalance, 10_000);
-    setValue('amount', maxAllowed > 0 ? maxAllowed.toFixed(2) : '', {
+    const maxAllowed = Math.min(usdcBalance, MAX_DEPOSIT_USDC);
+    setValue('amount', maxAllowed > 0 ? maxAllowed.toFixed(7) : '', {
       shouldValidate: true,
     });
   };
@@ -476,7 +483,7 @@ export const DepositForm: React.FC<DepositFormProps> = ({
       setView('success');
       onDepositSuccess?.();
     } catch (err) {
-      setErrorMessage(humanizeError(err));
+      setErrorPresentation(getVaultErrorPresentation(err));
       setView('error');
     }
   };
@@ -488,14 +495,14 @@ export const DepositForm: React.FC<DepositFormProps> = ({
     setShowPreview(false);
     setEstimatedShares(null);
     setDepositResult(null);
-    setErrorMessage('');
+    setErrorPresentation(null);
     setSigningStep(0);
     onClose();
   };
 
   const handleRetry = () => {
     setView('form');
-    setErrorMessage('');
+    setErrorPresentation(null);
     setSigningStep(0);
   };
 
@@ -563,9 +570,9 @@ export const DepositForm: React.FC<DepositFormProps> = ({
                           type="button"
                           onClick={handleMax}
                           className="text-emerald-400 hover:text-emerald-300 underline underline-offset-2 transition-colors"
-                          aria-label={`Set maximum amount: ${usdcBalance.toFixed(2)} USDC`}
+                          aria-label={`Set maximum amount: ${usdcBalance.toFixed(7)} USDC`}
                         >
-                          {usdcBalance.toFixed(2)} USDC
+                          {usdcBalance.toFixed(7)} USDC
                         </button>
                       </>
                     )}
@@ -576,9 +583,9 @@ export const DepositForm: React.FC<DepositFormProps> = ({
                   <input
                     id="deposit-amount"
                     type="number"
-                    step="0.01"
+                    step="0.0000001"
                     min="1"
-                    max="10000"
+                    max={MAX_DEPOSIT_USDC}
                     placeholder="0.00"
                     className={`w-full bg-slate-900 border rounded-xl py-3 px-4 pr-20 text-white font-mono text-lg focus:outline-none transition-colors ${
                       errors.amount
@@ -598,6 +605,10 @@ export const DepositForm: React.FC<DepositFormProps> = ({
                     MAX
                   </button>
                 </div>
+
+                <p className="mt-1.5 text-xs text-slate-500">
+                  Up to 7 decimal places. 0.0000001 USDC is the smallest unit; amounts are not silently rounded.
+                </p>
 
                 {errors.amount && (
                   <p
@@ -672,8 +683,8 @@ export const DepositForm: React.FC<DepositFormProps> = ({
                   </span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-slate-400">Network Fee</span>
-                  <span className="text-slate-400">&lt; 0.00001 XLM</span>
+                  <span className="text-slate-400">Network fee (separate)</span>
+                  <span className="text-slate-400">Paid in XLM; Freighter shows the final fee</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-slate-400">Transactions</span>
@@ -716,8 +727,8 @@ export const DepositForm: React.FC<DepositFormProps> = ({
           {/* ── Error state ───────────────────────────────────────────────── */}
           {view === 'error' && (
             <ErrorState
-              message={errorMessage}
-              onRetry={handleRetry}
+              presentation={errorPresentation ?? getVaultErrorPresentation(null)}
+              onReview={handleRetry}
               onClose={handleClose}
             />
           )}

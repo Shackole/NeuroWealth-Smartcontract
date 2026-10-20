@@ -49,6 +49,7 @@ export const ActionModal: React.FC<ActionModalProps> = ({
   if (!isOpen) return null;
 
   const numAmount = parseFloat(amount) || 0;
+  const hasExcessPrecision = /\.\d{8,}/.test(amount);
   const estimatedShares = (numAmount / exchangeRate).toFixed(4);
 
   // Deposit is disabled if TVL cap is reached or user personal cap is reached
@@ -63,7 +64,7 @@ export const ActionModal: React.FC<ActionModalProps> = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!userPublicKey || numAmount <= 0 || depositBlocked) return;
+    if (!userPublicKey || numAmount <= 0 || hasExcessPrecision || depositBlocked) return;
 
     setLoading(true);
     setTxSuccess(false);
@@ -190,13 +191,13 @@ export const ActionModal: React.FC<ActionModalProps> = ({
               <span>
                 {type === 'deposit' && userRemaining !== undefined
                   ? `Cap remaining: ${userRemaining.toLocaleString('en-US', { maximumFractionDigits: 2 })} USDC`
-                  : `Available: ${balance.toFixed(2)} USDC`}
+                  : `Available: ${balance.toFixed(7)} USDC`}
               </span>
             </div>
             <div className="relative">
               <input
                 type="number"
-                step="0.01"
+                step="0.0000001"
                 min="1"
                 max={
                   type === 'withdraw'
@@ -217,7 +218,7 @@ export const ActionModal: React.FC<ActionModalProps> = ({
                 onClick={() =>
                   setAmount(
                     type === 'withdraw'
-                      ? balance.toString()
+                      ? balance.toFixed(7)
                       : userRemaining !== undefined
                       ? String(Math.min(userRemaining, 100))
                       : '100'
@@ -229,6 +230,14 @@ export const ActionModal: React.FC<ActionModalProps> = ({
                 MAX
               </button>
             </div>
+            <p className="mt-1.5 text-xs text-slate-500">
+              Up to 7 decimal places. 0.0000001 USDC is the smallest unit; amounts are not silently rounded.
+            </p>
+            {hasExcessPrecision && (
+              <p className="mt-1 text-xs text-red-400" role="alert">
+                Use no more than 7 decimal places; the amount was not rounded.
+              </p>
+            )}
           </div>
 
           <div className="bg-slate-900/80 p-3 rounded-xl border border-slate-800 text-xs space-y-2 mb-6 font-mono text-slate-300">
@@ -241,14 +250,14 @@ export const ActionModal: React.FC<ActionModalProps> = ({
               <span className="text-emerald-400">{estimatedShares} NV-SHARES</span>
             </div>
             <div className="flex justify-between">
-              <span className="text-slate-400">Network Fee:</span>
-              <span className="text-slate-400">&lt; 0.00001 XLM</span>
+              <span className="text-slate-400">Network fee (separate):</span>
+              <span className="text-slate-400">Paid in XLM; Freighter shows the final fee</span>
             </div>
           </div>
 
           <button
             type="submit"
-            disabled={loading || numAmount <= 0 || depositBlocked}
+            disabled={loading || numAmount <= 0 || hasExcessPrecision || depositBlocked}
             className="w-full flex items-center justify-center gap-2 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-slate-950 font-bold py-3.5 rounded-xl transition-all shadow-glow-emerald disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {loading ? (

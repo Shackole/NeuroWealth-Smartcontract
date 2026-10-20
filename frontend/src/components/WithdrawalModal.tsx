@@ -11,6 +11,7 @@ import {
   Banknote,
 } from 'lucide-react';
 import { signWithFreighter } from '@/lib/freighter';
+import { getVaultErrorPresentation, type VaultErrorPresentation } from '@/lib/vaultErrors';
 
 interface WithdrawalModalProps {
   isOpen: boolean;
@@ -42,18 +43,19 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
   const [isWithdrawAll, setIsWithdrawAll] = useState(false);
   const [previewShares, setPreviewShares] = useState<number>(0);
   const [txHash, setTxHash] = useState<string>('');
-  const [errorMsg, setErrorMsg] = useState<string>('');
+  const [errorPresentation, setErrorPresentation] = useState<VaultErrorPresentation | null>(null);
 
   if (!isOpen) return null;
 
   const numAmount = isWithdrawAll ? balance : parseFloat(amount) || 0;
+  const hasExcessPrecision = !isWithdrawAll && /\.\d{8,}/.test(amount);
 
   // preview_withdraw: shares burned = amount / exchangeRate (ceiling division)
   // ERC-4626 convention: shares burned round UP to protect the vault
   const estimatedSharesToBurn =
     exchangeRate > 0 ? Math.ceil((numAmount / exchangeRate) * 1e7) / 1e7 : 0;
 
-  const isValidAmount = numAmount > 0 && numAmount <= balance;
+  const isValidAmount = numAmount > 0 && numAmount <= balance && !hasExcessPrecision;
 
   const handleWithdrawAll = () => {
     setIsWithdrawAll(true);
@@ -78,7 +80,7 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
     if (!userPublicKey) return;
 
     setStep('processing');
-    setErrorMsg('');
+    setErrorPresentation(null);
 
     try {
       // Build Soroban XDR for either withdraw(user, amount) or withdraw_all(user)
@@ -102,9 +104,8 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
 
       setStep('success');
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'Transaction failed. Please try again.';
       console.error('Withdrawal failed:', err);
-      setErrorMsg(message);
+      setErrorPresentation(getVaultErrorPresentation(err));
       setStep('error');
     }
   }, [userPublicKey, isWithdrawAll, numAmount, balance, onSuccess]);
@@ -115,7 +116,7 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
     setIsWithdrawAll(false);
     setPreviewShares(0);
     setTxHash('');
-    setErrorMsg('');
+    setErrorPresentation(null);
     onClose();
   };
 
@@ -168,12 +169,12 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
             <div className="mb-4">
               <div className="flex justify-between text-xs text-slate-400 mb-1.5 font-medium">
                 <span>Amount (USDC)</span>
-                <span>Available: {balance.toFixed(2)} USDC</span>
+                <span>Available: {balance.toFixed(7)} USDC</span>
               </div>
               <div className="relative">
                 <input
                   type="number"
-                  step="0.01"
+                  step="0.0000001"
                   min="0"
                   max={balance}
                   value={isWithdrawAll ? balance.toFixed(7) : amount}
@@ -193,6 +194,14 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
                   Withdraw All
                 </button>
               </div>
+              <p className="mt-1.5 text-xs text-slate-500">
+                Up to 7 decimal places. 0.0000001 USDC is the smallest unit; amounts are not silently rounded.
+              </p>
+              {hasExcessPrecision && (
+                <p className="mt-1 text-xs text-red-400" role="alert">
+                  Use no more than 7 decimal places; the amount was not rounded.
+                </p>
+              )}
               {isWithdrawAll && (
                 <p className="mt-1 text-xs text-indigo-400">
                   withdraw_all() will be called — burns all your shares at once.
@@ -215,12 +224,12 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
               <div className="flex justify-between">
                 <span className="text-slate-400">You Receive:</span>
                 <span className="text-emerald-400">
-                  {numAmount > 0 ? numAmount.toFixed(2) : '—'} USDC
+                  {numAmount > 0 ? numAmount.toFixed(7) : '—'} USDC
                 </span>
               </div>
               <div className="flex justify-between">
-                <span className="text-slate-400">Network Fee:</span>
-                <span className="text-slate-400">&lt; 0.00001 XLM</span>
+                <span className="text-slate-400">Network fee (separate):</span>
+                <span className="text-slate-400">Paid in XLM; Freighter shows the final fee</span>
               </div>
             </div>
 
@@ -323,7 +332,7 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
             </div>
             <h3 className="text-xl font-bold text-white mb-2">Withdrawal Successful!</h3>
             <p className="text-sm text-slate-400 mb-1">
-              <span className="text-emerald-400 font-semibold">{numAmount.toFixed(2)} USDC</span>{' '}
+              <span className="text-emerald-400 font-semibold">{numAmount.toFixed(7)} USDC</span>{' '}
               sent to your wallet
             </p>
             <p className="text-xs text-slate-500 mb-1 font-mono">
@@ -347,16 +356,24 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
             <div className="h-16 w-16 bg-red-500/20 text-red-400 rounded-full flex items-center justify-center mx-auto mb-4 border border-red-500/30">
               <AlertTriangle size={36} />
             </div>
-            <h3 className="text-xl font-bold text-white mb-2">Withdrawal Failed</h3>
+            <h3 className="text-xl font-bold text-white mb-2">
+              {errorPresentation?.title ?? 'Withdrawal could not be completed'}
+            </h3>
             <p className="text-sm text-red-300 mb-6 bg-red-500/10 px-3 py-2 rounded-xl border border-red-500/20">
-              {errorMsg}
+              {errorPresentation?.message} {errorPresentation?.action}
             </p>
+            {errorPresentation?.technicalDetails && (
+              <details className="mb-4 text-left text-xs text-slate-500">
+                <summary className="cursor-pointer">Error details</summary>
+                <code className="mt-2 block break-all">{errorPresentation.technicalDetails}</code>
+              </details>
+            )}
             <div className="flex gap-3">
               <button
                 onClick={() => setStep('input')}
                 className="flex-1 py-3 rounded-xl border border-slate-600 text-slate-300 hover:bg-slate-800 font-semibold transition-colors"
               >
-                Try Again
+                Review amount
               </button>
               <button
                 onClick={handleClose}
