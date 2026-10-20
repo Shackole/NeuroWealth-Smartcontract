@@ -738,6 +738,17 @@ semantics.
 | `get_protocol_breakdown()` | Public | Both, read atomically. |
 | `set_protocol_apy(protocol, apy_bps)` | Agent | Report a venue's APY. |
 | `get_protocol_apy(protocol)` | Public | Last reported APY. |
+
+### Per-user strategy preference is separate from pooled execution
+
+`set_user_strategy(user, strategy)` stores a user's advisory preference in
+persistent storage; it does not allocate that user's assets to a venue.
+`rebalance()` receives one protocol choice for pooled vault funds, while
+`rebalance_multi(blend_bps, dex_bps, min_out)` receives one explicit
+vault-wide split. Neither contract entrypoint reads `UserStrategy`. Integrators
+may read the preference to present intent or make an off-chain recommendation,
+but must not describe it as an enforced or segregated allocation. The current
+per-venue split is reported by `get_allocation()` and live position getters.
 | `get_composite_apy()` | Public | Allocation-weighted APY. |
 
 ### New events

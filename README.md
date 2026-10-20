@@ -43,11 +43,13 @@ Conservative — Stablecoin lending on Blend. Low risk, steady 3–6% APY.
 Balanced — Mix of lending + DEX liquidity provision. Medium risk, 6–10% APY.
 Growth — Aggressive multi-protocol deployment. Higher risk, 10–15% APY.
 
-> **Note:** A user's strategy preference (`set_user_strategy` / `get_user_strategy`) is
-> **storage-only** — it has no on-chain effect on `rebalance()` or `deposit()` targeting.
-> The vault pools all funds to a single `CurrentProtocol`. The off-chain AI agent reads
-> the preference and uses it when deciding yield allocation. A user's chosen strategy can
-> therefore diverge from where their share of the pooled funds is actually deployed.
+> **Note:** A user's strategy preference (`set_user_strategy` /
+> `get_user_strategy`) is stored per user but does not direct contract execution.
+> The agent-only `rebalance()` chooses a single protocol for pooled vault funds;
+> when multi-protocol mode is enabled, `rebalance_multi(blend_bps, dex_bps, ..)`
+> takes an explicit vault-wide split. Neither path reads individual user
+> preferences, so a user's preference does not promise a corresponding
+> allocation or segregated position. See [Multi-Protocol Allocation](ARCHITECTURE.md#multi-protocol-allocation-model-phase-2).
 
 
 ## Tech Stack
@@ -223,6 +225,8 @@ See [`scripts/README-E2E.md`](scripts/README-E2E.md) for end-to-end devnet valid
 | [`docs/MAINNET_CHECKLIST.md`](docs/MAINNET_CHECKLIST.md) | Pre-mainnet deployment checklist |
 | [`docs/DEX_INTEGRATION.md`](docs/DEX_INTEGRATION.md) | DEX strategy behaviour, integration assumptions, and liquidity routing |
 | [`docs/BLEND_INTEGRATION_RESEARCH.md`](docs/BLEND_INTEGRATION_RESEARCH.md) | Blend protocol supply/withdraw design and cross-contract call patterns |
+| [`docs/WITHDRAWAL_LIFECYCLE.md`](docs/WITHDRAWAL_LIFECYCLE.md) | Normal, partial, failed, and emergency withdrawal behavior under low liquidity |
+| [`db/README.md`](db/README.md) | Database migration ownership, ordering, and recovery policy |
 | [`docs/LEAST_PRIVILEGE_AGENT.md`](docs/LEAST_PRIVILEGE_AGENT.md) | Least-privilege evaluation: separate rebalancer vs reporter agent roles (Issue #606) |
 | [`docs/GUARDIAN_KEY_DESIGN.md`](docs/GUARDIAN_KEY_DESIGN.md) | Guardian-key design: second signature for `execute_upgrade` (Issue #607) |
 

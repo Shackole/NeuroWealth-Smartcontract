@@ -1,5 +1,10 @@
 # Partial Withdrawal Behaviour (Issue #55)
 
+> Historical note: this document records the original single-protocol
+> withdrawal scenarios. For the current contract behavior, including
+> proportional withdrawals in multi-protocol mode and paused-vault emergency
+> withdrawals, see [`WITHDRAWAL_LIFECYCLE.md`](WITHDRAWAL_LIFECYCLE.md).
+
 This document describes the exact, tested behaviour of `withdraw()` and
 `withdraw_all()` when the vault must assemble funds from multiple sources to
 satisfy a withdrawal request.  All claims here are backed by integration tests

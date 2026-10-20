@@ -6211,9 +6211,11 @@ impl NeuroWealthVault {
     /// **Storage-only — no on-chain effect on fund deployment.**
     /// `rebalance()` and `deposit()` never read `DataKey::UserStrategy`; the vault
     /// deploys funds pooled to a single `CurrentProtocol` regardless of any
-    /// individual user's selection. The off-chain AI agent is expected to consume
-    /// this preference when deciding yield allocation. A user's chosen strategy can
-    /// therefore diverge from where their share of the pooled funds is actually
+    /// individual user's selection. `rebalance_multi()` also takes an explicit
+    /// vault-wide Blend/DEX split and does not read this preference. An off-chain
+    /// consumer may use the value to present intent or make a recommendation, but
+    /// the contract does not enforce per-user allocation. A user's chosen strategy
+    /// can therefore diverge from where their share of the pooled funds is actually
     /// deployed.
     ///
     /// # Arguments
