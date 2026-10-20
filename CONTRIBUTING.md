@@ -200,7 +200,15 @@ neurowealth-vault/target/wasm32-unknown-unknown/release/neurowealth_vault.wasm
 
 ## Running Tests
 
-Always run the full test suite before opening a PR.
+For the exact working directory, command, prerequisites, and CI/local status of
+each suite, use the [Test Suite Matrix](docs/TEST_SUITE_MATRIX.md). The
+commands below are common entry points; `npm test` at the repository root only
+runs `test/*.test.ts`.
+
+Run the relevant local suites for the changed components, and review the
+workflow checks that apply to the changed paths. The current repository does
+not have a single command that runs every package suite; use the matrix rather
+than treating the root `npm test` as an aggregate.
 
 ### Smart Contract Tests
 
@@ -332,13 +340,10 @@ cargo +nightly fuzz run deposit_withdraw_sequence \
 
 ### Backend and Frontend Tests
 
-```bash
-# From the repo root
-npm test
-```
-
-This runs the TypeScript off-chain security tests (`test/`) and any
-`packages/vault-ui` axe-core / notification unit tests.
+Backend, WhatsApp, frontend Playwright, and package tests are separate suites
+with their own manifests. The root `npm test` does not run them; see the
+[Test Suite Matrix](docs/TEST_SUITE_MATRIX.md) for commands and which suites CI
+currently covers.
 
 ---
 

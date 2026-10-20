@@ -60,7 +60,7 @@ The table below records the evaluation status of each Level A and Level AA succe
 | Criterion | Level | Status | Notes |
 |-----------|-------|--------|-------|
 | 2.1.1 Keyboard | A | Pass | All interactive elements are reachable and operable by keyboard alone. No JavaScript-only mouse event handlers block keyboard access. |
-| 2.1.2 No Keyboard Trap | A | Pass | Focus cannot become trapped in the deposit panel or notification preferences. No modal dialog with a focus trap is present. |
+| 2.1.2 No Keyboard Trap | A | Partial | Deposit/withdrawal dialogs are present. Verify tab containment, closing behavior, and focus restoration using the contribution checklist below; the automated axe scan does not check these interactions. |
 | 2.1.4 Character Key Shortcuts | A | N/A | No single-character keyboard shortcuts are implemented. |
 | 2.2.1 Timing Adjustable | A | N/A | No time limits are imposed by the UI. Session expiry (if any) is handled server-side with adequate warning. |
 | 2.2.2 Pause, Stop, Hide | A | Pass | Auto-updating balance figures can be paused via the "Pause live updates" toggle. No auto-playing animations exist. |
@@ -107,6 +107,40 @@ npm test
 
 jsdom cannot fully evaluate colour contrast or screen-reader output, which is why the manual checklist exists.
 
+The Next.js frontend also has Playwright/axe scans in
+`frontend/e2e/accessibility.spec.ts`. From `frontend/`, run
+`npm run test:a11y` after installing the dependencies and Chromium. This scans
+the configured routes and fails on new critical/serious axe violations; it
+does not prove that a full deposit or withdrawal can be completed accessibly.
+The check cannot judge the quality of spoken copy, focus restoration across an
+external wallet prompt, fee/amount comprehension, reduced-motion experience,
+or actual keyboard operation of every state. Record manual findings as
+evidence instead of inferring them from a passing axe report.
+
+## Contribution checklist for deposit and withdrawal changes (Issue #464)
+
+Exercise each flow with a keyboard and screen reader in a non-production
+environment. Save the browser/OS/assistive-technology versions and observed
+result in the pull request; do not use a production signing key or broadcast a
+live transaction for accessibility review.
+
+| Check | Manual steps | Expected behavior |
+|---|---|---|
+| Keyboard order and dialog focus | Open Deposit and Withdraw; use Tab and Shift+Tab through amount, strategy (deposit), preview, fee details, and actions; close before signing | Focus enters the titled dialog, remains in the active dialog, and returns to its trigger on close. No control is skipped or reachable only by pointer. |
+| Amount instructions and precision | Enter empty, below-minimum, over-maximum, and more-than-seven-decimal amounts; use MAX and edit the amount | The label and helper identify USDC, available balance, minimum/maximum, and 7-decimal precision. Corrections are associated with the field and no amount is silently rounded. |
+| Preview and fee distinction | Review a deposit and a withdrawal before signing | The amount/share estimate is distinct from the network fee; fee is identified as XLM paid separately. Estimates are announced as estimates and are not presented as guaranteed APY/fill. |
+| Signing rejection / network error | Reject the wallet prompt, then simulate an RPC/preview failure using the project's safe mock | The error title, next step, and retry safety are announced. Technical details are secondary. An uncertain submitted transaction is not presented as safe to resubmit. |
+| Success and status updates | Complete only the local mocked flow or a reviewed testnet scenario | Signing, confirmation, and success/error updates are announced without unexpected focus movement. A partially available withdrawal is described as a partial result where applicable. |
+| Screen-reader labels | Use VoiceOver or NVDA to read field labels, dialog title, error, fee row, and primary action | Purpose and units are spoken in context; decorative icons are skipped; error and status changes are announced once without hiding the relevant action. |
+| Contrast and non-color cues | Inspect default, focus, error, disabled, and success states in light/dark themes | Text and control boundaries remain distinguishable; error/success meaning is not communicated by color alone. Record measured contrast when a visual change is made. |
+| Zoom and reflow | At 200% browser zoom and 320 CSS px viewport, complete amount entry and review | No horizontal scrolling is needed to read or activate the primary action; labels and errors remain visible and do not overlap. |
+| Reduced motion | Enable the OS/browser reduced-motion preference and open/close the transaction dialog | Non-essential movement is removed or reduced; state changes and focus remain clear. |
+
+For each touched flow, include at least one manual result for keyboard-only and
+one screen-reader pass, plus any unverified item as an explicit follow-up. The
+automated browser scan and the `packages/vault-ui` axe tests complement these
+checks; neither replaces them.
+
 ## Manual screen-reader checklist
 
 Run before tagging a UI release. Tick each item in the PR description.
@@ -129,8 +163,8 @@ Run before tagging a UI release. Tick each item in the PR description.
 ### Keyboard-only
 
 - [ ] Tab, Shift+Tab, Enter, and Space operate every control.
-- [ ] No keyboard trap in the deposit modal or notification panel.
-- [ ] Esc is not required to complete a task (there is no blocking overlay).
+- [ ] Tab and Shift+Tab stay in the active transaction dialog; closing it restores focus to the opener.
+- [ ] Escape dismisses only before wallet approval/submission is pending; while pending it does not imply the transaction was canceled.
 
 ## Known Gaps
 
