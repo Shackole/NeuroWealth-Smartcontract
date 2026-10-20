@@ -1771,3 +1771,10 @@ on the rejection path so monitoring can correlate attempted over-limit calls wit
 their category and window. The rejection still returns a contract error; indexers
 should also monitor failed transaction result codes because event visibility for
 reverted transactions depends on the ledger and RPC surface.
+## Monetary units
+
+See [`docs/MONETARY_UNITS.md`](docs/MONETARY_UNITS.md) for the shared
+contract/client glossary covering USDC raw units, share accounting, scaled
+exchange rates, basis points, and decimal-string transport. Financial
+execution must retain integer precision (`i128`/`bigint` or exact decimal
+strings) at every off-chain boundary.
