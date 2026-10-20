@@ -12,7 +12,7 @@ procedure, and quarterly drill process for the NeuroWealth Supabase PostgreSQL d
 | Dimension | Configuration |
 |-----------|---------------|
 | Backup tool | `pg_dump -Fc -Z9` (compressed custom format) |
-| Encryption | AES-256-CBC via `openssl enc` |
+| Encryption | AES-256-CBC via `openssl enc`, plus verified S3 SSE-S3/SSE-KMS |
 | Storage | Amazon S3 with versioning + lifecycle rules |
 | Schedule | Daily at 02:00 UTC (GitHub Actions) |
 | Retention | 7 daily · 4 weekly · 3 monthly |
@@ -31,7 +31,7 @@ procedure, and quarterly drill process for the NeuroWealth Supabase PostgreSQL d
 | `DATABASE_URL` | Full Postgres connection string (e.g. `postgresql://user:pass@host:5432/db`) |
 | `BACKUP_S3_BUCKET` | S3 bucket name (no `s3://` prefix) |
 | `BACKUP_ENCRYPTION_KEY` | AES-256 passphrase. Generate once with `openssl rand -hex 32`. Store in a secrets manager. |
-| `PAGERDUTY_ROUTING_KEY` | PagerDuty Events API v2 integration key for backup health alerts |
+| `PAGERDUTY_ROUTING_KEY` | PagerDuty Events API v2 integration key for stale/missing and workflow-failure alerts |
 | `AWS_ACCESS_KEY_ID` | AWS credentials (or configure an IAM role on the runner) |
 | `AWS_SECRET_ACCESS_KEY` | AWS credentials |
 | `AWS_DEFAULT_REGION` | AWS region (default: `us-east-1`) |
@@ -50,7 +50,7 @@ Enable the following on the backup S3 bucket:
 
 1. **Versioning** — protects against accidental deletion of backup files.
 2. **Server-side encryption** — `SSE-S3` or `SSE-KMS` (defence-in-depth alongside the application-level AES-256 encryption).
-3. **Lifecycle rule** — transition objects older than 90 days to `S3 Glacier Instant Retrieval` to reduce storage cost.
+3. **Lifecycle rule** — transition objects after 30 days and expire objects and old versions according to `backup_retention_days`.
 4. **Block Public Access** — enabled on all four settings.
 
 ---
@@ -65,6 +65,13 @@ All scripts are in `scripts/backup/`:
 | `restore-db.sh` | Download → decrypt → validate → restore |
 | `retention.sh` | Apply 7-daily / 4-weekly / 3-monthly retention |
 | `check-backup-health.sh` | Verify beacon age; alert PagerDuty if stale |
+| `notify-failure.py` | Alert PagerDuty when any backup workflow step fails, including upload or policy verification |
+
+The backup script checks the uploaded object's server-side encryption metadata
+and confirms an enabled lifecycle expiration rule before writing a successful
+health beacon. A failed workflow sends a PagerDuty event with its revision and
+run URL. The PagerDuty routing key must be configured for those failure alerts
+to be actionable.
 
 ### Run a manual backup
 
