@@ -5,14 +5,81 @@ import { authenticateToken, generateToken, UserPayload } from './auth';
 export const apiRouter = Router();
 
 // ==========================================
+// Request validation helpers
+// ==========================================
+
+const STELLAR_ADDRESS_RE = /^G[A-Z2-7]{55}$/;
+const STRATEGY_NAMES = ['conservative', 'balanced', 'growth'] as const;
+// Exact decimal string: no sign, no exponent, no leading zeros (except "0"), optional fraction.
+const DECIMAL_RE = /^(0|[1-9]\d*)(\.\d+)?$/;
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isStellarAddress(value: unknown): value is string {
+  return typeof value === 'string' && STELLAR_ADDRESS_RE.test(value);
+}
+
+function isPositiveDecimalString(value: unknown): value is string {
+  if (typeof value !== 'string' || !DECIMAL_RE.test(value)) return false;
+  return /[1-9]/.test(value);
+}
+
+function isStrategyName(value: unknown): value is (typeof STRATEGY_NAMES)[number] {
+  return typeof value === 'string' && (STRATEGY_NAMES as readonly string[]).includes(value);
+}
+
+function parsePagination(query: Record<string, unknown>): { limit: number; offset: number } | null {
+  const rawLimit = query.limit;
+  const rawOffset = query.offset;
+
+  let limit = 50;
+  let offset = 0;
+
+  if (rawLimit !== undefined) {
+    if (typeof rawLimit !== 'string' || !/^\d+$/.test(rawLimit)) return null;
+    limit = parseInt(rawLimit, 10);
+    if (limit < 1 || limit > 100) return null;
+  }
+
+  if (rawOffset !== undefined) {
+    if (typeof rawOffset !== 'string' || !/^\d+$/.test(rawOffset)) return null;
+    offset = parseInt(rawOffset, 10);
+  }
+
+  return { limit, offset };
+}
+
+function rejectUnknownFields(body: Record<string, unknown>, allowed: string[]): string | null {
+  const unknown = Object.keys(body).filter((key) => !allowed.includes(key));
+  return unknown.length > 0 ? `Unknown field(s): ${unknown.join(', ')}` : null;
+}
+
+function badRequest(res: Response, error: string): void {
+  res.status(400).json({ error, code: 'INVALID_INPUT' });
+}
+
+// ==========================================
 // Authentication Endpoints (/api/auth/*)
 // ==========================================
 
 apiRouter.post('/auth/login', async (req: Request, res: Response): Promise<void> => {
+  if (!isPlainObject(req.body)) {
+    badRequest(res, 'Request body must be a JSON object');
+    return;
+  }
+
+  const unknownError = rejectUnknownFields(req.body, ['stellarAddress']);
+  if (unknownError) {
+    badRequest(res, unknownError);
+    return;
+  }
+
   const { stellarAddress } = req.body;
 
-  if (!stellarAddress || typeof stellarAddress !== 'string' || stellarAddress.trim().length === 0) {
-    res.status(400).json({ error: 'Missing or invalid stellarAddress', code: 'INVALID_INPUT' });
+  if (!isStellarAddress(stellarAddress)) {
+    badRequest(res, 'Missing or invalid stellarAddress');
     return;
   }
 
@@ -22,7 +89,7 @@ apiRouter.post('/auth/login', async (req: Request, res: Response): Promise<void>
        VALUES ($1)
        ON CONFLICT (stellar_address) DO UPDATE SET updated_at = NOW()
        RETURNING id, stellar_address, strategy_preference`,
-      [stellarAddress.trim()]
+      [stellarAddress]
     );
 
     const user = result.rows[0];
@@ -153,6 +220,12 @@ apiRouter.get('/earnings', authenticateToken, async (req: Request, res: Response
 apiRouter.get('/transactions', authenticateToken, async (req: Request, res: Response): Promise<void> => {
   const userId = req.user!.userId;
 
+  const pagination = parsePagination(req.query as Record<string, unknown>);
+  if (!pagination) {
+    badRequest(res, 'Invalid pagination; limit must be 1-100 and offset a non-negative integer');
+    return;
+  }
+
   try {
     const query = `
       SELECT id, 'deposit' AS type, amount, shares, tx_hash, timestamp
@@ -163,17 +236,17 @@ apiRouter.get('/transactions', authenticateToken, async (req: Request, res: Resp
       FROM withdrawals
       WHERE user_id = $1
       ORDER BY timestamp DESC
-      LIMIT 50
+      LIMIT $2 OFFSET $3
     `;
 
-    const txRes = await pool.query(query, [userId]);
+    const txRes = await pool.query(query, [userId, pagination.limit, pagination.offset]);
 
     res.status(200).json({
       transactions: txRes.rows.map(tx => ({
         id: tx.id,
         type: tx.type,
-        amount: parseFloat(tx.amount),
-        shares: parseFloat(tx.shares),
+        amount: tx.amount,
+        shares: tx.shares,
         txHash: tx.tx_hash,
         timestamp: tx.timestamp,
       })),
@@ -185,25 +258,37 @@ apiRouter.get('/transactions', authenticateToken, async (req: Request, res: Resp
 
 apiRouter.post('/transactions', authenticateToken, async (req: Request, res: Response): Promise<void> => {
   const userId = req.user!.userId;
+
+  if (!isPlainObject(req.body)) {
+    badRequest(res, 'Request body must be a JSON object');
+    return;
+  }
+
+  const unknownError = rejectUnknownFields(req.body, ['type', 'amount', 'shares', 'txHash']);
+  if (unknownError) {
+    badRequest(res, unknownError);
+    return;
+  }
+
   const { type, amount, shares, txHash } = req.body;
 
-  if (!type || !['deposit', 'withdraw'].includes(type)) {
-    res.status(400).json({ error: 'Invalid transaction type; must be deposit or withdraw' });
+  if (!type || !['deposit', 'withdraw'].includes(type as string)) {
+    badRequest(res, 'Invalid transaction type; must be deposit or withdraw');
     return;
   }
 
-  if (typeof amount !== 'number' || amount <= 0) {
-    res.status(400).json({ error: 'Amount must be a positive number' });
+  if (!isPositiveDecimalString(amount)) {
+    badRequest(res, 'Amount must be a positive exact decimal string');
     return;
   }
 
-  if (typeof shares !== 'number' || shares <= 0) {
-    res.status(400).json({ error: 'Shares must be a positive number' });
+  if (!isPositiveDecimalString(shares)) {
+    badRequest(res, 'Shares must be a positive exact decimal string');
     return;
   }
 
   if (!txHash || typeof txHash !== 'string' || !txHash.trim()) {
-    res.status(400).json({ error: 'Missing or invalid txHash' });
+    badRequest(res, 'Missing or invalid txHash');
     return;
   }
 
@@ -235,8 +320,8 @@ apiRouter.post('/transactions', authenticateToken, async (req: Request, res: Res
       transaction: {
         id: record.id,
         type,
-        amount: parseFloat(record.amount),
-        shares: parseFloat(record.shares),
+        amount: record.amount,
+        shares: record.shares,
         txHash: record.tx_hash,
         timestamp: record.timestamp,
       },
@@ -262,45 +347,6 @@ apiRouter.get('/apy', (_req: Request, res: Response): void => {
   });
 });
 
-// ==========================================
-// Stats Endpoint (/api/stats)
-// ==========================================
+// ==========
 
-apiRouter.get('/stats', async (_req: Request, res: Response): Promise<void> => {
-  try {
-    const userCountRes = await pool.query('SELECT COUNT(*) AS total_users FROM users');
-    const depositSumRes = await pool.query('SELECT COALESCE(SUM(amount), 0) AS total_deposits FROM deposits');
-    const withdrawSumRes = await pool.query('SELECT COALESCE(SUM(amount), 0) AS total_withdrawals FROM withdrawals');
-
-    const totalUsers = parseInt(userCountRes.rows[0].total_users, 10);
-    const totalDeposits = parseFloat(depositSumRes.rows[0].total_deposits);
-    const totalWithdrawals = parseFloat(withdrawSumRes.rows[0].total_withdrawals);
-    const tvl = Math.max(0, totalDeposits - totalWithdrawals);
-
-    const stratRes = await pool.query(`
-      SELECT strategy_preference, COUNT(*) AS count
-      FROM users
-      GROUP BY strategy_preference
-    `);
-
-    const activeStrategies: Record<string, number> = {
-      conservative: 0,
-      balanced: 0,
-      growth: 0,
-    };
-
-    stratRes.rows.forEach(r => {
-      activeStrategies[r.strategy_preference] = parseInt(r.count, 10);
-    });
-
-    res.status(200).json({
-      tvl,
-      totalUsers,
-      totalDeposits,
-      totalWithdrawals,
-      activeStrategies,
-    });
-  } catch (err: any) {
-    res.status(500).json({ error: 'Failed to retrieve stats', details: err.message });
-  }
-});
+/* … truncated 1451 chars — edit only what you need near the top … */
