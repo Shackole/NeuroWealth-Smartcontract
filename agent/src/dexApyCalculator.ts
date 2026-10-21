@@ -29,6 +29,7 @@ import { Router as createRouter } from 'express';
 import { Redis } from 'ioredis';
 import { pool } from './db';
 import logger from './logger';
+import { registerRedisClient } from './redisClients';
 
 // ─────────────────────────────────────────────────────────────────
 // Types
@@ -71,11 +72,11 @@ let _redis: Redis | null = null;
 
 function getRedis(): Redis {
   if (!_redis) {
-    _redis = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379', {
+    _redis = registerRedisClient(new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379', {
       lazyConnect: true,
       enableOfflineQueue: false,
       maxRetriesPerRequest: 1,
-    });
+    }));
     _redis.on('error', (err: Error) =>
       logger.warn({ err: err.message }, 'dex-apy: redis error'),
     );

@@ -20,6 +20,7 @@
  */
 
 import logger from './logger';
+import { BackgroundWork } from './backgroundWork';
 
 // ── Environment / configuration ────────────────────────────────────────────
 
@@ -383,15 +384,21 @@ export class IssuerFreezeMonitor {
   ) {}
 
   /** Start the polling loop. Safe to call multiple times. */
-  start(): void {
+  start(backgroundWork?: BackgroundWork): void {
     if (this.timer) return;
     logger.info(
       { pollIntervalMs: this.pollIntervalMs, issuerAddress: USDC_ISSUER_ADDRESS },
       '[IssuerFreezeMonitor] Starting USDC issuer freeze monitor',
     );
-    this.timer = setInterval(() => void this.check(), this.pollIntervalMs);
+    const runCheck = () => {
+      const task = backgroundWork
+        ? backgroundWork.run(() => this.check())
+        : this.check();
+      if (task) void task;
+    };
+    this.timer = setInterval(runCheck, this.pollIntervalMs);
     // Run once immediately.
-    void this.check();
+    runCheck();
   }
 
   /** Stop the polling loop. */

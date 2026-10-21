@@ -4,6 +4,7 @@ import { processEventForAlerts } from './alertEngine';
 import logger from './logger';
 import { withRetry } from './retry';
 import { rpcCall, getRpcServer } from './rpcClient';
+import { BackgroundWork } from './backgroundWork';
 
 export { pool };
 
@@ -26,7 +27,7 @@ export function stopEventListener() {
  * Listens for on-chain deposit and withdraw events from the vault contract.
  * Detects new deposits within 5 seconds and triggers yield deployment.
  */
-export async function startEventListener() {
+export async function startEventListener(backgroundWork: BackgroundWork) {
   if (!VAULT_CONTRACT_ID) {
     logger.warn('VAULT_CONTRACT_ID is not set. Event listener requires a contract ID to monitor.');
     return;
@@ -39,59 +40,76 @@ export async function startEventListener() {
     );
     let startLedger = latestLedgerResponse.sequence;
     logger.info({ startLedger }, 'Starting event listener');
+    if (!backgroundWork.isAccepting) return;
 
-    eventInterval = setInterval(async () => {
-      try {
-        const response = await withRetry(
-          () => rpcCall((s) => s.getEvents({
-            startLedger,
-            filters: [
-              {
-                type: 'contract',
-                contractIds: [VAULT_CONTRACT_ID],
-              }
-            ],
-            limit: 100,
-          })),
-          'getEvents',
-        );
+    let polling = false;
+    eventInterval = setInterval(() => {
+      if (polling || !backgroundWork.isAccepting) return;
+      polling = true;
+      const poll = backgroundWork.run(async () => {
+        try {
+          const response = await withRetry(
+            () => rpcCall((s) => s.getEvents({
+              startLedger,
+              filters: [
+                {
+                  type: 'contract',
+                  contractIds: [VAULT_CONTRACT_ID],
+                }
+              ],
+              limit: 100,
+            })),
+            'getEvents',
+          );
 
-        for (const event of response.events) {
-          const topics = event.topic.map(t => t.toString());
-          let eventType = '';
+          for (const event of response.events) {
+            const topics = event.topic.map(t => t.toString());
+            let eventType = '';
 
-          if (topics.some(t => t.includes('deposit'))) {
-            eventType = 'deposit';
-          } else if (topics.some(t => t.includes('withdraw'))) {
-            eventType = 'withdraw';
-          }
-
-          if (!eventType) continue;
-
-          logger.info({ eventType, ledger: event.ledger }, 'Detected event');
-
-          await logEventToDb(eventType, event.id, event.ledger);
-
-          if (eventType === 'deposit') {
-            logger.info('New deposit detected, evaluating yield');
-            const userStrategy = 'balanced';
-            const currentProtocol = 'none';
-
-            const decision = await evaluateYield(userStrategy, currentProtocol, 0);
-
-            if (decision.shouldRebalance) {
-              logger.info({ targetProtocol: decision.targetProtocol }, 'Rebalance needed');
+            if (topics.some(t => t.includes('deposit'))) {
+              eventType = 'deposit';
+            } else if (topics.some(t => t.includes('withdraw'))) {
+              eventType = 'withdraw';
             }
+
+            if (!eventType) continue;
+
+            logger.info({ eventType, ledger: event.ledger }, 'Detected event');
+
+            await logEventToDb(eventType, event.id, event.ledger);
+
+            if (eventType === 'deposit') {
+              logger.info('New deposit detected, evaluating yield');
+              const userStrategy = 'balanced';
+              const currentProtocol = 'none';
+
+              const decision = await evaluateYield(userStrategy, currentProtocol, 0);
+
+              if (decision.shouldRebalance) {
+                logger.info({ targetProtocol: decision.targetProtocol }, 'Rebalance needed');
+              }
+            }
+
+            const alertPayload = { type: eventType, amount: 150000 };
+            await processEventForAlerts(alertPayload);
+
+            startLedger = Math.max(startLedger, event.ledger + 1);
           }
-
-          const alertPayload = { type: eventType, amount: 150000 };
-          await processEventForAlerts(alertPayload);
-
-          startLedger = Math.max(startLedger, event.ledger + 1);
+        } catch (error) {
+          logger.error({ error: error instanceof Error ? error.message : error }, 'Error polling Soroban events');
         }
-      } catch (error) {
-        logger.error({ error: error instanceof Error ? error.message : error }, 'Error polling Soroban events');
+      });
+      if (!poll) {
+        polling = false;
+        return;
       }
+      void poll.then(
+        () => { polling = false; },
+        (error) => {
+          polling = false;
+          logger.error({ error: error instanceof Error ? error.message : error }, 'Soroban event poll failed');
+        },
+      );
     }, 5000);
 
   } catch (error) {

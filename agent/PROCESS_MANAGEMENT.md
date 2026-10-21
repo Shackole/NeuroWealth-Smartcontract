@@ -186,13 +186,30 @@ returns HTTP 200 when the DB pool and Stellar RPC connection are healthy.
 
 ## Graceful shutdown
 
-The agent handles `SIGTERM` (sent by both PM2 and systemd on stop/restart):
+On `SIGTERM` or `SIGINT`, the agent immediately rejects new HTTP requests with
+503, stops its decision, Soroban event-polling, and issuer-monitor schedules,
+then drains work already running. The HTTP listener stops accepting connections
+while existing requests and tracked background tasks finish. PostgreSQL and all
+registered ioredis clients are closed after draining. Set
+`SHUTDOWN_TIMEOUT_MS` below the process manager's stop grace period; the default
+is 25 seconds, leaving 5 seconds of headroom under the systemd unit's 30-second
+`TimeoutStopSec`. If work cannot drain before the deadline, the process logs a
+fatal timeout and exits non-zero rather than hanging indefinitely.
 
-1. Stops the hourly decision loop timer.
-2. Closes the Stellar event listener WebSocket.
-3. Waits for the HTTP server to stop accepting new connections.
-4. Closes the PostgreSQL connection pool.
-5. Exits with code 0.
+### Shutdown validation
 
-PM2 `kill_timeout` and systemd `TimeoutStopSec` are both set to allow
-30 seconds for this sequence before a hard `SIGKILL`.
+From `agent/`, run `npm run build` and
+`npx ts-node --transpile-only src/backgroundWork.test.ts`. To exercise the signal
+path manually in an isolated development/test environment, start
+`npm run start:dev` with `PORT` set to an unused local port and test-only backend
+configuration, then send `SIGTERM` (for example, `kill -TERM <agent-pid>` from
+a POSIX shell). Expected results:
+
+1. A new request during shutdown receives HTTP 503 and is not routed.
+2. No new scheduled task begins after the signal; active tasks are allowed to
+   finish before pool/client closure.
+3. Logs show the database and Redis clients closed and the process exits with
+   code 0 before the configured deadline.
+4. With a test-only task deliberately held past `SHUTDOWN_TIMEOUT_MS`, logs show
+   the deadline failure and the process exits non-zero within the manager grace
+   period.
