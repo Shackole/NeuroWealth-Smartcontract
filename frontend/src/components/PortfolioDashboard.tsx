@@ -1,10 +1,14 @@
 'use client';
 
-import React from 'react';
+import React, { Suspense, lazy } from 'react';
 import { BalanceCard } from './BalanceCard';
 import { EarningsCard } from './EarningsCard';
 import { StrategyBadge } from './StrategyBadge';
 import { EarningsSummary } from '@/lib/database';
+
+// Chart/optional dashboard code is split out of the initial balance view so the
+// core balance rendering does not wait for it to download and parse.
+const PortfolioChart = lazy(() => import('./PortfolioChart'));
 
 export interface PortfolioDashboardProps {
   balance: number;
@@ -76,6 +80,23 @@ export const PortfolioDashboard: React.FC<PortfolioDashboardProps> = ({
           onSelectStrategy={onSelectStrategy}
         />
       </div>
+
+      <Suspense
+        fallback={
+          <div
+            role="status"
+            aria-label="Loading portfolio chart"
+            className="h-64 w-full animate-pulse rounded-xl bg-slate-800/50"
+          />
+        }
+      >
+        <PortfolioChart
+          balance={balance}
+          exchangeRate={exchangeRate}
+          strategy={strategy}
+          isConnected={isConnected}
+        />
+      </Suspense>
     </section>
   );
 };
