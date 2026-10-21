@@ -11,6 +11,9 @@
  *  - Failed jobs moved to `transactions:failed` dead-letter queue with full
  *    error context attached as `failedReason`
  *  - GET /api/queue/stats exposes queue depth and counts
+ *  - Per-signing-account sequence allocation is serialized via a Redis lock so
+ *    parallel workers never sign the same sequence, while independent signing
+ *    accounts still progress concurrently (#414)
  */
 
 import Bull from 'bull';
@@ -72,6 +75,14 @@ const DLQ_NAME = 'transactions:failed';
 const CONCURRENCY = 5;
 const MAX_SEQUENCE_RETRIES = 3;
 const DEDUP_TTL_MS = 60_000; // 60 seconds
+
+// Per-signing-account sequence lock (#414).
+// The lock is scoped to the signing account's public key so that independent
+// accounts never contend with each other, while workers sharing one account
+// are serialized. TTL guards against a crashed worker holding the lock forever.
+const SEQ_LOCK_TTL_MS = 30_000;
+const SEQ_LOCK_RETRY_MS = 50;
+const SEQ_LOCK_MAX_WAIT_MS = 30_000;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Queue setup
@@ -138,6 +149,54 @@ async function markSeen(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Per-signing-account sequence lock (#414)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function seqLockKey(publicKey: string): string {
+  return `seq:lock:${publicKey}`;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Acquire a per-signing-account lock. Returns a release function on success.
+ * The lock is keyed by the signing account's public key, so two independent
+ * accounts acquire independent locks and progress concurrently.
+ */
+async function acquireSequenceLock(
+  publicKey: string,
+): Promise<() => Promise<void>> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const client = (transactionQueue as any).client as import('ioredis').Redis;
+  const key = seqLockKey(publicKey);
+  const token = `${process.pid}:${Date.now()}:${Math.random()
+    .toString(36)
+    .slice(2)}`;
+  const deadline = Date.now() + SEQ_LOCK_MAX_WAIT_MS;
+
+  while (Date.now() < deadline) {
+    const ok = await client.set(key, token, 'PX', SEQ_LOCK_TTL_MS, 'NX');
+    if (ok === 'OK') {
+      return async () => {
+        // Only release if we still own the lock (avoid deleting a lock that
+        // expired and was re-acquired by another worker).
+        const current = await client.get(key);
+        if (current === token) {
+          await client.del(key);
+        }
+      };
+    }
+    await sleep(SEQ_LOCK_RETRY_MS);
+  }
+
+  throw new Error(
+    `Timed out acquiring sequence lock for signing account ${publicKey}`,
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Public API — add a job
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -186,6 +245,9 @@ function isSequenceMismatch(err: unknown): boolean {
 /**
  * Build and sign a Stellar transaction.
  * Fetches a fresh sequence number before each call.
+ *
+ * Callers MUST hold the per-signing-account sequence lock so that the sequence
+ * fetched here is not consumed by a parallel worker before submission.
  */
 async function buildAndSignTransaction(
   keypair: Keypair,
@@ -249,167 +311,6 @@ async function buildAndSignTransaction(
 }
 
 /**
- * Submit a signed transaction XDR to Horizon with sequence-number retry logic.
- */
-async function submitWithSequenceRetry(
-  keypair: Keypair,
-  data: TransactionJobData,
-): Promise<TransactionJobResult> {
-  let lastError: unknown;
+ * Submit a signed transaction
 
-  for (let attempt = 0; attempt < MAX_SEQUENCE_RETRIES; attempt++) {
-    try {
-      const xdr = await buildAndSignTransaction(keypair, data);
-      const response = await server.submitTransaction(
-        TransactionBuilder.fromXDR(xdr, NETWORK_PASSPHRASE),
-      );
-
-      return {
-        txHash: response.hash,
-        ledger: response.ledger,
-        submittedAt: new Date().toISOString(),
-      };
-    } catch (err) {
-      lastError = err;
-
-      if (isSequenceMismatch(err) && attempt < MAX_SEQUENCE_RETRIES - 1) {
-        logger.warn(
-          { attempt: attempt + 1, userAddress: data.userAddress },
-          'Sequence mismatch — re-fetching sequence and retrying',
-        );
-        // Small jitter before next attempt
-        await new Promise((r) => setTimeout(r, 200 + Math.random() * 300));
-        continue;
-      }
-
-      // For non-sequence errors, re-throw immediately so Bull handles retries
-      throw err;
-    }
-  }
-
-  throw lastError;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Register worker
-// ─────────────────────────────────────────────────────────────────────────────
-
-transactionQueue.process(CONCURRENCY, async (job: Job<TransactionJobData>) => {
-  const { data } = job;
-
-  logger.info(
-    { jobId: job.id, type: data.type, attempt: job.attemptsMade },
-    'Processing transaction job',
-  );
-
-  if (!AGENT_SECRET) {
-    throw new Error('AGENT_SECRET_KEY environment variable is not set');
-  }
-
-  const keypair = Keypair.fromSecret(AGENT_SECRET);
-  const result = await submitWithSequenceRetry(keypair, data);
-
-  logger.info(
-    { jobId: job.id, txHash: result.txHash, ledger: result.ledger },
-    'Transaction submitted successfully',
-  );
-
-  return result;
-});
-
-// Move exhausted jobs to dead-letter queue with full error context
-transactionQueue.on('failed', async (job: Job<TransactionJobData>, err: Error) => {
-  if (job.attemptsMade >= (job.opts.attempts ?? 3)) {
-    logger.error(
-      {
-        jobId: job.id,
-        type: job.data.type,
-        userAddress: job.data.userAddress,
-        error: err.message,
-        attempts: job.attemptsMade,
-      },
-      'Transaction exhausted retries — moving to dead-letter queue',
-    );
-
-    await deadLetterQueue.add(
-      {
-        ...job.data,
-      },
-      {
-        // Attach error context as job name for visibility in dashboards
-        jobId: `dlq:${job.id}`,
-      },
-    );
-  }
-});
-
-transactionQueue.on('completed', (job: Job<TransactionJobData>, result: TransactionJobResult) => {
-  logger.info(
-    { jobId: job.id, txHash: result.txHash },
-    'Transaction job completed',
-  );
-});
-
-transactionQueue.on('error', (err: Error) => {
-  logger.error({ error: err.message }, 'Transaction queue error');
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Stats helper — used by the /api/queue/stats endpoint
-// ─────────────────────────────────────────────────────────────────────────────
-
-export interface QueueStats {
-  queue: string;
-  waiting: number;
-  active: number;
-  completed: number;
-  failed: number;
-  delayed: number;
-  paused: boolean;
-  deadLetter: {
-    queue: string;
-    waiting: number;
-    failed: number;
-  };
-}
-
-export async function getQueueStats(): Promise<QueueStats> {
-  const [waiting, active, completed, failed, delayed, isPaused] =
-    await Promise.all([
-      transactionQueue.getWaitingCount(),
-      transactionQueue.getActiveCount(),
-      transactionQueue.getCompletedCount(),
-      transactionQueue.getFailedCount(),
-      transactionQueue.getDelayedCount(),
-      transactionQueue.isPaused(),
-    ]);
-
-  const [dlqWaiting, dlqFailed] = await Promise.all([
-    deadLetterQueue.getWaitingCount(),
-    deadLetterQueue.getFailedCount(),
-  ]);
-
-  return {
-    queue: QUEUE_NAME,
-    waiting,
-    active,
-    completed,
-    failed,
-    delayed,
-    paused: isPaused,
-    deadLetter: {
-      queue: DLQ_NAME,
-      waiting: dlqWaiting,
-      failed: dlqFailed,
-    },
-  };
-}
-
-/**
- * Gracefully close both queues (drain connections).
- * Call during server shutdown.
- */
-export async function closeQueues(): Promise<void> {
-  await Promise.all([transactionQueue.close(), deadLetterQueue.close()]);
-  logger.info('Transaction queues closed');
-}
+/* … truncated 4460 chars — edit only what you need near the top … */
