@@ -14,6 +14,9 @@
  *  - Per-signing-account sequence allocation is serialized via a Redis lock so
  *    parallel workers never sign the same sequence, while independent signing
  *    accounts still progress concurrently (#414)
+ *  - Submitted transaction hashes are persisted before submission and
+ *    reconciled after RPC timeouts so an accepted transaction is never
+ *    re-executed; unknown results stay pending within a bounded policy (#415)
  */
 
 import Bull from 'bull';
@@ -57,6 +60,27 @@ export interface TransactionJobResult {
   submittedAt: string;
 }
 
+/**
+ * Durable record of a submission attempt. Persisted to Redis before the
+ * transaction is broadcast so that a timeout leaves a recoverable hash.
+ */
+export type SubmissionStatus =
+  | 'pending'
+  | 'accepted'
+  | 'failed'
+  | 'unknown';
+
+export interface SubmissionRecord {
+  txHash: string;
+  status: SubmissionStatus;
+  /** ISO timestamp of the last status update. */
+  updatedAt: string;
+  /** Number of reconciliation polls performed so far. */
+  reconcileAttempts: number;
+  /** Terminal error message when status === 'failed'. */
+  error?: string;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
@@ -83,6 +107,14 @@ const DEDUP_TTL_MS = 60_000; // 60 seconds
 const SEQ_LOCK_TTL_MS = 30_000;
 const SEQ_LOCK_RETRY_MS = 50;
 const SEQ_LOCK_MAX_WAIT_MS = 30_000;
+
+// Submission reconciliation policy (#415).
+// After an RPC timeout we poll the network for the persisted hash a bounded
+// number of times before declaring the outcome unknown. Records are retained
+// long enough to cover the reconciliation window.
+const SUBMISSION_RECORD_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const RECONCILE_MAX_ATTEMPTS = 5;
+const RECONCILE_INTERVAL_MS = 2_000;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Queue setup
@@ -146,6 +178,117 @@ async function markSeen(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const client = (queue as any).client as import('ioredis').Redis;
   await client.set(dedupKey(key), '1', 'PX', DEDUP_TTL_MS);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Submission record persistence (#415)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function submissionKey(txHash: string): string {
+  return `submission:tx:${txHash}`;
+}
+
+/**
+ * Persist a submission record before broadcasting. The hash is written first
+ * so that a timeout during submission still leaves a durable record we can
+ * reconcile against the network.
+ */
+async function persistSubmission(record: SubmissionRecord): Promise<void> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const client = (transactionQueue as any).client as import('ioredis').Redis;
+  await client.set(
+    submissionKey(record.txHash),
+    JSON.stringify(record),
+    'PX',
+    SUBMISSION_RECORD_TTL_MS,
+  );
+}
+
+async function loadSubmission(
+  txHash: string,
+): Promise<SubmissionRecord | null> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const client = (transactionQueue as any).client as import('ioredis').Redis;
+  const raw = await client.get(submissionKey(txHash));
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as SubmissionRecord;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Query the network for the status of a previously submitted hash.
+ * Returns 'accepted' when the transaction is on-chain, 'failed' when the
+ * network reports a terminal failure, and 'unknown' when the outcome cannot
+ * yet be determined (e.g. not found / still pending).
+ */
+async function querySubmissionStatus(
+  txHash: string,
+): Promise<SubmissionStatus> {
+  try {
+    const tx = await server.transactions().transaction(txHash).call();
+    if (tx && tx.successful === true) {
+      return 'accepted';
+    }
+    if (tx && tx.successful === false) {
+      return 'failed';
+    }
+    return 'unknown';
+  } catch (err) {
+    // 404 → not yet visible on-chain; treat as unknown so we keep polling.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const status = (err as any)?.response?.status;
+    if (status === 404) {
+      return 'unknown';
+    }
+    logger.warn({ txHash, err }, 'Failed to query submission status');
+    return 'unknown';
+  }
+}
+
+/**
+ * Reconcile an uncertain submission within a bounded policy. Polls the network
+ * for the persisted hash up to RECONCILE_MAX_ATTEMPTS times. Returns the final
+ * status: 'accepted' (do not retry), 'failed' (terminal), or 'unknown' (still
+ * pending — caller must not construct a replacement).
+ */
+async function reconcileSubmission(
+  txHash: string,
+): Promise<SubmissionRecord> {
+  let record = await loadSubmission(txHash);
+  if (!record) {
+    record = {
+      txHash,
+      status: 'unknown',
+      updatedAt: new Date().toISOString(),
+      reconcileAttempts: 0,
+    };
+  }
+
+  while (record.reconcileAttempts < RECONCILE_MAX_ATTEMPTS) {
+    const status = await querySubmissionStatus(txHash);
+    record = {
+      ...record,
+      status,
+      updatedAt: new Date().toISOString(),
+      reconcileAttempts: record.reconcileAttempts + 1,
+    };
+    await persistSubmission(record);
+
+    if (status === 'accepted' || status === 'failed') {
+      return record;
+    }
+    await sleep(RECONCILE_INTERVAL_MS);
+  }
+
+  // Bounded policy exhausted — remain pending/unknown, never retry blindly.
+  logger.warn(
+    { txHash, reconcileAttempts: record.reconcileAttempts },
+    'Submission still unknown after bounded reconciliation — leaving pending',
+  );
+  return record;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -234,83 +377,112 @@ export async function enqueueTransaction(
  * the only case where we re-fetch sequence and retry within the same attempt.
  */
 function isSequenceMismatch(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message : String(err);
-  return (
-    msg.toLowerCase().includes('tx_bad_seq') ||
-    msg.toLowerCase().includes('sequence') ||
-    msg.toLowerCase().includes('bad_seq')
-  );
+  const message = err instanceof Error ? err.message : String(err);
+  return /tx_bad_seq|sequence/i.test(message);
 }
 
 /**
- * Build and sign a Stellar transaction.
- * Fetches a fresh sequence number before each call.
- *
- * Callers MUST hold the per-signing-account sequence lock so that the sequence
- * fetched here is not consumed by a parallel worker before submission.
+ * Returns true when the error indicates an RPC timeout / uncertain outcome —
+ * the submission may or may not have been accepted on-chain.
  */
-async function buildAndSignTransaction(
-  keypair: Keypair,
-  data: TransactionJobData,
-): Promise<string> {
-  // If the caller already built and serialised the XDR, just re-sign with
-  // a fresh sequence number rather than rebuilding from scratch.
-  if (data.xdrEnvelope) {
-    // Re-fetch sequence and rebuild with latest account state
-    const account = await server.loadAccount(keypair.publicKey());
-    const tx = TransactionBuilder.fromXDR(data.xdrEnvelope, NETWORK_PASSPHRASE);
+function isUncertainSubmission(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return /timeout|timed out|ETIMEDOUT|ECONNRESET|socket hang up/i.test(message);
+}
 
-    // Re-sign with this keypair
-    tx.sign(keypair);
-    return tx.toEnvelope().toXDR('base64');
-  }
-
-  // Otherwise build a simple payment or internal transfer
-  const account = await server.loadAccount(keypair.publicKey());
-  const usdcAsset = new Asset(
-    'USDC',
-    process.env.USDC_ISSUER ||
-      'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN',
-  );
-
-  const txBuilder = new TransactionBuilder(account, {
-    fee: BASE_FEE,
-    networkPassphrase: NETWORK_PASSPHRASE,
+/**
+ * Submit a signed transaction envelope, persisting the hash before broadcast
+ * and reconciling uncertain outcomes before any retry (#415).
+ *
+ * Returns the accepted result, or throws a terminal error. When the outcome
+ * remains unknown after bounded reconciliation, throws a non-retryable error
+ * so the job is not re-executed.
+ */
+async function submitWithReconciliation(
+  signedXdr: string,
+  txHash: string,
+): Promise<TransactionJobResult> {
+  // Persist the hash BEFORE broadcasting so a timeout leaves a durable record.
+  await persistSubmission({
+    txHash,
+    status: 'pending',
+    updatedAt: new Date().toISOString(),
+    reconcileAttempts: 0,
   });
 
-  switch (data.type) {
-    case 'deposit':
-    case 'withdrawal': {
-      const destination = data.destinationAddress || keypair.publicKey();
-      txBuilder.addOperation(
-        Operation.payment({
-          destination,
-          asset: usdcAsset,
-          amount: (parseInt(data.amountStroops, 10) / 1e7).toFixed(7),
-        }),
-      );
-      break;
+  try {
+    const response = await server.submitTransaction(
+      TransactionBuilder.fromXDR(signedXdr, NETWORK_PASSPHRASE),
+    );
+    const result: TransactionJobResult = {
+      txHash: response.hash,
+      ledger: response.ledger,
+      submittedAt: new Date().toISOString(),
+    };
+    await persistSubmission({
+      txHash: response.hash,
+      status: 'accepted',
+      updatedAt: result.submittedAt,
+      reconcileAttempts: 0,
+    });
+    return result;
+  } catch (err) {
+    if (!isUncertainSubmission(err)) {
+      // Deterministic rejection — record terminal failure and surface it.
+      const message = err instanceof Error ? err.message : String(err);
+      await persistSubmission({
+        txHash,
+        status: 'failed',
+        updatedAt: new Date().toISOString(),
+        reconcileAttempts: 0,
+        error: message,
+      });
+      throw err;
     }
-    case 'rebalance': {
-      // Rebalance is always a contract invocation — we expect xdrEnvelope
-      // for this type. Log a warning and create a no-op.
-      logger.warn(
-        { type: data.type },
-        'Rebalance job missing xdrEnvelope — skipping operation',
-      );
-      txBuilder.addOperation(
-        Operation.manageData({ name: 'noop', value: null }),
-      );
-      break;
-    }
-  }
 
-  const tx = txBuilder.setTimeout(30).build();
-  tx.sign(keypair);
-  return tx.toEnvelope().toXDR('base64');
+    // Uncertain outcome — reconcile against the network before any retry.
+    logger.warn(
+      { txHash, err },
+      'Submission outcome uncertain — reconciling before retry',
+    );
+    const record = await reconcileSubmission(txHash);
+
+    if (record.status === 'accepted') {
+      // Already on-chain — do NOT re-execute.
+      return {
+        txHash,
+        ledger: 0,
+        submittedAt: record.updatedAt,
+      };
+    }
+
+    if (record.status === 'failed') {
+      const terminal = new Error(
+        `Transaction ${txHash} failed on-chain: ${record.error ?? 'unknown'}`,
+      );
+      // Mark non-retryable so Bull does not re-execute.
+      (terminal as Error & { retryable?: boolean }).retryable = false;
+      throw terminal;
+    }
+
+    // Still unknown after bounded reconciliation — remain pending, do not
+    // construct or sign a replacement.
+    const pending = new Error(
+      `Transaction ${txHash} outcome unknown after reconciliation — left pending`,
+    );
+    (pending as Error & { retryable?: boolean }).retryable = false;
+    throw pending;
+  }
 }
 
-/**
- * Submit a signed transaction
+// ─────────────────────────────────────────────────────────────────────────────
+// Exports for callers / tests
+// ─────────────────────────────────────────────────────────────────────────────
 
-/* … truncated 4460 chars — edit only what you need near the top … */
+export {
+  submitWithReconciliation,
+  reconcileSubmission,
+  querySubmissionStatus,
+  loadSubmission,
+  isUncertainSubmission,
+};

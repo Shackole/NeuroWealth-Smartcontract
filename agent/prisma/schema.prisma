@@ -84,6 +84,48 @@ enum TransactionStatus {
 }
 
 // ─────────────────────────────────────────────
+// TRANSACTION SUBMISSIONS
+// Issue #415: durable record of an in-flight
+// transaction submission so an RPC timeout can
+// be reconciled (queried by hash) before any
+// replacement is constructed or signed.
+// ─────────────────────────────────────────────
+model TransactionSubmission {
+  id            String                     @id @default(uuid()) @db.Uuid
+  /// Stellar transaction hash — persisted before/at submission.
+  txHash        String                     @unique @map("tx_hash")
+  /// Source account the transaction was submitted from.
+  sourceAccount String                     @map("source_account")
+  /// Serialized envelope (base64 XDR) so the exact signed
+  /// transaction can be re-queried without re-signing.
+  envelopeXdr   String                     @map("envelope_xdr")
+  status        TransactionSubmissionStatus @default(submitted)
+  /// Number of reconciliation attempts performed so far.
+  attempts      Int                        @default(0)
+  /// Last observed error / timeout message, for operators.
+  lastError     String?                    @map("last_error")
+  /// Ledger at which the transaction was confirmed, if any.
+  ledger        Int?
+  createdAt     DateTime                   @default(now()) @map("created_at")
+  updatedAt     DateTime                   @updatedAt @map("updated_at")
+
+  @@index([status, updatedAt])
+  @@index([sourceAccount, createdAt(sort: Desc)])
+  @@map("transaction_submissions")
+}
+
+enum TransactionSubmissionStatus {
+  /// Persisted, submitted, outcome not yet known.
+  submitted
+  /// RPC timed out / returned unknown — must be reconciled before retry.
+  unknown
+  /// Accepted on-chain — terminal success, never re-execute.
+  confirmed
+  /// Terminal failure — recorded, safe to construct a replacement.
+  failed
+}
+
+// ─────────────────────────────────────────────
 // REBALANCES
 // Agent decisions: records each protocol switch
 // with before/after APY and on-chain proof.
