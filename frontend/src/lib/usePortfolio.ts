@@ -17,6 +17,7 @@ export interface PortfolioData {
   earnings: EarningsSummary;
   chartData: ChartDataPoint[];
   transactions: TransactionRecord[];
+  updatedAt: string;
 }
 
 const REFRESH_INTERVAL_MS = 30_000; // 30 seconds
@@ -35,7 +36,7 @@ async function fetchPortfolio(
     getPortfolioValueHistory(publicKey),
     getRecentTransactions(publicKey),
   ]);
-  return { vaultState, earnings, chartData, transactions };
+  return { vaultState, earnings, chartData, transactions, updatedAt: new Date().toISOString() };
 }
 
 const EMPTY_DATA: PortfolioData = {
@@ -43,6 +44,7 @@ const EMPTY_DATA: PortfolioData = {
   earnings: { today: 0, week: 0, month: 0 },
   chartData: [],
   transactions: [],
+  updatedAt: '',
 };
 
 /**
@@ -53,7 +55,7 @@ const EMPTY_DATA: PortfolioData = {
  * - Exposes `isLoading`, `error`, and a `refresh` function.
  */
 export function usePortfolio(publicKey: string | null) {
-  const { data, error, isLoading, mutate } = useSWR<PortfolioData>(
+  const { data, error, isLoading, isValidating, mutate } = useSWR<PortfolioData>(
     publicKey ? ['portfolio', publicKey] : null,
     ([_key, pk]: [string, string]) => fetchPortfolio(_key, pk),
     {
@@ -68,6 +70,7 @@ export function usePortfolio(publicKey: string | null) {
   return {
     data: data ?? EMPTY_DATA,
     isLoading,
+    isValidating,
     error: error as Error | undefined,
     refresh: () => mutate(),
   };
