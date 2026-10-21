@@ -1,4 +1,6 @@
 import { Router, Request, Response } from 'express';
+import { randomBytes } from 'crypto';
+import { Keypair } from '@stellar/stellar-sdk';
 import { pool } from './db';
 import { authenticateToken, generateToken, UserPayload } from './auth';
 
@@ -8,11 +10,116 @@ export const apiRouter = Router();
 // Authentication Endpoints (/api/auth/*)
 // ==========================================
 
-apiRouter.post('/auth/login', async (req: Request, res: Response): Promise<void> => {
+// Single-use login challenges, keyed by challenge id.
+// Each entry is consumed on first verification attempt and expires after CHALLENGE_TTL_MS.
+const CHALLENGE_TTL_MS = 5 * 60 * 1000;
+
+interface LoginChallenge {
+  stellarAddress: string;
+  message: string;
+  expiresAt: number;
+}
+
+const loginChallenges = new Map<string, LoginChallenge>();
+
+function pruneExpiredChallenges(now: number): void {
+  for (const [id, challenge] of loginChallenges) {
+    if (challenge.expiresAt <= now) {
+      loginChallenges.delete(id);
+    }
+  }
+}
+
+apiRouter.post('/auth/challenge', (req: Request, res: Response): void => {
   const { stellarAddress } = req.body;
 
   if (!stellarAddress || typeof stellarAddress !== 'string' || stellarAddress.trim().length === 0) {
     res.status(400).json({ error: 'Missing or invalid stellarAddress', code: 'INVALID_INPUT' });
+    return;
+  }
+
+  const address = stellarAddress.trim();
+
+  try {
+    Keypair.fromPublicKey(address);
+  } catch {
+    res.status(400).json({ error: 'Invalid Stellar address', code: 'INVALID_ADDRESS' });
+    return;
+  }
+
+  const now = Date.now();
+  pruneExpiredChallenges(now);
+
+  const challengeId = randomBytes(16).toString('hex');
+  const nonce = randomBytes(32).toString('hex');
+  const expiresAt = now + CHALLENGE_TTL_MS;
+  const message = [
+    'NeuroWealth login',
+    `Address: ${address}`,
+    `Nonce: ${nonce}`,
+    `Issued At: ${new Date(now).toISOString()}`,
+    `Expires At: ${new Date(expiresAt).toISOString()}`,
+  ].join('\n');
+
+  loginChallenges.set(challengeId, { stellarAddress: address, message, expiresAt });
+
+  res.status(200).json({
+    challengeId,
+    message,
+    expiresAt: new Date(expiresAt).toISOString(),
+  });
+});
+
+apiRouter.post('/auth/login', async (req: Request, res: Response): Promise<void> => {
+  const { challengeId, stellarAddress, signature } = req.body;
+
+  if (!challengeId || typeof challengeId !== 'string') {
+    res.status(400).json({ error: 'Missing or invalid challengeId', code: 'INVALID_INPUT' });
+    return;
+  }
+
+  if (!stellarAddress || typeof stellarAddress !== 'string' || stellarAddress.trim().length === 0) {
+    res.status(400).json({ error: 'Missing or invalid stellarAddress', code: 'INVALID_INPUT' });
+    return;
+  }
+
+  if (!signature || typeof signature !== 'string' || signature.trim().length === 0) {
+    res.status(400).json({ error: 'Missing or invalid signature', code: 'INVALID_INPUT' });
+    return;
+  }
+
+  const address = stellarAddress.trim();
+  const challenge = loginChallenges.get(challengeId);
+
+  // Single-use: consume the challenge on any verification attempt.
+  loginChallenges.delete(challengeId);
+
+  if (!challenge) {
+    res.status(401).json({ error: 'Unknown or already used challenge', code: 'CHALLENGE_INVALID' });
+    return;
+  }
+
+  if (challenge.expiresAt <= Date.now()) {
+    res.status(401).json({ error: 'Challenge expired', code: 'CHALLENGE_EXPIRED' });
+    return;
+  }
+
+  if (challenge.stellarAddress !== address) {
+    res.status(401).json({ error: 'Challenge does not match address', code: 'CHALLENGE_MISMATCH' });
+    return;
+  }
+
+  let verified = false;
+  try {
+    const keypair = Keypair.fromPublicKey(address);
+    const signatureBytes = Buffer.from(signature.trim(), 'base64');
+    verified = keypair.verify(Buffer.from(challenge.message, 'utf8'), signatureBytes);
+  } catch {
+    verified = false;
+  }
+
+  if (!verified) {
+    res.status(401).json({ error: 'Invalid wallet signature', code: 'SIGNATURE_INVALID' });
     return;
   }
 
@@ -22,7 +129,7 @@ apiRouter.post('/auth/login', async (req: Request, res: Response): Promise<void>
        VALUES ($1)
        ON CONFLICT (stellar_address) DO UPDATE SET updated_at = NOW()
        RETURNING id, stellar_address, strategy_preference`,
-      [stellarAddress.trim()]
+      [address]
     );
 
     const user = result.rows[0];
@@ -262,45 +369,4 @@ apiRouter.get('/apy', (_req: Request, res: Response): void => {
   });
 });
 
-// ==========================================
-// Stats Endpoint (/api/stats)
-// ==========================================
-
-apiRouter.get('/stats', async (_req: Request, res: Response): Promise<void> => {
-  try {
-    const userCountRes = await pool.query('SELECT COUNT(*) AS total_users FROM users');
-    const depositSumRes = await pool.query('SELECT COALESCE(SUM(amount), 0) AS total_deposits FROM deposits');
-    const withdrawSumRes = await pool.query('SELECT COALESCE(SUM(amount), 0) AS total_withdrawals FROM withdrawals');
-
-    const totalUsers = parseInt(userCountRes.rows[0].total_users, 10);
-    const totalDeposits = parseFloat(depositSumRes.rows[0].total_deposits);
-    const totalWithdrawals = parseFloat(withdrawSumRes.rows[0].total_withdrawals);
-    const tvl = Math.max(0, totalDeposits - totalWithdrawals);
-
-    const stratRes = await pool.query(`
-      SELECT strategy_preference, COUNT(*) AS count
-      FROM users
-      GROUP BY strategy_preference
-    `);
-
-    const activeStrategies: Record<string, number> = {
-      conservative: 0,
-      balanced: 0,
-      growth: 0,
-    };
-
-    stratRes.rows.forEach(r => {
-      activeStrategies[r.strategy_preference] = parseInt(r.count, 10);
-    });
-
-    res.status(200).json({
-      tvl,
-      totalUsers,
-      totalDeposits,
-      totalWithdrawals,
-      activeStrategies,
-    });
-  } catch (err: any) {
-    res.status(500).json({ error: 'Failed to retrieve stats', details: err.message });
-  }
-});
+// ==========
