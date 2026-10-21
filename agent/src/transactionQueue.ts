@@ -54,6 +54,15 @@ export interface TransactionJobResult {
   submittedAt: string;
 }
 
+/**
+ * Observable outcome of a deduplication reservation attempt.
+ *  - `reserved`  — this caller won the reservation and may enqueue.
+ *  - `duplicate` — another in-flight request holds a live reservation.
+ *  - `released`  — a reservation was released (enqueue failed / retryable).
+ *  - `expired`   — a reservation was found but had already lapsed.
+ */
+export type ReservationOutcome = 'reserved' | 'duplicate' | 'released' | 'expired';
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
@@ -110,31 +119,59 @@ export const deadLetterQueue: Queue<TransactionJobData> = new Bull<TransactionJo
 const server = new Horizon.Server(STELLAR_RPC_URL);
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Deduplication helpers (Redis SET with TTL via Bull's own Redis connection)
+// Deduplication reservations (atomic SET NX PX via Bull's Redis connection)
 // ─────────────────────────────────────────────────────────────────────────────
 
 function dedupKey(key: string): string {
   return `dedup:tx:${key}`;
 }
 
-async function isDuplicate(
+/**
+ * Atomically reserve a deduplication key.
+ *
+ * Uses `SET key <token> NX PX <ttl>` so the check-and-set happens in a single
+ * Redis round-trip. Concurrent identical requests race on the same key and
+ * exactly one wins the reservation; the rest observe `duplicate`.
+ *
+ * The reservation carries a bounded lifetime (`DEDUP_TTL_MS`) so a crashed or
+ * abandoned enqueue cannot block retries forever.
+ */
+async function reserveDeduplicationKey(
   queue: Queue<TransactionJobData>,
   key: string,
-): Promise<boolean> {
-  // Access Bull's internal Redis client (type-cast needed — Bull exposes it)
+  token: string,
+): Promise<ReservationOutcome> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const client = (queue as any).client as import('ioredis').Redis;
-  const result = await client.get(dedupKey(key));
-  return result !== null;
+  const result = await client.set(dedupKey(key), token, 'PX', DEDUP_TTL_MS, 'NX');
+  return result === 'OK' ? 'reserved' : 'duplicate';
 }
 
-async function markSeen(
+/**
+ * Release a reservation held by `token`.
+ *
+ * Only deletes the key when the stored token matches, so a stale release from
+ * a previous attempt cannot clobber a newer reservation. Returns `released`
+ * when the key was removed, `expired` when it had already lapsed.
+ */
+async function releaseDeduplicationKey(
   queue: Queue<TransactionJobData>,
   key: string,
-): Promise<void> {
+  token: string,
+): Promise<ReservationOutcome> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const client = (queue as any).client as import('ioredis').Redis;
-  await client.set(dedupKey(key), '1', 'PX', DEDUP_TTL_MS);
+  const removed = await client.eval(
+    `if redis.call('get', KEYS[1]) == ARGV[1] then
+       return redis.call('del', KEYS[1])
+     else
+       return 0
+     end`,
+    1,
+    dedupKey(key),
+    token,
+  );
+  return removed === 1 ? 'released' : 'expired';
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -144,23 +181,56 @@ async function markSeen(
 /**
  * Enqueue a Stellar transaction for reliable submission.
  * Returns `null` if the job was deduplicated (already in-flight).
+ *
+ * Deduplication is atomic: a reservation is taken before the job is added and
+ * released if the add fails, so a failed enqueue can be safely retried.
  */
 export async function enqueueTransaction(
   data: TransactionJobData,
 ): Promise<Job<TransactionJobData> | null> {
-  if (await isDuplicate(transactionQueue, data.deduplicationKey)) {
+  const token = `${Date.now()}:${Math.random().toString(36).slice(2)}`;
+  const reservation = await reserveDeduplicationKey(
+    transactionQueue,
+    data.deduplicationKey,
+    token,
+  );
+
+  if (reservation !== 'reserved') {
     logger.warn(
-      { deduplicationKey: data.deduplicationKey },
+      { deduplicationKey: data.deduplicationKey, outcome: reservation },
       'Transaction deduplicated — already queued',
     );
     return null;
   }
 
-  await markSeen(transactionQueue, data.deduplicationKey);
-  const job = await transactionQueue.add(data);
+  let job: Job<TransactionJobData>;
+  try {
+    job = await transactionQueue.add(data);
+  } catch (err) {
+    // Enqueue failed — release the reservation so the request can be retried.
+    const outcome = await releaseDeduplicationKey(
+      transactionQueue,
+      data.deduplicationKey,
+      token,
+    );
+    logger.error(
+      {
+        deduplicationKey: data.deduplicationKey,
+        outcome,
+        err: err instanceof Error ? err.message : String(err),
+      },
+      'Transaction enqueue failed — reservation released for retry',
+    );
+    throw err;
+  }
 
   logger.info(
-    { jobId: job.id, type: data.type, userAddress: data.userAddress },
+    {
+      jobId: job.id,
+      type: data.type,
+      userAddress: data.userAddress,
+      outcome: 'reserved',
+    },
     'Transaction enqueued',
   );
   return job;
@@ -249,167 +319,6 @@ async function buildAndSignTransaction(
 }
 
 /**
- * Submit a signed transaction XDR to Horizon with sequence-number retry logic.
- */
-async function submitWithSequenceRetry(
-  keypair: Keypair,
-  data: TransactionJobData,
-): Promise<TransactionJobResult> {
-  let lastError: unknown;
+ * Submit a signed transact
 
-  for (let attempt = 0; attempt < MAX_SEQUENCE_RETRIES; attempt++) {
-    try {
-      const xdr = await buildAndSignTransaction(keypair, data);
-      const response = await server.submitTransaction(
-        TransactionBuilder.fromXDR(xdr, NETWORK_PASSPHRASE),
-      );
-
-      return {
-        txHash: response.hash,
-        ledger: response.ledger,
-        submittedAt: new Date().toISOString(),
-      };
-    } catch (err) {
-      lastError = err;
-
-      if (isSequenceMismatch(err) && attempt < MAX_SEQUENCE_RETRIES - 1) {
-        logger.warn(
-          { attempt: attempt + 1, userAddress: data.userAddress },
-          'Sequence mismatch — re-fetching sequence and retrying',
-        );
-        // Small jitter before next attempt
-        await new Promise((r) => setTimeout(r, 200 + Math.random() * 300));
-        continue;
-      }
-
-      // For non-sequence errors, re-throw immediately so Bull handles retries
-      throw err;
-    }
-  }
-
-  throw lastError;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Register worker
-// ─────────────────────────────────────────────────────────────────────────────
-
-transactionQueue.process(CONCURRENCY, async (job: Job<TransactionJobData>) => {
-  const { data } = job;
-
-  logger.info(
-    { jobId: job.id, type: data.type, attempt: job.attemptsMade },
-    'Processing transaction job',
-  );
-
-  if (!AGENT_SECRET) {
-    throw new Error('AGENT_SECRET_KEY environment variable is not set');
-  }
-
-  const keypair = Keypair.fromSecret(AGENT_SECRET);
-  const result = await submitWithSequenceRetry(keypair, data);
-
-  logger.info(
-    { jobId: job.id, txHash: result.txHash, ledger: result.ledger },
-    'Transaction submitted successfully',
-  );
-
-  return result;
-});
-
-// Move exhausted jobs to dead-letter queue with full error context
-transactionQueue.on('failed', async (job: Job<TransactionJobData>, err: Error) => {
-  if (job.attemptsMade >= (job.opts.attempts ?? 3)) {
-    logger.error(
-      {
-        jobId: job.id,
-        type: job.data.type,
-        userAddress: job.data.userAddress,
-        error: err.message,
-        attempts: job.attemptsMade,
-      },
-      'Transaction exhausted retries — moving to dead-letter queue',
-    );
-
-    await deadLetterQueue.add(
-      {
-        ...job.data,
-      },
-      {
-        // Attach error context as job name for visibility in dashboards
-        jobId: `dlq:${job.id}`,
-      },
-    );
-  }
-});
-
-transactionQueue.on('completed', (job: Job<TransactionJobData>, result: TransactionJobResult) => {
-  logger.info(
-    { jobId: job.id, txHash: result.txHash },
-    'Transaction job completed',
-  );
-});
-
-transactionQueue.on('error', (err: Error) => {
-  logger.error({ error: err.message }, 'Transaction queue error');
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Stats helper — used by the /api/queue/stats endpoint
-// ─────────────────────────────────────────────────────────────────────────────
-
-export interface QueueStats {
-  queue: string;
-  waiting: number;
-  active: number;
-  completed: number;
-  failed: number;
-  delayed: number;
-  paused: boolean;
-  deadLetter: {
-    queue: string;
-    waiting: number;
-    failed: number;
-  };
-}
-
-export async function getQueueStats(): Promise<QueueStats> {
-  const [waiting, active, completed, failed, delayed, isPaused] =
-    await Promise.all([
-      transactionQueue.getWaitingCount(),
-      transactionQueue.getActiveCount(),
-      transactionQueue.getCompletedCount(),
-      transactionQueue.getFailedCount(),
-      transactionQueue.getDelayedCount(),
-      transactionQueue.isPaused(),
-    ]);
-
-  const [dlqWaiting, dlqFailed] = await Promise.all([
-    deadLetterQueue.getWaitingCount(),
-    deadLetterQueue.getFailedCount(),
-  ]);
-
-  return {
-    queue: QUEUE_NAME,
-    waiting,
-    active,
-    completed,
-    failed,
-    delayed,
-    paused: isPaused,
-    deadLetter: {
-      queue: DLQ_NAME,
-      waiting: dlqWaiting,
-      failed: dlqFailed,
-    },
-  };
-}
-
-/**
- * Gracefully close both queues (drain connections).
- * Call during server shutdown.
- */
-export async function closeQueues(): Promise<void> {
-  await Promise.all([transactionQueue.close(), deadLetterQueue.close()]);
-  logger.info('Transaction queues closed');
-}
+/* … truncated 4460 chars — edit only what you need near the top … */
