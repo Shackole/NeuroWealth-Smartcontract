@@ -4826,7 +4826,25 @@ impl NeuroWealthVault {
             .publish((topics::TOPIC_EMERGENCY_PAUSED,), EmergencyPausedEvent { owner });
     }
 
-    /// Resets the circuit breaker and unpauses the vault.
+    /// Resets the circuit breaker counter and unpauses the vault (Issue #439).
+    ///
+    /// Called by the owner after investigating and resolving the root cause of
+    /// consecutive rebalance failures. The call atomically:
+    /// 1. Sets [`DataKey::ConsecutiveFailures`] back to `0`.
+    /// 2. Clears the [`DataKey::Paused`] flag.
+    /// 3. Emits [`CircuitBreakerResetEvent`].
+    ///
+    /// # Authorization
+    ///
+    /// Only the stored owner may call this function. Any other address —
+    /// including the AI agent — is rejected with [`VaultError::OnlyOwnerCanUnpause`].
+    /// This ensures that a compromised agent key cannot self-heal an
+    /// auto-paused vault.
+    ///
+    /// # Panics
+    ///
+    /// - [`VaultError::NotInitialized`] if the vault has not been initialized.
+    /// - [`VaultError::OnlyOwnerCanUnpause`] if the caller is not the stored owner.
     pub fn reset_circuit_breaker(env: Env, owner: Address) {
         Self::require_initialized(&env);
         owner.require_auth();
@@ -7848,13 +7866,37 @@ impl NeuroWealthVault {
     /// Folds a rebalance outcome into the consecutive-failure circuit breaker
     /// (Issue #439).
     ///
-    /// A `"failed"` status increments the counter; a `"success"` status resets
-    /// it to zero. `"partial"` and `"noop"` outcomes leave the counter
-    /// unchanged. When the counter reaches
-    /// [`DataKey::MaxConsecutiveFailures`] the vault auto-pauses by setting the
-    /// shared [`DataKey::Paused`] flag and emitting the existing
-    /// [`EmergencyPausedEvent`]. The pause is applied at most once per trip: if
-    /// the vault is already paused no duplicate event is emitted.
+    /// ## Status → counter mapping (deterministic boundaries)
+    ///
+    /// | Status      | Counter effect                          | Rationale |
+    /// |-------------|-----------------------------------------|-----------|
+    /// | `"failed"`  | +1 (saturating); may trip breaker       | Supply/withdraw moved zero funds — a real protocol failure |
+    /// | `"success"` | Reset to 0                              | At least one leg moved funds successfully |
+    /// | `"partial"` | **Unchanged** (not counted as failure)  | Funds moved but less than intended; degraded success, not failure |
+    /// | `"noop"`    | **Unchanged** (not counted as failure)  | Nothing to move (idle balance was zero); not a protocol error |
+    ///
+    /// ## Auto-pause
+    ///
+    /// When the counter reaches [`DataKey::MaxConsecutiveFailures`] the vault
+    /// auto-pauses: [`DataKey::Paused`] is set to `true` and
+    /// [`EmergencyPausedEvent`] is emitted. The pause is applied at most once
+    /// per trip — if the vault is already paused no duplicate event is emitted.
+    ///
+    /// ## Trapped cross-contract calls and the CEI pattern
+    ///
+    /// Protocol supply/withdraw cross-contract calls precede this helper in the
+    /// call stack. If a cross-contract call panics the Soroban VM rolls back the
+    /// entire transaction, so `record_rebalance_outcome` is never reached and
+    /// the counter is never incremented. Only outcomes that survive to a clean
+    /// return path (`"failed"`, `"partial"`, `"noop"`, `"success"`) can affect
+    /// the counter — a trapped call cannot create a misleading persistent
+    /// counter expectation.
+    ///
+    /// ## Reset
+    ///
+    /// After the breaker trips, only the owner can recover the vault by calling
+    /// [`reset_circuit_breaker`](crate::NeuroWealthVault::reset_circuit_breaker),
+    /// which atomically zeroes the counter and clears the paused flag.
     fn record_rebalance_outcome(env: &Env, status: &Symbol) {
         if *status == symbol_short!("failed") {
             let failures = env
