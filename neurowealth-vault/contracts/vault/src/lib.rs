@@ -6311,6 +6311,9 @@ impl NeuroWealthVault {
     pub fn update_agent(env: Env, new_agent: Address) {
         Self::require_initialized(&env);
         Self::require_is_owner(&env);
+        // A paused vault must not accept new agent-rotation proposals: the
+        // owner should resolve the pause condition first (Issue #438).
+        Self::require_not_paused(&env);
 
         Self::require(
             &env,
@@ -6360,6 +6363,10 @@ impl NeuroWealthVault {
     pub fn confirm_agent_update(env: Env) {
         Self::require_initialized(&env);
         Self::require_is_owner(&env);
+        // Confirming an agent rotation while paused could activate a key the
+        // operator has not yet verified. Require the vault to be unpaused so
+        // agent changes are only applied during normal operation (Issue #438).
+        Self::require_not_paused(&env);
 
         Self::require(
             &env,
@@ -7404,6 +7411,11 @@ impl NeuroWealthVault {
             VaultError::OnlyAgentCanUpdateTotalAssets,
         );
         agent.require_auth();
+        // Asset reports must not silently update share pricing while the vault
+        // is in an emergency-paused state. Any yield accrual or loss that
+        // occurs during a pause must be applied after the owner has reviewed
+        // the situation and unpaused the vault (Issue #438).
+        Self::require_not_paused(&env);
 
         let old_total = Self::get_total_assets_internal(&env);
 
