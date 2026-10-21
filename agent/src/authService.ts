@@ -12,6 +12,11 @@
  * JWT algorithm: HS256 (symmetric, keyed from JWT_SECRET env var).
  * Nonces are stored in Redis with a 5-minute TTL and are single-use.
  * Refresh tokens rotate on each use — old tokens are immediately invalidated.
+ *
+ * OTP safety (#418): verification is bounded by a durable attempt counter and
+ * an explicit expiry timestamp, resends are rate-limited by a cooldown, and
+ * consumption is atomic (compare-and-delete) so concurrent verifications
+ * across service instances cannot consume the same code twice.
  */
 
 import crypto from 'crypto';
@@ -29,6 +34,15 @@ const NONCE_TTL_S = 5 * 60;                 // 5 minutes
 
 const NONCE_PREFIX = 'siws:nonce:';
 const REFRESH_PREFIX = 'siws:refresh:';
+
+// OTP protection (#418)
+const OTP_TTL_S = 5 * 60;                   // codes expire after 5 minutes
+const OTP_MAX_ATTEMPTS = 5;                 // bounded verification attempts
+const OTP_RESEND_COOLDOWN_S = 30;           // minimum gap between resends
+
+const OTP_PREFIX = 'otp:code:';
+const OTP_ATTEMPTS_PREFIX = 'otp:attempts:';
+const OTP_COOLDOWN_PREFIX = 'otp:cooldown:';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -48,6 +62,14 @@ export interface AuthTokenPair {
   refreshToken: string;
   expiresIn: number;
 }
+
+export type OtpVerifyResult =
+  | { ok: true }
+  | { ok: false; reason: 'expired' | 'consumed' | 'invalid' | 'too_many_attempts' };
+
+export type OtpIssueResult =
+  | { ok: true; code: string; expiresAt: number }
+  | { ok: false; reason: 'cooldown'; retryAfterS: number };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Nonce management
@@ -77,6 +99,121 @@ export async function consumeNonce(
   // Atomic GET-and-DELETE via pipeline
   const [nonce] = await redis.pipeline().get(key).del(key).exec() as [[null, string | null], [null, number]];
   return nonce[1];
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// OTP issuance, verification, and consumption (#418)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Issue a fresh OTP for `address`.
+ *
+ * Resends are rate-limited by a durable cooldown key so a caller cannot spam
+ * new codes.  The code itself is stored with an explicit expiry timestamp and
+ * a fresh attempt counter; the raw code is never logged.
+ */
+export async function issueOtp(redis: Redis, address: string): Promise<OtpIssueResult> {
+  const cooldownKey = `${OTP_COOLDOWN_PREFIX}${address}`;
+  // SET NX EX is atomic across instances: only one issuer wins the cooldown.
+  const acquired = await redis.set(cooldownKey, '1', 'EX', OTP_RESEND_COOLDOWN_S, 'NX');
+  if (acquired !== 'OK') {
+    const ttl = await redis.ttl(cooldownKey);
+    return { ok: false, reason: 'cooldown', retryAfterS: ttl > 0 ? ttl : OTP_RESEND_COOLDOWN_S };
+  }
+
+  const code = crypto.randomInt(0, 1_000_000).toString().padStart(6, '0');
+  const expiresAt = Date.now() + OTP_TTL_S * 1000;
+  const codeKey = `${OTP_PREFIX}${address}`;
+  const attemptsKey = `${OTP_ATTEMPTS_PREFIX}${address}`;
+
+  // Store the code with its expiry; reset the attempt counter for the new code.
+  await redis
+    .multi()
+    .set(codeKey, JSON.stringify({ code, expiresAt }), 'EX', OTP_TTL_S)
+    .del(attemptsKey)
+    .exec();
+
+  return { ok: true, code, expiresAt };
+}
+
+/**
+ * Verify and consume an OTP for `address`.
+ *
+ * - Expired codes fail (`expired`).
+ * - Codes already consumed fail (`consumed`).
+ * - Attempts are bounded; exceeding the limit fails (`too_many_attempts`).
+ * - Consumption is atomic: the code is deleted via compare-and-delete so two
+ *   concurrent verifications cannot both succeed.
+ *
+ * The submitted code is never logged.
+ */
+export async function verifyAndConsumeOtp(
+  redis: Redis,
+  address: string,
+  submittedCode: string,
+): Promise<OtpVerifyResult> {
+  const codeKey = `${OTP_PREFIX}${address}`;
+  const attemptsKey = `${OTP_ATTEMPTS_PREFIX}${address}`;
+
+  // Bound attempts before doing any comparison work.
+  const attempts = await redis.incr(attemptsKey);
+  if (attempts === 1) {
+    // Keep the counter alive at least as long as the code.
+    await redis.expire(attemptsKey, OTP_TTL_S);
+  }
+  if (attempts > OTP_MAX_ATTEMPTS) {
+    return { ok: false, reason: 'too_many_attempts' };
+  }
+
+  const raw = await redis.get(codeKey);
+  if (!raw) {
+    // Either never issued, expired, or already consumed.
+    return { ok: false, reason: 'consumed' };
+  }
+
+  let stored: { code: string; expiresAt: number };
+  try {
+    stored = JSON.parse(raw) as { code: string; expiresAt: number };
+  } catch {
+    return { ok: false, reason: 'invalid' };
+  }
+
+  if (Date.now() > stored.expiresAt) {
+    await redis.del(codeKey);
+    return { ok: false, reason: 'expired' };
+  }
+
+  // Constant-time comparison to avoid timing leaks.
+  const expected = Buffer.from(stored.code, 'utf8');
+  const provided = Buffer.from(submittedCode, 'utf8');
+  const matches =
+    expected.length === provided.length && crypto.timingSafeEqual(expected, provided);
+
+  if (!matches) {
+    return { ok: false, reason: 'invalid' };
+  }
+
+  // Atomic single-use consumption: only the caller that deletes the key wins.
+  // Compare-and-delete via a Lua script so concurrent verifications across
+  // instances cannot both consume the same code.
+  const consumed = await redis.eval(
+    `if redis.call('GET', KEYS[1]) == ARGV[1] then
+       return redis.call('DEL', KEYS[1])
+     else
+       return 0
+     end`,
+    1,
+    codeKey,
+    raw,
+  );
+
+  if (consumed !== 1) {
+    // Another instance consumed it first.
+    return { ok: false, reason: 'consumed' };
+  }
+
+  await redis.del(attemptsKey);
+  return { ok: true };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

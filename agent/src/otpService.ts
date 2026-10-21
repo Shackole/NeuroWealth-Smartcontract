@@ -11,6 +11,9 @@
  *  - Re-verification required after 90 days of inactivity
  *  - On success: user marked verified in DB + Stellar keypair generated
  *  - Private key encrypted at rest with AES-256-GCM before DB storage
+ *  - Single-use consumption via atomic compare-and-delete (Lua) so parallel
+ *    verifications across instances cannot consume the same code twice
+ *  - Resend cooldown enforced in Redis to bound OTP issuance
  */
 
 import crypto from 'crypto';
@@ -27,6 +30,7 @@ import logger from './logger';
 const OTP_TTL_S = 600;             // 10 minutes
 const MAX_ATTEMPTS = 3;
 const LOCKOUT_TTL_S = 30 * 60;    // 30 minutes
+const RESEND_COOLDOWN_S = 60;     // minimum seconds between OTP resends
 const REVERIFY_DAYS = 90;
 const BCRYPT_ROUNDS = 10;
 
@@ -43,6 +47,7 @@ const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
 const OTP_PREFIX = 'otp:hash:';
 const LOCKOUT_PREFIX = 'otp:lockout:';
 const ATTEMPT_PREFIX = 'otp:attempts:';
+const COOLDOWN_PREFIX = 'otp:cooldown:';
 const VERIFIED_PREFIX = 'user:verified:';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -77,6 +82,40 @@ export function createOTPRedisClient(): IORedis {
     logger.error({ error: err.message }, 'Redis error (OTP service)'),
   );
   return client;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Atomic single-use consumption
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Atomically delete the stored OTP hash only if it still matches the value we
+ * just verified. This is a compare-and-delete (CAS) so that two concurrent
+ * verifications of the same code cannot both succeed: the first DEL wins, the
+ * second sees the key gone and returns 0.
+ *
+ * Returns true when this caller consumed the code, false otherwise.
+ */
+const CONSUME_SCRIPT = `
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('DEL', KEYS[1])
+else
+  return 0
+end
+`;
+
+async function consumeOTP(
+  redis: IORedis,
+  phoneHash: string,
+  storedHash: string,
+): Promise<boolean> {
+  const result = await redis.eval(
+    CONSUME_SCRIPT,
+    1,
+    `${OTP_PREFIX}${phoneHash}`,
+    storedHash,
+  );
+  return Number(result) === 1;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -136,6 +175,10 @@ export function decryptSecret(
 /**
  * Generate a 6-digit OTP for a phone hash and store its bcrypt hash in Redis.
  * Returns the plaintext code for delivery to the user (caller must not log it).
+ *
+ * Enforces a resend cooldown so a caller cannot spam OTP issuance. The cooldown
+ * key is set atomically with SET NX so concurrent resends across instances are
+ * bounded to one per window.
  */
 export async function generateOTP(
   redis: IORedis,
@@ -147,6 +190,21 @@ export async function generateOTP(
     const ttl = await redis.ttl(`${LOCKOUT_PREFIX}${phoneHash}`);
     const lockedUntil = new Date(Date.now() + ttl * 1000);
     throw new OTPLockedError(lockedUntil);
+  }
+
+  // Resend cooldown — SET NX is atomic across instances.
+  const cooldownKey = `${COOLDOWN_PREFIX}${phoneHash}`;
+  const acquired = await redis.set(
+    cooldownKey,
+    '1',
+    'EX',
+    RESEND_COOLDOWN_S,
+    'NX',
+  );
+  if (acquired !== 'OK') {
+    const ttl = await redis.ttl(cooldownKey);
+    const retryAfter = ttl > 0 ? ttl : RESEND_COOLDOWN_S;
+    throw new OTPCooldownError(retryAfter);
   }
 
   const code = crypto.randomInt(100_000, 999_999).toString();
@@ -168,7 +226,8 @@ export async function generateOTP(
 
 /**
  * Verify a 6-digit OTP submission.
- * Enforces attempt limits and lockout periods.
+ * Enforces attempt limits and lockout periods, and consumes the code exactly
+ * once even under concurrent verification.
  */
 export async function verifyOTP(
   redis: IORedis,
@@ -232,11 +291,17 @@ export async function verifyOTP(
     };
   }
 
-  // Success — delete OTP and attempt counter (single-use)
-  await redis.pipeline()
-    .del(`${OTP_PREFIX}${phoneHash}`)
-    .del(`${ATTEMPT_PREFIX}${phoneHash}`)
-    .exec();
+  // Success — atomically consume the code (single-use, CAS). If another
+  // concurrent verification already consumed it, this caller must fail.
+  const consumed = await consumeOTP(redis, phoneHash, storedHash);
+  if (!consumed) {
+    return {
+      success: false,
+      message: 'OTP expired or already used. Please request a new code.',
+    };
+  }
+
+  await redis.del(`${ATTEMPT_PREFIX}${phoneHash}`);
 
   logger.info({ phoneHash: phoneHash.substring(0, 8) + '…' }, 'OTP verified successfully');
   return { success: true, message: 'OTP verified successfully.' };
@@ -251,162 +316,6 @@ export async function verifyOTP(
  * Does NOT log the OTP code itself.
  */
 export async function sendOTPViaTwilio(
-  toNumber: string,
-  _code: string,
-): Promise<void> {
-  const accountSid = process.env.TWILIO_ACCOUNT_SID;
-  const authToken = process.env.TWILIO_AUTH_TOKEN;
-  const fromNumber = process.env.TWILIO_PHONE_NUMBER || process.env.TWILIO_WHATSAPP_FROM;
+  toNumber: 
 
-  if (!accountSid || !authToken || !fromNumber) {
-    logger.warn('Twilio credentials not configured — OTP SMS not sent');
-    return;
-  }
-
-  // Lazy import so the module loads cleanly when Twilio is not installed
-  const twilio = (await import('twilio')).default;
-  const client = twilio(accountSid, authToken);
-
-  await client.messages.create({
-    to: toNumber,
-    from: fromNumber,
-    body: `Your NeuroWealth verification code is: ${_code}\n\nExpires in 10 minutes. Do not share this code.`,
-  });
-
-  logger.info({ to: toNumber.slice(0, 6) + '…' }, 'OTP SMS sent');
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// User provisioning — called after successful OTP verification
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Generate a new Stellar keypair for a user and encrypt the secret key.
- * Returns the public key and encrypted secret components.
- * Caller is responsible for persisting these to the database.
- */
-export function generateCustodialKeypair(): WalletCreateResult {
-  const keypair = Keypair.random();
-  const secret = keypair.secret();
-  const { iv, ciphertext, authTag } = encryptSecret(secret);
-
-  return {
-    publicKey: keypair.publicKey(),
-    encryptedPrivateKey: ciphertext,
-    iv,
-    authTag,
-  };
-}
-
-/**
- * Mark a user as verified in the database and create their Stellar keypair.
- * Idempotent — if the user already exists, updates `updated_at` and returns
- * the existing public key.
- */
-export async function onboardVerifiedUser(
-  pool: Pool,
-  phoneHash: string,
-): Promise<{ publicKey: string; isNew: boolean }> {
-  // Check for existing user
-  const existing = await pool.query<{
-    stellar_address: string;
-    updated_at: string;
-  }>(
-    'SELECT stellar_address, updated_at FROM users WHERE phone_hash = $1',
-    [phoneHash],
-  );
-
-  if (existing.rowCount && existing.rowCount > 0) {
-    const user = existing.rows[0];
-    const lastActivity = new Date(user.updated_at);
-    const daysSinceActivity =
-      (Date.now() - lastActivity.getTime()) / (1000 * 60 * 60 * 24);
-
-    if (daysSinceActivity > REVERIFY_DAYS) {
-      // Re-verification required — reset verification timestamp
-      await pool.query(
-        'UPDATE users SET updated_at = NOW() WHERE phone_hash = $1',
-        [phoneHash],
-      );
-      logger.info(
-        { phoneHash: phoneHash.substring(0, 8) + '…', daysSinceActivity },
-        'User re-verified after inactivity',
-      );
-    }
-
-    return { publicKey: user.stellar_address, isNew: false };
-  }
-
-  // New user — generate keypair and insert
-  const wallet = generateCustodialKeypair();
-
-  await pool.query(
-    `INSERT INTO users (stellar_address, phone_hash, strategy_preference, created_at, updated_at)
-     VALUES ($1, $2, 'balanced', NOW(), NOW())`,
-    [wallet.publicKey, phoneHash],
-  );
-
-  // Store the encrypted private key in a separate secure table
-  // (This table must be created via migration — see schema notes below)
-  try {
-    await pool.query(
-      `INSERT INTO custodial_keys (stellar_address, encrypted_secret, iv, auth_tag, created_at)
-       VALUES ($1, $2, $3, $4, NOW())
-       ON CONFLICT (stellar_address) DO NOTHING`,
-      [wallet.publicKey, wallet.encryptedPrivateKey, wallet.iv, wallet.authTag],
-    );
-  } catch (err) {
-    // Table may not exist yet in dev — log but don't fail
-    logger.warn(
-      { error: err instanceof Error ? err.message : String(err) },
-      'custodial_keys table not found — skipping key storage',
-    );
-  }
-
-  logger.info(
-    {
-      publicKey: wallet.publicKey,
-      phoneHash: phoneHash.substring(0, 8) + '…',
-    },
-    'New user provisioned with Stellar keypair',
-  );
-
-  return { publicKey: wallet.publicKey, isNew: true };
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Re-verification check
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Returns true if a user must re-verify their phone number due to inactivity.
- */
-export async function requiresReverification(
-  pool: Pool,
-  phoneHash: string,
-): Promise<boolean> {
-  const result = await pool.query<{ updated_at: string }>(
-    'SELECT updated_at FROM users WHERE phone_hash = $1',
-    [phoneHash],
-  );
-
-  if (!result.rowCount || result.rowCount === 0) return true;
-
-  const lastActivity = new Date(result.rows[0].updated_at);
-  const daysSince = (Date.now() - lastActivity.getTime()) / (1000 * 60 * 60 * 24);
-  return daysSince > REVERIFY_DAYS;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Custom error
-// ─────────────────────────────────────────────────────────────────────────────
-
-export class OTPLockedError extends Error {
-  lockedUntil: Date;
-
-  constructor(lockedUntil: Date) {
-    super(`Account locked until ${lockedUntil.toUTCString()}`);
-    this.name = 'OTPLockedError';
-    this.lockedUntil = lockedUntil;
-  }
-}
+/* … truncated 5175 chars — edit only what you need near the top … */
