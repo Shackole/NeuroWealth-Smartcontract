@@ -30,6 +30,26 @@ const EVENT_PAGE_LIMIT = 100;
  */
 const MAX_PAGES_PER_POLL = Number(process.env.EVENT_MAX_PAGES_PER_POLL || 1000);
 
+/**
+ * Schema version this listener understands. Soroban vault events carry a
+ * versioned topic so the ingestion path can reject payloads it cannot decode
+ * instead of guessing at their shape.
+ */
+const SUPPORTED_EVENT_SCHEMA_VERSION = 1;
+
+/**
+ * Decoded vault event. `amount` is expressed in the asset's smallest unit
+ * (stroops for XLM, base units for issued assets) exactly as emitted on-chain;
+ * `address` is the depositor/withdrawer account or contract address.
+ */
+export interface DecodedVaultEvent {
+  type: 'deposit' | 'withdraw';
+  schemaVersion: number;
+  address: string;
+  amount: bigint;
+  asset: string;
+}
+
 let eventInterval: ReturnType<typeof setInterval> | null = null;
 
 export function stopEventListener() {
@@ -116,18 +136,30 @@ async function drainEventPages(startLedger: number): Promise<number> {
       if (seenEventIds.has(event.id)) continue;
       seenEventIds.add(event.id);
 
-      const topics = event.topic.map(t => t.toString());
-      let eventType = '';
-
-      if (topics.some(t => t.includes('deposit'))) {
-        eventType = 'deposit';
-      } else if (topics.some(t => t.includes('withdraw'))) {
-        eventType = 'withdraw';
+      // Decode the typed topics/values against the vault event schema. A
+      // malformed or unsupported event is isolated to this event: it is
+      // logged and skipped so it cannot crash ingestion or corrupt other
+      // alerts, and the checkpoint still advances past it.
+      let decoded: DecodedVaultEvent | null;
+      try {
+        decoded = decodeVaultEvent(event);
+      } catch (error) {
+        logger.warn(
+          { eventId: event.id, ledger: event.ledger, error: error instanceof Error ? error.message : error },
+          'Skipping malformed vault event',
+        );
+        nextLedger = Math.max(nextLedger, event.ledger + 1);
+        continue;
       }
 
-      if (!eventType) continue;
+      if (!decoded) {
+        nextLedger = Math.max(nextLedger, event.ledger + 1);
+        continue;
+      }
 
-      logger.info({ eventType, ledger: event.ledger }, 'Detected event');
+      const { type: eventType, amount, address, asset } = decoded;
+
+      logger.info({ eventType, ledger: event.ledger, address, asset }, 'Detected event');
 
       await logEventToDb(eventType, event.id, event.ledger);
 
@@ -143,7 +175,15 @@ async function drainEventPages(startLedger: number): Promise<number> {
         }
       }
 
-      const alertPayload = { type: eventType, amount: 150000 };
+      // Alert with the actual on-chain amount and address rather than a
+      // placeholder. `amount` is a bigint in the asset's smallest unit; it is
+      // serialized as a decimal string so no precision is lost in transit.
+      const alertPayload = {
+        type: eventType,
+        amount: amount.toString(),
+        address,
+        asset,
+      };
       await processEventForAlerts(alertPayload);
 
       nextLedger = Math.max(nextLedger, event.ledger + 1);
@@ -163,6 +203,125 @@ async function drainEventPages(startLedger: number): Promise<number> {
   }
 
   return nextLedger;
+}
+
+/**
+ * Decode a raw Soroban event into a typed vault event using the vault event
+ * schema.
+ *
+ * Expected topic layout: `[eventName, schemaVersion]` where `eventName` is
+ * `deposit` or `withdraw` and `schemaVersion` is a u32. The event value is a
+ * map with `address` (string), `amount` (i128, smallest unit) and `asset`
+ * (string).
+ *
+ * Returns `null` for events that are not vault deposit/withdraw events (so
+ * unrelated contract events are ignored). Throws for events that look like
+ * vault events but cannot be decoded, so the caller can isolate them.
+ */
+export function decodeVaultEvent(event: {
+  topic: Array<{ toString(): string }>;
+  value: { toString(): string };
+}): DecodedVaultEvent | null {
+  const topics = event.topic.map((t) => t.toString());
+
+  let type: 'deposit' | 'withdraw' | null = null;
+  if (topics.some((t) => t.includes('deposit'))) {
+    type = 'deposit';
+  } else if (topics.some((t) => t.includes('withdraw'))) {
+    type = 'withdraw';
+  }
+
+  if (!type) return null;
+
+  const schemaVersion = parseSchemaVersion(topics);
+  if (schemaVersion === null) {
+    throw new Error('Vault event is missing a schema version topic');
+  }
+  if (schemaVersion !== SUPPORTED_EVENT_SCHEMA_VERSION) {
+    // Unsupported schema versions are surfaced explicitly so operators can
+    // see them in logs rather than silently dropping the event.
+    logger.warn(
+      { schemaVersion, supported: SUPPORTED_EVENT_SCHEMA_VERSION, topics },
+      'Unsupported vault event schema version',
+    );
+    throw new Error(`Unsupported vault event schema version: ${schemaVersion}`);
+  }
+
+  const value = parseEventValue(event.value.toString());
+
+  const address = value.address;
+  if (typeof address !== 'string' || address.length === 0) {
+    throw new Error('Vault event is missing a valid address');
+  }
+
+  const asset = value.asset;
+  if (typeof asset !== 'string' || asset.length === 0) {
+    throw new Error('Vault event is missing a valid asset');
+  }
+
+  const amount = parseAmount(value.amount);
+  if (amount === null || amount < 0n) {
+    throw new Error('Vault event is missing a valid amount');
+  }
+
+  return { type, schemaVersion, address, amount, asset };
+}
+
+/** Extract the numeric schema version from the event topics, if present. */
+function parseSchemaVersion(topics: string[]): number | null {
+  for (const topic of topics) {
+    const match = topic.match(/schema[_-]?version["':=\s]*(\d+)/i);
+    if (match) return Number(match[1]);
+  }
+  // Fall back to a bare numeric topic (e.g. `1`) as the schema version.
+  for (const topic of topics) {
+    if (/^\d+$/.test(topic.trim())) return Number(topic.trim());
+  }
+  return null;
+}
+
+/**
+ * Parse the event value into a plain object. Soroban RPC returns the value as
+ * a stringified ScVal; we accept a JSON object or a `key:value` map string.
+ */
+function parseEventValue(raw: string): Record<string, unknown> {
+  const trimmed = raw.trim();
+  if (trimmed.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed && typeof parsed === 'object') return parsed as Record<string, unknown>;
+    } catch {
+      // fall through to map parsing
+    }
+  }
+
+  const result: Record<string, unknown> = {};
+  for (const pair of trimmed.split(/[,\n]/)) {
+    const idx = pair.indexOf(':');
+    if (idx === -1) continue;
+    const key = pair.slice(0, idx).trim().replace(/^["']|["']$/g, '');
+    const val = pair.slice(idx + 1).trim().replace(/^["']|["']$/g, '');
+    if (key) result[key] = val;
+  }
+  return result;
+}
+
+/** Parse an amount (string or number) into a bigint in smallest units. */
+function parseAmount(raw: unknown): bigint | null {
+  if (typeof raw === 'bigint') return raw;
+  if (typeof raw === 'number') {
+    return Number.isFinite(raw) && Number.isInteger(raw) ? BigInt(raw) : null;
+  }
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim();
+    if (!/^-?\d+$/.test(trimmed)) return null;
+    try {
+      return BigInt(trimmed);
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
 
 /**
@@ -233,12 +392,6 @@ async function persistCheckpoint(lastLedger: number) {
 async function logEventToDb(type: string, eventId: string, ledger: number) {
   try {
     if (process.env.DATABASE_URL) {
-      await pool.query(
-        'INSERT INTO vault_events (event_id, event_type, ledger_sequence, created_at) VALUES ($1, $2, $3, NOW()) ON CONFLICT DO NOTHING',
-        [eventId, type, ledger]
-      );
-    }
-  } catch (error) {
-    logger.error({ error: error instanceof Error ? error.message : error }, 'Database logging failed');
-  }
-}
+      awa
+
+/* … truncated 330 chars — edit only what you need near the top … */
