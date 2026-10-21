@@ -10256,6 +10256,19 @@ impl NeuroWealthVault {
     ///
     /// Called after every supply/withdraw leg so the cheap local getters never
     /// drift from the pools' own accounting.
+    ///
+    /// # Asset conservation
+    ///
+    /// This function is the enforcement point that keeps `DeployedToBlend` and
+    /// `DeployedToDex` in sync with on-chain reality after each rebalance.
+    /// By overwriting the local trackers with live cross-contract reads, any
+    /// slippage or partial-fill from an external protocol call is automatically
+    /// reflected in the vault's accounting — preventing phantom deployment
+    /// state from accumulating.
+    ///
+    /// # See also
+    ///
+    /// `docs/ASSET_CONSERVATION.md` — full invariant definition and proof.
     fn sync_deployed_split(env: &Env) -> (i128, i128) {
         let blend = Self::get_protocol_balance(env, &symbol_short!("blend"));
         let dex = Self::get_protocol_balance(env, &symbol_short!("dex"));
@@ -10288,6 +10301,31 @@ impl NeuroWealthVault {
 
     /// Splits `total` across the two venues by basis points, giving any
     /// rounding remainder to Blend so the parts never exceed `total`.
+    ///
+    /// # Asset conservation invariant
+    ///
+    /// Both legs use **floor** division, so:
+    ///
+    /// ```text
+    /// blend_target = floor(total x blend_bps / 10_000)
+    /// dex_target   = floor(total x dex_bps   / 10_000)
+    /// idle         = total - blend_target - dex_target  >= 0
+    /// ```
+    ///
+    /// The idle remainder is at most `2` stroops (one per leg).  This ensures
+    /// `blend_target + dex_target <= total` always holds, so the vault can never
+    /// attempt to supply more than its deployable balance.
+    ///
+    /// # Overflow handling
+    ///
+    /// `total x bps` uses `checked_mul`; overflow panics and reverts the
+    /// transaction before any state is written.  In practice `total` is bounded
+    /// by the TVL cap and `bps <= 10_000`, so the product fits in i128.
+    ///
+    /// # See also
+    ///
+    /// `docs/ASSET_CONSERVATION.md` — full proof of the accounting invariant
+    /// across all allocation modes.
     fn split_by_bps(total: i128, blend_bps: u32, dex_bps: u32) -> (i128, i128) {
         if total <= 0 {
             return (0, 0);
