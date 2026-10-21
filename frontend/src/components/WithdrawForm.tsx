@@ -1,8 +1,9 @@
 'use client';
 
 import React, { useState } from 'react';
-import { ArrowUpRight, Loader2, CheckCircle2 } from 'lucide-react';
+import { ArrowUpRight, Loader2, CheckCircle2, Clock, ExternalLink } from 'lucide-react';
 import { withdrawFromVault, withdrawAllFromVault } from '@/lib/contract';
+import { explorerUrl } from '@/lib/vaultHelpers';
 
 export interface WithdrawFormProps {
   userPublicKey: string | null;
@@ -22,6 +23,8 @@ export const WithdrawForm: React.FC<WithdrawFormProps> = ({
   const [actionType, setActionType] = useState<'withdraw' | 'withdraw_all' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [successTx, setSuccessTx] = useState<string | null>(null);
+  const [pendingTx, setPendingTx] = useState<string | null>(null);
+  const [actualAmount, setActualAmount] = useState<number | null>(null);
 
   const numAmount = parseFloat(amount);
   const isPositive = !isNaN(numAmount) && numAmount > 0;
@@ -30,6 +33,32 @@ export const WithdrawForm: React.FC<WithdrawFormProps> = ({
   const canWithdrawAll = balance > 0 && !!userPublicKey;
 
   const estimatedSharesBurned = isPositive ? (numAmount / exchangeRate).toFixed(4) : '0.0000';
+
+  const handleResult = (
+    res: Awaited<ReturnType<typeof withdrawFromVault>>,
+  ) => {
+    if (!res.success) {
+      setError(res.error || 'Withdrawal failed');
+      return;
+    }
+
+    const returnedAmount = res.data && ('amount' in res.data
+      ? res.data.amount
+      : 'amountWithdrawn' in res.data
+        ? res.data.amountWithdrawn
+        : undefined);
+    setActualAmount(typeof returnedAmount === 'number' ? returnedAmount : null);
+
+    if (res.status === 'confirmed' && res.txHash) {
+      setSuccessTx(res.txHash);
+      onSuccess?.(res.txHash);
+      return;
+    }
+
+    // A successful API response can mean only that the transaction was
+    // submitted. Keep the form locked until the ledger result is known.
+    setPendingTx(res.txHash ?? '');
+  };
 
   const handleWithdrawPartial = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -41,10 +70,7 @@ export const WithdrawForm: React.FC<WithdrawFormProps> = ({
 
     try {
       const res = await withdrawFromVault(userPublicKey!, numAmount);
-      if (res.success && res.txHash) {
-        setSuccessTx(res.txHash);
-        if (onSuccess) onSuccess(res.txHash);
-      }
+      handleResult(res);
     } catch (err: any) {
       setError(err?.message || 'Withdrawal failed');
     } finally {
@@ -62,10 +88,7 @@ export const WithdrawForm: React.FC<WithdrawFormProps> = ({
 
     try {
       const res = await withdrawAllFromVault(userPublicKey!);
-      if (res.success && res.txHash) {
-        setSuccessTx(res.txHash);
-        if (onSuccess) onSuccess(res.txHash);
-      }
+      handleResult(res);
     } catch (err: any) {
       setError(err?.message || 'Withdraw All failed');
     } finally {
@@ -92,6 +115,10 @@ export const WithdrawForm: React.FC<WithdrawFormProps> = ({
         </div>
       </div>
 
+      <p id="withdraw-liquidity-note" className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 text-xs leading-relaxed text-amber-100/80">
+        Withdrawals may be partially filled when vault liquidity is limited. Any unfilled amount stays invested as shares; it is not queued and will not be sent automatically. Retry the remaining shares later when liquidity is available. Instant settlement is not guaranteed.
+      </p>
+
       <div>
         <div className="flex justify-between text-xs text-slate-400 mb-1 font-medium">
           <label htmlFor="withdraw-amount-input">Amount (USDC)</label>
@@ -109,7 +136,8 @@ export const WithdrawForm: React.FC<WithdrawFormProps> = ({
             placeholder="0.00"
             aria-label="Withdraw Amount"
             aria-invalid={amount !== '' && !isWithinBalance}
-            aria-describedby={error ? 'withdraw-error' : undefined}
+            aria-describedby={error ? 'withdraw-error' : 'withdraw-liquidity-note'}
+            disabled={loading || !!pendingTx || !!successTx}
             className="w-full bg-slate-900 border border-slate-700 rounded-xl py-2.5 px-3 text-white font-mono text-base focus:outline-none focus:border-indigo-500 transition-colors"
           />
           <button
@@ -152,7 +180,34 @@ export const WithdrawForm: React.FC<WithdrawFormProps> = ({
       {successTx && (
         <div role="status" className="flex items-center gap-2 text-xs text-indigo-400 bg-indigo-500/10 p-2 rounded-lg border border-indigo-500/20">
           <CheckCircle2 size={16} />
-          <span>Withdrawal Successful! Tx: {successTx.slice(0, 10)}...</span>
+          <span>
+            Ledger confirmed {actualAmount !== null ? `${actualAmount.toFixed(2)} USDC withdrawn.` : 'the withdrawal.'}
+            {actualAmount !== null && isPositive && actualAmount + 0.0000001 < numAmount
+              ? ` The remaining ${(numAmount - actualAmount).toFixed(2)} USDC equivalent remains as shares.`
+              : ''}
+            {' '}Tx: {successTx.slice(0, 10)}...
+          </span>
+        </div>
+      )}
+
+      {pendingTx !== null && (
+        <div role="status" className="space-y-2 rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 text-xs text-amber-100/90">
+          <div className="flex items-start gap-2">
+            <Clock size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
+            <p>
+              Submitted; waiting for Stellar ledger confirmation. Do not submit another withdrawal while the status is unknown.
+              {actualAmount !== null && ` Current response reports ${actualAmount.toFixed(2)} USDC returned.`}
+              {actualAmount !== null && isPositive && actualAmount + 0.0000001 < numAmount
+                ? ' The remainder stays as shares and is not queued for automatic payment.'
+                : ''}
+            </p>
+          </div>
+          {pendingTx && (
+            <a href={explorerUrl(pendingTx)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-amber-200 underline underline-offset-2">
+              Check transaction status <ExternalLink size={12} aria-hidden="true" />
+            </a>
+          )}
+          {!pendingTx && <p>Check your wallet activity or contact support before trying again.</p>}
         </div>
       )}
 
@@ -160,7 +215,7 @@ export const WithdrawForm: React.FC<WithdrawFormProps> = ({
         <button
           type="button"
           onClick={handleWithdrawAll}
-          disabled={!canWithdrawAll || loading}
+          disabled={!canWithdrawAll || loading || pendingTx !== null || !!successTx}
           aria-label="Withdraw All"
           className="flex-1 py-3 px-4 rounded-xl border border-indigo-500/30 bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-400 font-semibold text-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
         >
@@ -172,7 +227,7 @@ export const WithdrawForm: React.FC<WithdrawFormProps> = ({
 
         <button
           type="submit"
-          disabled={!canWithdrawPartial || loading}
+          disabled={!canWithdrawPartial || loading || pendingTx !== null || !!successTx}
           aria-label="Confirm Withdraw"
           className="flex-1 py-3 px-4 rounded-xl bg-gradient-to-r from-indigo-500 to-purple-600 hover:from-indigo-400 hover:to-purple-500 text-white font-bold text-sm transition-all shadow-lg disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
         >

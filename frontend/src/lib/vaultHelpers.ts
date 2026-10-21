@@ -32,8 +32,15 @@ const VAULT_CONTRACT_ID =
   process.env.NEXT_PUBLIC_VAULT_CONTRACT_ID ||
   'CDLZFC3SYJYD7M6LJEFAPCHRLHAFKP6WYTHRF3EGO5CYD3EP4GZGM37T';
 
-// ─── Stellar testnet explorer ─────────────────────────────────────────────────
-export const EXPLORER_BASE_URL = 'https://stellar.expert/explorer/testnet/tx';
+export const STELLAR_NETWORK_LABEL = NETWORK_PASSPHRASE === Networks.PUBLIC
+  ? 'Stellar Mainnet'
+  : NETWORK_PASSPHRASE === Networks.TESTNET
+    ? 'Stellar Testnet'
+    : 'Custom Stellar network';
+
+// ─── Stellar Expert explorer ──────────────────────────────────────────────────
+const EXPLORER_NETWORK = NETWORK_PASSPHRASE === Networks.PUBLIC ? 'public' : 'testnet';
+export const EXPLORER_BASE_URL = `https://stellar.expert/explorer/${EXPLORER_NETWORK}/tx`;
 
 /** Build a Stellar Expert link for a transaction hash. */
 export function explorerUrl(txHash: string): string {
@@ -147,6 +154,36 @@ export async function getVaultBalance(publicKey: string): Promise<number> {
   }
 }
 
+/** Read the vault's on-chain Blend and DEX target allocation in basis points. */
+export async function fetchPoolAllocation(
+  publicKey: string,
+): Promise<Array<{ protocol: string; weightBps: number }>> {
+  const server = getServer();
+  const contract = getContract();
+  const account = await server.getAccount(publicKey);
+  const tx = new TransactionBuilder(account, {
+    fee: '100',
+    networkPassphrase: NETWORK_PASSPHRASE,
+  })
+    .addOperation(contract.call('get_allocation'))
+    .setTimeout(30)
+    .build();
+
+  const simulation = await server.simulateTransaction(tx);
+  if (SorobanRpc.Api.isSimulationError(simulation)) {
+    throw new Error('Could not read the vault allocation');
+  }
+
+  const result = (simulation as SorobanRpc.Api.SimulateTransactionSuccessResponse).result;
+  if (!result) throw new Error('Vault allocation is unavailable');
+
+  const [blendBps, dexBps] = scValToNative(result.retval) as [number | bigint, number | bigint];
+  return [
+    { protocol: 'Blend', weightBps: Number(blendBps) },
+    { protocol: 'DEX', weightBps: Number(dexBps) },
+  ];
+}
+
 // ─── Preview shares ───────────────────────────────────────────────────────────
 
 /**
@@ -197,6 +234,7 @@ export async function previewDepositToShares(
 async function buildAndSignTx(
   publicKey: string,
   operation: ReturnType<Contract['call']>,
+  onSignatureRequested?: () => void,
 ): Promise<string> {
   const server = getServer();
   const account = await server.getAccount(publicKey);
@@ -220,6 +258,7 @@ async function buildAndSignTx(
   const xdr = prepared.toXDR();
 
   // Sign with Freighter (non-custodial — private key stays in extension)
+  onSignatureRequested?.();
   const signedXdr = await signWithFreighter(xdr, NETWORK_PASSPHRASE);
   if (!signedXdr) {
     throw new Error('Transaction was rejected or Freighter signing failed');
@@ -228,15 +267,40 @@ async function buildAndSignTx(
   return signedXdr;
 }
 
-/** Submit a signed XDR and poll until confirmed. Returns the tx hash. */
-async function submitAndConfirm(signedXdr: string): Promise<string> {
+export type DepositProgressStage = 'signature' | 'submitted' | 'confirming' | 'confirmed' | 'delayed' | 'failed';
+export type DepositTransaction = 'strategy' | 'deposit';
+export interface DepositProgressUpdate {
+  transaction: DepositTransaction;
+  stage: DepositProgressStage;
+  hash?: string;
+}
+
+export class TransactionDelayedError extends Error {
+  constructor(public readonly transactionHash?: string) {
+    super('The transaction status is not confirmed. Check the wallet and explorer before retrying.');
+    this.name = 'TransactionDelayedError';
+  }
+}
+
+/** Submit a signed XDR and poll until ledger confirmation. Returns the confirmed hash. */
+async function submitAndConfirm(
+  signedXdr: string,
+  transaction: DepositTransaction,
+  onProgress?: (update: DepositProgressUpdate) => void,
+): Promise<string> {
   const server = getServer();
 
   // Parse the signed XDR back to a transaction
   const { Transaction } = await import('@stellar/stellar-sdk');
   const tx = new Transaction(signedXdr, NETWORK_PASSPHRASE);
 
-  const sendResp = await server.sendTransaction(tx);
+  let sendResp: Awaited<ReturnType<typeof server.sendTransaction>>;
+  try {
+    sendResp = await server.sendTransaction(tx);
+  } catch {
+    onProgress?.({ transaction, stage: 'delayed' });
+    throw new TransactionDelayedError();
+  }
 
   if (sendResp.status === 'ERROR') {
     const errResult = sendResp.errorResult;
@@ -247,26 +311,38 @@ async function submitAndConfirm(signedXdr: string): Promise<string> {
     );
   }
 
+  onProgress?.({ transaction, stage: 'submitted', hash: sendResp.hash });
+  onProgress?.({ transaction, stage: 'confirming', hash: sendResp.hash });
+
   // Poll until confirmed (up to 30s)
   const deadline = Date.now() + 30_000;
-  let getResp = await server.getTransaction(sendResp.hash);
-
-  while (
-    getResp.status === SorobanRpc.Api.GetTransactionStatus.NOT_FOUND &&
-    Date.now() < deadline
-  ) {
-    await new Promise((r) => setTimeout(r, 1500));
+  let getResp: Awaited<ReturnType<typeof server.getTransaction>>;
+  try {
     getResp = await server.getTransaction(sendResp.hash);
+
+    while (
+      getResp.status === SorobanRpc.Api.GetTransactionStatus.NOT_FOUND &&
+      Date.now() < deadline
+    ) {
+      await new Promise((r) => setTimeout(r, 1500));
+      getResp = await server.getTransaction(sendResp.hash);
+    }
+  } catch {
+    onProgress?.({ transaction, stage: 'delayed', hash: sendResp.hash });
+    throw new TransactionDelayedError(sendResp.hash);
   }
 
   if (getResp.status === SorobanRpc.Api.GetTransactionStatus.FAILED) {
+    onProgress?.({ transaction, stage: 'failed', hash: sendResp.hash });
     throw new Error('Transaction was included in a ledger but execution failed');
   }
 
   if (getResp.status === SorobanRpc.Api.GetTransactionStatus.NOT_FOUND) {
-    throw new Error('Transaction timed out — it may still be pending. Check the explorer.');
+    onProgress?.({ transaction, stage: 'delayed', hash: sendResp.hash });
+    throw new TransactionDelayedError(sendResp.hash);
   }
 
+  onProgress?.({ transaction, stage: 'confirmed', hash: sendResp.hash });
   return sendResp.hash;
 }
 
@@ -288,6 +364,7 @@ export async function executeDeposit(
   publicKey: string,
   amountUsdc: number,
   strategy: Strategy,
+  onProgress?: (update: DepositProgressUpdate) => void,
 ): Promise<DepositResult> {
   const contract = getContract();
   const rawAmount = toRawUnits(amountUsdc);
@@ -300,8 +377,10 @@ export async function executeDeposit(
     nativeToScVal(strategySymbol, { type: 'symbol' }),
   );
 
-  const strategyXdr = await buildAndSignTx(publicKey, strategyOp);
-  const strategyHash = await submitAndConfirm(strategyXdr);
+  const strategyXdr = await buildAndSignTx(publicKey, strategyOp, () =>
+    onProgress?.({ transaction: 'strategy', stage: 'signature' }),
+  );
+  const strategyHash = await submitAndConfirm(strategyXdr, 'strategy', onProgress);
 
   // ── 2. Deposit into vault ─────────────────────────────────────────────────
   const depositOp = contract.call(
@@ -310,8 +389,10 @@ export async function executeDeposit(
     nativeToScVal(rawAmount, { type: 'i128' }),
   );
 
-  const depositXdr = await buildAndSignTx(publicKey, depositOp);
-  const depositHash = await submitAndConfirm(depositXdr);
+  const depositXdr = await buildAndSignTx(publicKey, depositOp, () =>
+    onProgress?.({ transaction: 'deposit', stage: 'signature' }),
+  );
+  const depositHash = await submitAndConfirm(depositXdr, 'deposit', onProgress);
 
   return { strategyHash, depositHash };
 }

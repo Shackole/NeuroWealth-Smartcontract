@@ -43,7 +43,11 @@ import {
   humanizeError,
   explorerUrl,
   fromRawUnits,
+  STELLAR_NETWORK_LABEL,
+  TransactionDelayedError,
+  type DepositProgressUpdate,
 } from '@/lib/vaultHelpers';
+import { TransactionProgress, type TransactionStep } from '@/components/TransactionProgress';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -94,6 +98,8 @@ const STRATEGY_META: Record<
 
 interface PreviewModalProps {
   amount: number;
+  userPublicKey: string;
+  networkLabel: string;
   strategy: Strategy;
   estimatedShares: number | null;
   isLoading: boolean;
@@ -104,6 +110,8 @@ interface PreviewModalProps {
 
 const PreviewModal: React.FC<PreviewModalProps> = ({
   amount,
+  userPublicKey,
+  networkLabel,
   strategy,
   estimatedShares,
   isLoading,
@@ -138,6 +146,18 @@ const PreviewModal: React.FC<PreviewModalProps> = ({
         {/* Summary rows */}
         <div className="space-y-3 mb-5 text-sm font-mono">
           <div className="flex justify-between items-center text-slate-300">
+            <span className="text-slate-400">Asset</span>
+            <span className="font-semibold text-white">USDC</span>
+          </div>
+          <div className="flex justify-between items-start gap-3 text-slate-300">
+            <span className="text-slate-400">Network</span>
+            <span className="text-right text-white">{networkLabel}</span>
+          </div>
+          <div className="flex justify-between items-start gap-3 text-slate-300">
+            <span className="text-slate-400">Wallet</span>
+            <span className="max-w-[65%] break-all text-right text-white">{userPublicKey}</span>
+          </div>
+          <div className="flex justify-between items-center text-slate-300">
             <span className="text-slate-400">Depositing</span>
             <span className="font-semibold text-white">{amount.toLocaleString()} USDC</span>
           </div>
@@ -145,7 +165,7 @@ const PreviewModal: React.FC<PreviewModalProps> = ({
             <span className="text-slate-400">Strategy</span>
             <span className={`flex items-center gap-1.5 font-semibold ${meta.color}`}>
               <Icon size={13} />
-              {meta.label}
+              {meta.label} preference
               <span className="text-slate-400 font-normal">({meta.apy} APY)</span>
             </span>
           </div>
@@ -168,15 +188,19 @@ const PreviewModal: React.FC<PreviewModalProps> = ({
             )}
           </div>
           <div className="flex justify-between items-center text-slate-300">
-            <span className="text-slate-400">Network Fee</span>
+            <span className="text-slate-400">Estimated network fee</span>
             <span className="text-slate-400">&lt; 0.00001 XLM</span>
           </div>
         </div>
 
         <p className="text-[11px] text-slate-500 mb-5 leading-relaxed">
-          Two transactions will be signed: (1) set your strategy preference, (2) deposit USDC.
-          Both require approval in your Freighter wallet.
+          Your selected strategy is a preference; current shared-pool allocation can differ. Review and approve both transactions in Freighter: save the preference, then deposit USDC. The final fee is shown by your wallet.
         </p>
+        {!isLoading && estimatedShares === null && (
+          <p className="text-xs text-amber-300 mb-4" role="status">
+            Share estimate is unavailable, so signing is disabled. Go back to edit or retry the preview.
+          </p>
+        )}
 
         {/* Actions */}
         <div className="flex gap-3">
@@ -185,11 +209,11 @@ const PreviewModal: React.FC<PreviewModalProps> = ({
             disabled={isSigning}
             className="flex-1 py-2.5 rounded-xl border border-slate-700 text-slate-300 hover:bg-slate-800 transition-colors text-sm font-medium disabled:opacity-50"
           >
-            Cancel
+            Back to edit
           </button>
           <button
             onClick={onConfirm}
-            disabled={isSigning}
+            disabled={isSigning || isLoading || estimatedShares === null}
             className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-slate-950 font-bold text-sm transition-all shadow-glow-emerald disabled:opacity-60 disabled:cursor-not-allowed"
           >
             {isSigning ? (
@@ -198,7 +222,7 @@ const PreviewModal: React.FC<PreviewModalProps> = ({
                 Signing…
               </>
             ) : (
-              'Confirm & Sign'
+              'Review and approve in Freighter'
             )}
           </button>
         </div>
@@ -214,6 +238,7 @@ interface SuccessStateProps {
   strategyHash?: string;
   amount: number;
   strategy: Strategy;
+  networkLabel: string;
   onClose: () => void;
 }
 
@@ -221,6 +246,7 @@ const SuccessState: React.FC<SuccessStateProps> = ({
   depositHash,
   amount,
   strategy,
+  networkLabel,
   onClose,
 }) => {
   const meta = STRATEGY_META[strategy];
@@ -258,7 +284,7 @@ const SuccessState: React.FC<SuccessStateProps> = ({
       </a>
 
       <p className="text-xs text-emerald-400 bg-emerald-500/10 py-2 px-3 rounded-lg border border-emerald-500/20 mb-6 mt-3">
-        Confirmed on Stellar Testnet · ~3–5 second finality
+        Ledger confirmed on {networkLabel}. Confirmation time depends on network conditions.
       </p>
 
       <button
@@ -305,53 +331,79 @@ const ErrorState: React.FC<ErrorStateProps> = ({ message, onRetry, onClose }) =>
   </div>
 );
 
-// ─── Signing Progress ─────────────────────────────────────────────────────────
+// ─── Deposit progress ─────────────────────────────────────────────────────────
 
-const SIGNING_STEPS = [
-  'Fetching account state…',
-  'Simulating strategy transaction…',
-  'Awaiting Freighter approval (1/2)…',
-  'Broadcasting strategy update…',
-  'Simulating deposit transaction…',
-  'Awaiting Freighter approval (2/2)…',
-  'Broadcasting deposit…',
-  'Confirming on-chain…',
-];
+function buildDepositProgressSteps(progress: DepositProgressUpdate | null): TransactionStep[] {
+  const currentTransaction = progress?.transaction;
+  const currentStage = progress?.stage;
+  const hash = progress?.hash;
+  const stageIndex = currentStage === 'signature'
+    ? 0
+    : currentStage === 'submitted'
+      ? 1
+      : currentStage === 'confirming'
+        ? 2
+        : currentStage === 'confirmed'
+          ? 3
+          : currentStage === 'delayed' || currentStage === 'failed'
+            ? 2
+            : -1;
 
-interface SigningProgressProps {
-  step: number;
+  const stepStatus = (transaction: 'strategy' | 'deposit', index: number): TransactionStep['status'] => {
+    if (!currentTransaction) return 'pending';
+    if (currentTransaction === 'deposit' && transaction === 'strategy') return 'done';
+    if (currentTransaction !== transaction) return 'pending';
+    if (currentStage === 'confirmed') return 'done';
+    if (currentStage === 'delayed' && index === 2) return 'delayed';
+    if (currentStage === 'failed' && index === 2) return 'error';
+    if (index < stageIndex) return 'done';
+    if (index === stageIndex) return 'active';
+    return 'pending';
+  };
+
+  const makeTransactionSteps = (transaction: 'strategy' | 'deposit', title: string): TransactionStep[] => [
+    {
+      id: `${transaction}-signature`,
+      label: `${title}: signature requested`,
+      subText: 'Freighter opens so you can review and approve this transaction.',
+      nextAction: 'Approve or reject the request in Freighter.',
+      status: stepStatus(transaction, 0),
+    },
+    {
+      id: `${transaction}-submitted`,
+      label: `${title}: submitted to Stellar`,
+      subText: 'Submission is not confirmation; the ledger result is still being checked.',
+      nextAction: 'Wait while the network returns a ledger result.',
+      status: stepStatus(transaction, 1),
+      explorerUrl: hash ? explorerUrl(hash) : undefined,
+    },
+    {
+      id: `${transaction}-confirmation`,
+      label: `${title}: ledger confirmation`,
+      subText: 'This step is complete only after the ledger reports success.',
+      nextAction: currentStage === 'delayed'
+        ? 'Check the explorer before retrying; do not submit again while status is unknown.'
+        : 'Wait for the confirmed ledger result.',
+      status: stepStatus(transaction, 2),
+      explorerUrl: hash ? explorerUrl(hash) : undefined,
+    },
+  ];
+
+  return [
+    {
+      id: 'review',
+      label: 'Review deposit details',
+      subText: 'USDC amount, network, wallet, strategy preference, and estimated shares.',
+      status: 'done',
+    },
+    ...makeTransactionSteps('strategy', 'Save strategy preference'),
+    ...makeTransactionSteps('deposit', 'Deposit USDC'),
+  ];
 }
-
-const SigningProgress: React.FC<SigningProgressProps> = ({ step }) => (
-  <div className="py-6 text-center" aria-live="polite" aria-label="Transaction in progress">
-    <div className="h-16 w-16 flex items-center justify-center mx-auto mb-5 relative">
-      <div className="absolute inset-0 rounded-full bg-emerald-500/10 border border-emerald-500/30 animate-pulse" />
-      <Loader2 size={32} className="text-emerald-400 animate-spin" aria-hidden="true" />
-    </div>
-    <h3 className="text-lg font-bold text-white mb-2">Processing Transaction</h3>
-    <p className="text-sm text-slate-400 mb-6">
-      {SIGNING_STEPS[Math.min(step, SIGNING_STEPS.length - 1)]}
-    </p>
-    {/* Progress bar */}
-    <div className="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden">
-      <div
-        className="h-full bg-gradient-to-r from-emerald-500 to-teal-400 rounded-full transition-all duration-500"
-        style={{ width: `${((step + 1) / SIGNING_STEPS.length) * 100}%` }}
-        role="progressbar"
-        aria-valuenow={step + 1}
-        aria-valuemin={1}
-        aria-valuemax={SIGNING_STEPS.length}
-      />
-    </div>
-    <p className="text-xs text-slate-500 mt-3">
-      Do not close this window. Stellar confirms in ~3–5 seconds.
-    </p>
-  </div>
-);
 
 // ─── Main DepositForm ─────────────────────────────────────────────────────────
 
-type FormView = 'form' | 'signing' | 'success' | 'error';
+type FormView = 'form' | 'signing' | 'delayed' | 'success' | 'error';
 
 export const DepositForm: React.FC<DepositFormProps> = ({
   isOpen,
@@ -384,7 +436,8 @@ export const DepositForm: React.FC<DepositFormProps> = ({
   const [showPreview, setShowPreview] = useState<boolean>(false);
   const [estimatedShares, setEstimatedShares] = useState<number | null>(null);
   const [previewLoading, setPreviewLoading] = useState<boolean>(false);
-  const [signingStep, setSigningStep] = useState<number>(0);
+  const [progressUpdate, setProgressUpdate] = useState<DepositProgressUpdate | null>(null);
+  const [delayedHash, setDelayedHash] = useState<string | null>(null);
   const [depositResult, setDepositResult] = useState<{ depositHash: string; strategyHash?: string } | null>(null);
   const [errorMessage, setErrorMessage] = useState<string>('');
 
@@ -453,29 +506,24 @@ export const DepositForm: React.FC<DepositFormProps> = ({
   const handleConfirmDeposit = async () => {
     setShowPreview(false);
     setView('signing');
-    setSigningStep(0);
+    setProgressUpdate(null);
+    setDelayedHash(null);
 
     const amount = parseFloat(watchedAmount);
     const strategy = watchedStrategy;
 
     try {
-      // Simulate progress steps during signing
-      const progressInterval = setInterval(() => {
-        setSigningStep((s) => Math.min(s + 1, SIGNING_STEPS.length - 2));
-      }, 2500);
-
-      const result = await executeDeposit(userPublicKey, amount, strategy);
-
-      clearInterval(progressInterval);
-      setSigningStep(SIGNING_STEPS.length - 1);
-
-      // Brief pause so the last step message is visible
-      await new Promise((r) => setTimeout(r, 400));
+      const result = await executeDeposit(userPublicKey, amount, strategy, setProgressUpdate);
 
       setDepositResult(result);
       setView('success');
       onDepositSuccess?.();
     } catch (err) {
+      if (err instanceof TransactionDelayedError) {
+        setDelayedHash(err.transactionHash ?? null);
+        setView('delayed');
+        return;
+      }
       setErrorMessage(humanizeError(err));
       setView('error');
     }
@@ -488,15 +536,17 @@ export const DepositForm: React.FC<DepositFormProps> = ({
     setShowPreview(false);
     setEstimatedShares(null);
     setDepositResult(null);
+    setProgressUpdate(null);
+    setDelayedHash(null);
     setErrorMessage('');
-    setSigningStep(0);
     onClose();
   };
 
   const handleRetry = () => {
     setView('form');
     setErrorMessage('');
-    setSigningStep(0);
+    setProgressUpdate(null);
+    setDelayedHash(null);
   };
 
   if (!isOpen) return null;
@@ -520,7 +570,7 @@ export const DepositForm: React.FC<DepositFormProps> = ({
           aria-modal="true"
           aria-labelledby="deposit-modal-title"
         >
-          {/* Close button — visible except during signing */}
+          {/* Keep the dialog open while a wallet action is in progress. */}
           {view !== 'signing' && (
             <button
               onClick={handleClose}
@@ -699,8 +749,46 @@ export const DepositForm: React.FC<DepositFormProps> = ({
             </form>
           )}
 
-          {/* ── Signing progress ──────────────────────────────────────────── */}
-          {view === 'signing' && <SigningProgress step={signingStep} />}
+          {/* ── Transaction progress ──────────────────────────────────────── */}
+          {view === 'signing' && (
+            <TransactionProgress
+              steps={buildDepositProgressSteps(progressUpdate)}
+              title="Deposit transaction progress"
+            />
+          )}
+
+          {view === 'delayed' && (
+            <div className="space-y-4">
+              <TransactionProgress
+                steps={buildDepositProgressSteps(progressUpdate)}
+                title="Confirmation is delayed"
+              />
+              {delayedHash ? (
+                <a
+                  href={explorerUrl(delayedHash)}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-amber-500/30 px-4 text-sm font-semibold text-amber-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-300"
+                >
+                  Check transaction in Stellar Explorer
+                </a>
+              ) : (
+                <p className="text-sm text-amber-200" role="status">
+                  The network did not return a transaction hash. Check Freighter and your wallet activity before retrying.
+                </p>
+              )}
+              <p className="text-xs text-slate-400">
+                Do not submit this deposit again until you confirm whether the transaction was included in a ledger.
+              </p>
+              <button
+                type="button"
+                onClick={handleClose}
+                className="w-full min-h-11 rounded-xl border border-slate-700 text-slate-200 font-semibold hover:bg-slate-800"
+              >
+                Close
+              </button>
+            </div>
+          )}
 
           {/* ── Success state ─────────────────────────────────────────────── */}
           {view === 'success' && depositResult && (
@@ -709,6 +797,7 @@ export const DepositForm: React.FC<DepositFormProps> = ({
               strategyHash={depositResult.strategyHash}
               amount={numAmount}
               strategy={watchedStrategy}
+              networkLabel={STELLAR_NETWORK_LABEL}
               onClose={handleClose}
             />
           )}
@@ -728,6 +817,8 @@ export const DepositForm: React.FC<DepositFormProps> = ({
       {showPreview && (
         <PreviewModal
           amount={numAmount}
+          userPublicKey={userPublicKey}
+          networkLabel={STELLAR_NETWORK_LABEL}
           strategy={watchedStrategy}
           estimatedShares={estimatedShares}
           isLoading={previewLoading}
