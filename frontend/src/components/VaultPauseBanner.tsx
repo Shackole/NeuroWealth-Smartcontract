@@ -4,23 +4,17 @@
  * VaultPauseBanner
  *
  * Displays a site-wide amber banner when the vault is paused.
- * - Polls /api/vault/status every 30 seconds
+ * - Uses the shared `useVaultStatus` singleton (issue #405) — no local polling
  * - Stacks above the navigation bar (sticky, no content shift)
  * - Dismissible per-session for non-critical pauses
  * - Communicates reason and expected resolution time when available
  */
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { AlertTriangle, X } from 'lucide-react';
-
-export interface VaultStatus {
-  paused: boolean;
-  reason: string | null;
-  expected_resume: string | null;
-}
+import { useVaultStatus } from '@/lib/useVaultStatus';
 
 const SESSION_KEY = 'nw_pause_banner_dismissed';
-const POLL_INTERVAL_MS = 30_000;
 
 function formatResume(iso: string | null): string | null {
   if (!iso) return null;
@@ -39,48 +33,32 @@ function formatResume(iso: string | null): string | null {
 }
 
 export function VaultPauseBanner() {
-  const [status, setStatus] = useState<VaultStatus | null>(null);
+  const { paused, reason, expectedResume } = useVaultStatus();
   const [dismissed, setDismissed] = useState(false);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const fetchStatus = useCallback(async () => {
-    try {
-      const res = await fetch('/api/vault/status');
-      if (!res.ok) return;
-      const data: VaultStatus = await res.json();
-      setStatus(data);
-      // Re-show banner if vault paused again after a previous dismissal
-      if (data.paused) {
-        const wasDismissed = sessionStorage.getItem(SESSION_KEY);
-        if (!wasDismissed) setDismissed(false);
-      }
-    } catch {
-      // silent — don't disrupt UX on network error
+  // Read session-storage dismissal flag on mount
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      setDismissed(sessionStorage.getItem(SESSION_KEY) === '1');
     }
   }, []);
 
+  // Re-show banner if the vault becomes paused after a prior dismissal
   useEffect(() => {
-    // Check session dismissal state on mount
-    if (typeof window !== 'undefined') {
+    if (paused) {
       const wasDismissed = sessionStorage.getItem(SESSION_KEY) === '1';
-      setDismissed(wasDismissed);
+      if (!wasDismissed) setDismissed(false);
     }
-
-    fetchStatus();
-    intervalRef.current = setInterval(fetchStatus, POLL_INTERVAL_MS);
-    return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
-    };
-  }, [fetchStatus]);
+  }, [paused]);
 
   const handleDismiss = () => {
     setDismissed(true);
     sessionStorage.setItem(SESSION_KEY, '1');
   };
 
-  if (!status?.paused || dismissed) return null;
+  if (!paused || dismissed) return null;
 
-  const resumeIn = formatResume(status.expected_resume);
+  const resumeIn = formatResume(expectedResume);
 
   return (
     <div
@@ -103,8 +81,8 @@ export function VaultPauseBanner() {
               Funds are safe.
             </p>
             <p className="text-xs mt-0.5 opacity-80 leading-tight">
-              {status.reason
-                ? `Reason: ${status.reason}.`
+              {reason
+                ? `Reason: ${reason}.`
                 : 'The vault owner has triggered an emergency pause.'}
               {resumeIn && ` Expected resolution: ${resumeIn}.`}
             </p>
