@@ -51,6 +51,51 @@ function computeBackoffMs(attempt: number, baseMs = 2000, maxMs = 60000): number
   return Math.min(baseMs * Math.pow(2, attempt - 1), maxMs);
 }
 
+// ── Checkpoint / cursor helpers (mirror production persistence logic) ────────
+// A cursor is the last committed event paging token. Persisting it lets a
+// restart resume ingestion instead of jumping to the newest ledger.
+interface CheckpointStore {
+  load(): string | null;
+  save(cursor: string): void;
+}
+
+function createMemoryStore(initial: string | null = null): CheckpointStore {
+  let value = initial;
+  return {
+    load: () => value,
+    save: (cursor: string) => {
+      value = cursor;
+    },
+  };
+}
+
+// Resolve the starting cursor. A missing/expired cursor enters an explicit
+// recovery path: fall back to the configured start ledger rather than the
+// newest ledger, so no events are silently skipped.
+function resolveStartCursor(
+  store: CheckpointStore,
+  fallbackCursor: string,
+): { cursor: string; recovered: boolean } {
+  const persisted = store.load();
+  if (persisted === null || persisted === '') {
+    return { cursor: fallbackCursor, recovered: true };
+  }
+  return { cursor: persisted, recovered: false };
+}
+
+// Advance the checkpoint only after the batch has been durably processed.
+function commitAfterProcessing(
+  store: CheckpointStore,
+  batch: { cursor: string }[],
+  process: (batch: { cursor: string }[]) => void,
+): string | null {
+  if (batch.length === 0) return store.load();
+  process(batch);
+  const last = batch[batch.length - 1].cursor;
+  store.save(last);
+  return last;
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 let passed = 0;
 let failed = 0;
@@ -135,6 +180,61 @@ test('back-off doubles on each attempt', () => {
 
 test('back-off is capped at maxMs', () => {
   assert.strictEqual(computeBackoffMs(100), 60000);
+});
+
+// Checkpoint persistence
+test('resumes from persisted cursor after restart', () => {
+  const store = createMemoryStore('cursor-100');
+  const { cursor, recovered } = resolveStartCursor(store, 'cursor-0');
+  assert.strictEqual(cursor, 'cursor-100');
+  assert.strictEqual(recovered, false);
+});
+
+test('missing cursor enters explicit recovery path', () => {
+  const store = createMemoryStore(null);
+  const { cursor, recovered } = resolveStartCursor(store, 'cursor-0');
+  assert.strictEqual(cursor, 'cursor-0');
+  assert.strictEqual(recovered, true);
+});
+
+test('empty cursor is treated as missing', () => {
+  const store = createMemoryStore('');
+  const { recovered } = resolveStartCursor(store, 'cursor-0');
+  assert.strictEqual(recovered, true);
+});
+
+test('checkpoint advances only after durable processing', () => {
+  const store = createMemoryStore('cursor-100');
+  const batch = [{ cursor: 'cursor-101' }, { cursor: 'cursor-102' }];
+  let processed = false;
+  const committed = commitAfterProcessing(store, batch, () => {
+    processed = true;
+    // checkpoint must not advance before processing completes
+    assert.strictEqual(store.load(), 'cursor-100');
+  });
+  assert.strictEqual(processed, true);
+  assert.strictEqual(committed, 'cursor-102');
+  assert.strictEqual(store.load(), 'cursor-102');
+});
+
+test('checkpoint does not advance when processing throws', () => {
+  const store = createMemoryStore('cursor-100');
+  const batch = [{ cursor: 'cursor-101' }];
+  assert.throws(() =>
+    commitAfterProcessing(store, batch, () => {
+      throw new Error('durable write failed');
+    }),
+  );
+  assert.strictEqual(store.load(), 'cursor-100');
+});
+
+test('empty batch leaves checkpoint unchanged', () => {
+  const store = createMemoryStore('cursor-100');
+  const committed = commitAfterProcessing(store, [], () => {
+    throw new Error('should not process empty batch');
+  });
+  assert.strictEqual(committed, 'cursor-100');
+  assert.strictEqual(store.load(), 'cursor-100');
 });
 
 // ── Summary ───────────────────────────────────────────────────────────────────
