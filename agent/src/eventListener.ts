@@ -20,6 +20,16 @@ const VAULT_CONTRACT_ID = process.env.VAULT_CONTRACT_ID || '';
  */
 const DEFAULT_LOOKBACK_LEDGERS = Number(process.env.EVENT_LOOKBACK_LEDGERS || 1000);
 
+/** Page size requested from Soroban RPC `getEvents`. */
+const EVENT_PAGE_LIMIT = 100;
+
+/**
+ * Safety bound on pages drained per poll so a single tick cannot loop
+ * unboundedly if the RPC keeps returning a cursor. Each page is committed
+ * before the next is fetched, so a stop here resumes from the last cursor.
+ */
+const MAX_PAGES_PER_POLL = Number(process.env.EVENT_MAX_PAGES_PER_POLL || 1000);
+
 let eventInterval: ReturnType<typeof setInterval> | null = null;
 
 export function stopEventListener() {
@@ -35,7 +45,8 @@ export function stopEventListener() {
  * Detects new deposits within 5 seconds and triggers yield deployment.
  *
  * The last committed cursor is persisted so restarts resume ingestion from
- * where they left off rather than only from the newest ledger.
+ * where they left off rather than only from the newest ledger. Each poll
+ * drains every result page for the window before advancing the checkpoint.
  */
 export async function startEventListener() {
   if (!VAULT_CONTRACT_ID) {
@@ -55,55 +66,7 @@ export async function startEventListener() {
 
     eventInterval = setInterval(async () => {
       try {
-        const response = await withRetry(
-          () => rpcCall((s) => s.getEvents({
-            startLedger,
-            filters: [
-              {
-                type: 'contract',
-                contractIds: [VAULT_CONTRACT_ID],
-              }
-            ],
-            limit: 100,
-          })),
-          'getEvents',
-        );
-
-        for (const event of response.events) {
-          const topics = event.topic.map(t => t.toString());
-          let eventType = '';
-
-          if (topics.some(t => t.includes('deposit'))) {
-            eventType = 'deposit';
-          } else if (topics.some(t => t.includes('withdraw'))) {
-            eventType = 'withdraw';
-          }
-
-          if (!eventType) continue;
-
-          logger.info({ eventType, ledger: event.ledger }, 'Detected event');
-
-          await logEventToDb(eventType, event.id, event.ledger);
-
-          if (eventType === 'deposit') {
-            logger.info('New deposit detected, evaluating yield');
-            const userStrategy = 'balanced';
-            const currentProtocol = 'none';
-
-            const decision = await evaluateYield(userStrategy, currentProtocol, 0);
-
-            if (decision.shouldRebalance) {
-              logger.info({ targetProtocol: decision.targetProtocol }, 'Rebalance needed');
-            }
-          }
-
-          const alertPayload = { type: eventType, amount: 150000 };
-          await processEventForAlerts(alertPayload);
-
-          // Advance the cursor only after the event has been durably processed.
-          startLedger = Math.max(startLedger, event.ledger + 1);
-          await persistCheckpoint(startLedger);
-        }
+        startLedger = await drainEventPages(startLedger);
       } catch (error) {
         logger.error({ error: error instanceof Error ? error.message : error }, 'Error polling Soroban events');
       }
@@ -112,6 +75,94 @@ export async function startEventListener() {
   } catch (error) {
     logger.error({ error: error instanceof Error ? error.message : error }, 'Failed to initialize event listener');
   }
+}
+
+/**
+ * Fetch and process every result page for the current ledger window.
+ *
+ * Soroban RPC caps `getEvents` at `limit` results per call and returns a
+ * `cursor` for the next page. We follow that cursor until the RPC reports no
+ * more pages, processing each event exactly once (deduped by event id) and
+ * advancing the persisted checkpoint only after the whole window is drained.
+ * If a page fails, the checkpoint stays at the last committed cursor so the
+ * next poll resumes from there.
+ *
+ * Returns the ledger to resume from on the next poll.
+ */
+async function drainEventPages(startLedger: number): Promise<number> {
+  let cursor: string | undefined;
+  let nextLedger = startLedger;
+  const seenEventIds = new Set<string>();
+
+  for (let page = 0; page < MAX_PAGES_PER_POLL; page++) {
+    const response = await withRetry(
+      () => rpcCall((s) => s.getEvents({
+        startLedger,
+        ...(cursor ? { cursor } : {}),
+        filters: [
+          {
+            type: 'contract',
+            contractIds: [VAULT_CONTRACT_ID],
+          }
+        ],
+        limit: EVENT_PAGE_LIMIT,
+      })),
+      'getEvents',
+    );
+
+    for (const event of response.events) {
+      // Dedupe across pages so an event is processed once logically even if
+      // the RPC re-serves it while paginating.
+      if (seenEventIds.has(event.id)) continue;
+      seenEventIds.add(event.id);
+
+      const topics = event.topic.map(t => t.toString());
+      let eventType = '';
+
+      if (topics.some(t => t.includes('deposit'))) {
+        eventType = 'deposit';
+      } else if (topics.some(t => t.includes('withdraw'))) {
+        eventType = 'withdraw';
+      }
+
+      if (!eventType) continue;
+
+      logger.info({ eventType, ledger: event.ledger }, 'Detected event');
+
+      await logEventToDb(eventType, event.id, event.ledger);
+
+      if (eventType === 'deposit') {
+        logger.info('New deposit detected, evaluating yield');
+        const userStrategy = 'balanced';
+        const currentProtocol = 'none';
+
+        const decision = await evaluateYield(userStrategy, currentProtocol, 0);
+
+        if (decision.shouldRebalance) {
+          logger.info({ targetProtocol: decision.targetProtocol }, 'Rebalance needed');
+        }
+      }
+
+      const alertPayload = { type: eventType, amount: 150000 };
+      await processEventForAlerts(alertPayload);
+
+      nextLedger = Math.max(nextLedger, event.ledger + 1);
+    }
+
+    // Advance the checkpoint only after this page has been fully processed.
+    if (nextLedger !== startLedger) {
+      await persistCheckpoint(nextLedger);
+    }
+
+    // No further pages for this window.
+    if (!response.cursor || response.events.length < EVENT_PAGE_LIMIT) {
+      break;
+    }
+
+    cursor = response.cursor;
+  }
+
+  return nextLedger;
 }
 
 /**

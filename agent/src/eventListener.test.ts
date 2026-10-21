@@ -96,6 +96,64 @@ function commitAfterProcessing(
   return last;
 }
 
+// ── Paginated drain helpers (mirror production page-draining logic) ──────────
+// A single RPC page returns at most `pageSize` events plus a paging cursor for
+// the next page. A ledger window may span multiple pages, so we must keep
+// following the cursor until the RPC reports no more pages before advancing
+// the checkpoint.
+interface EventPage {
+  events: { id: string; cursor: string }[];
+  nextCursor: string | null;
+}
+
+// Fetch a single page starting at `cursor`. `pageSize` mirrors the RPC limit
+// (100 events per page).
+function fetchPage(
+  allEvents: { id: string; cursor: string }[],
+  cursor: string,
+  pageSize = 100,
+): EventPage {
+  const start = allEvents.findIndex((e) => e.cursor === cursor);
+  const from = start === -1 ? 0 : start;
+  const slice = allEvents.slice(from, from + pageSize);
+  const nextCursor =
+    from + pageSize < allEvents.length
+      ? allEvents[from + pageSize].cursor
+      : null;
+  return { events: slice, nextCursor };
+}
+
+// Drain every page for the window, processing each event exactly once, then
+// commit the checkpoint to the last consumed cursor. If processing throws, the
+// checkpoint stays at the last committed cursor so a restart resumes there.
+function drainAllPages(
+  store: CheckpointStore,
+  allEvents: { id: string; cursor: string }[],
+  startCursor: string,
+  process: (events: { id: string; cursor: string }[]) => void,
+  pageSize = 100,
+): { processed: number; committed: string | null } {
+  const seen = new Set<string>();
+  let cursor: string | null = startCursor;
+  let lastCommitted = store.load();
+  let processed = 0;
+
+  while (cursor !== null) {
+    const page = fetchPage(allEvents, cursor, pageSize);
+    const fresh = page.events.filter((e) => !seen.has(e.id));
+    if (fresh.length > 0) {
+      process(fresh);
+      for (const e of fresh) seen.add(e.id);
+      processed += fresh.length;
+      lastCommitted = fresh[fresh.length - 1].cursor;
+      store.save(lastCommitted);
+    }
+    cursor = page.nextCursor;
+  }
+
+  return { processed, committed: lastCommitted };
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 let passed = 0;
 let failed = 0;
@@ -235,6 +293,79 @@ test('empty batch leaves checkpoint unchanged', () => {
   });
   assert.strictEqual(committed, 'cursor-100');
   assert.strictEqual(store.load(), 'cursor-100');
+});
+
+// Paginated drain (#411)
+function makeEvents(count: number): { id: string; cursor: string }[] {
+  return Array.from({ length: count }, (_, i) => ({
+    id: `evt-${i}`,
+    cursor: `cursor-${i}`,
+  }));
+}
+
+test('drains all pages for a window with more than 100 events', () => {
+  const store = createMemoryStore('cursor-0');
+  const events = makeEvents(250);
+  const processedIds: string[] = [];
+  const { processed, committed } = drainAllPages(
+    store,
+    events,
+    'cursor-0',
+    (batch) => processedIds.push(...batch.map((e) => e.id)),
+  );
+  assert.strictEqual(processed, 250);
+  assert.strictEqual(processedIds.length, 250);
+  assert.strictEqual(committed, 'cursor-249');
+  assert.strictEqual(store.load(), 'cursor-249');
+});
+
+test('processes each event exactly once across pages', () => {
+  const store = createMemoryStore('cursor-0');
+  const events = makeEvents(230);
+  const seen = new Map<string, number>();
+  drainAllPages(store, events, 'cursor-0', (batch) => {
+    for (const e of batch) seen.set(e.id, (seen.get(e.id) ?? 0) + 1);
+  });
+  assert.strictEqual(seen.size, 230);
+  for (const count of seen.values()) assert.strictEqual(count, 1);
+});
+
+test('checkpoint advances only after all pages are consumed', () => {
+  const store = createMemoryStore('cursor-0');
+  const events = makeEvents(150);
+  const observed: (string | null)[] = [];
+  drainAllPages(store, events, 'cursor-0', () => {
+    observed.push(store.load());
+  });
+  // First page commits cursor-99, second page commits cursor-149.
+  assert.deepStrictEqual(observed, ['cursor-99', 'cursor-149']);
+  assert.strictEqual(store.load(), 'cursor-149');
+});
+
+test('failure resumes at the last committed cursor', () => {
+  const store = createMemoryStore('cursor-0');
+  const events = makeEvents(250);
+  let calls = 0;
+  assert.throws(() =>
+    drainAllPages(store, events, 'cursor-0', () => {
+      calls++;
+      if (calls === 2) throw new Error('durable write failed');
+    }),
+  );
+  // First page committed; second page failed before advancing.
+  assert.strictEqual(store.load(), 'cursor-99');
+
+  const resumedIds: string[] = [];
+  const { processed } = drainAllPages(
+    store,
+    events,
+    store.load() as string,
+    (batch) => resumedIds.push(...batch.map((e) => e.id)),
+  );
+  // Resume from cursor-99: 150 remaining events (100..249).
+  assert.strictEqual(processed, 150);
+  assert.strictEqual(resumedIds[0], 'evt-99');
+  assert.strictEqual(store.load(), 'cursor-249');
 });
 
 // ── Summary ───────────────────────────────────────────────────────────────────
