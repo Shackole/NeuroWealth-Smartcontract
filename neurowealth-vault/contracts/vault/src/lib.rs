@@ -9566,6 +9566,29 @@ impl NeuroWealthVault {
     /// Internal helper: convert assets (USDC) to shares using current totals.
     /// Uses floor division - safe for deposits (user gets fewer shares, vault benefits).
     ///
+    /// # Rounding rule — FLOOR (vault-protective)
+    ///
+    /// `shares = floor(assets × total_shares / total_assets)`
+    ///
+    /// Rounding down means the user mints *at most* their proportional share.
+    /// Any fractional remainder accrues to the pool, never to the depositor.
+    /// This is the ERC-4626 convention for the deposit direction.
+    ///
+    /// # Bootstrap case
+    ///
+    /// When `total_shares == 0` **or** `total_assets == 0` the vault has no
+    /// existing position to price against.  A 1-to-1 mapping (`shares = assets`)
+    /// is used so that the first depositor sets the initial exchange rate without
+    /// paying a rounding penalty.
+    ///
+    /// # Overflow handling
+    ///
+    /// The intermediate `assets * total_shares` is computed with
+    /// `checked_mul`.  Overflow panics via `expect`, which maps to a
+    /// Soroban transaction revert under `#![no_std]`.  In practice the TVL
+    /// cap (`DEFAULT_TVL_CAP`) keeps both operands well within i128 range;
+    /// the check is defence-in-depth for pathological inputs.
+    ///
     /// # Inflation-attack note
     /// Pricing reads the stored `TotalAssets` (see [`get_total_assets_internal`](crate::NeuroWealthVault::get_total_assets_internal)),
     /// NOT the vault's live token balance. Direct "donations" (token transfers to
@@ -9575,6 +9598,11 @@ impl NeuroWealthVault {
     /// vaults) are unnecessary as a result. The `deposit` entrypoint additionally
     /// rejects zero-share mints and enforces a minimum deposit; see [`deposit`](crate::NeuroWealthVault::deposit)
     /// for the full mitigation rationale.
+    ///
+    /// # See also
+    ///
+    /// `docs/ROUNDING_TABLE.md` — complete rounding-policy reference for every
+    /// entrypoint.
     #[inline]
     fn convert_to_shares_internal(env: &Env, assets: i128) -> i128 {
         if assets == 0 {
@@ -9599,6 +9627,47 @@ impl NeuroWealthVault {
     /// Internal helper: convert assets (USDC) to shares using current totals.
     /// Uses ceiling division - safe for withdrawals (user burns more shares, vault benefits).
     /// Prevents dust attacks where floor division could result in 0 shares burned.
+    ///
+    /// # Rounding rule — CEILING (vault-protective)
+    ///
+    /// `shares = ceil(assets × total_shares / total_assets)`
+    ///
+    /// Ceiling division ensures that the user always burns *at least* their
+    /// proportional share of shares, rounded up by at most 1.  This prevents
+    /// "free withdrawal" dust attacks where a tiny asset amount would produce
+    /// 0 shares burned under floor division.
+    ///
+    /// # Ceiling formula
+    ///
+    /// ```text
+    /// ceil(a / b) = (a + b - 1) / b   for b >= 1
+    /// ```
+    ///
+    /// Applied here as:
+    ///
+    /// ```text
+    /// ceil(assets × total_shares / total_assets)
+    ///   = (assets × total_shares + total_assets - 1) / total_assets
+    /// ```
+    ///
+    /// # Bootstrap case
+    ///
+    /// When `total_shares == 0` or `total_assets == 0`, returns `assets`
+    /// directly (1:1, same as the floor path).  The ceiling of an integer is
+    /// that integer itself.
+    ///
+    /// # Overflow handling
+    ///
+    /// Three checked operations are chained: `checked_mul`, `checked_sub`,
+    /// and `checked_add`.  Any overflow panics and reverts the transaction.
+    /// The `checked_sub(1)` on `total_assets` cannot underflow in this branch
+    /// because `total_assets >= 1` is guaranteed by the `total_assets == 0`
+    /// early-return above.
+    ///
+    /// # See also
+    ///
+    /// `docs/ROUNDING_TABLE.md` — complete rounding-policy reference for every
+    /// entrypoint.
     #[inline]
     fn convert_to_shares_internal_ceil(env: &Env, assets: i128) -> i128 {
         if assets == 0 {
@@ -9634,6 +9703,29 @@ impl NeuroWealthVault {
     }
 
     /// Internal helper: convert shares to assets (USDC) using current totals.
+    ///
+    /// # Rounding rule — FLOOR (vault-protective)
+    ///
+    /// `assets = floor(shares × total_assets / total_shares)`
+    ///
+    /// Rounding down means users receive *at most* their proportional entitlement.
+    /// Any fractional remainder accrues to the pool.  This is the ERC-4626
+    /// convention for all share-to-asset conversions (redemption direction).
+    ///
+    /// # Bootstrap / empty-vault case
+    ///
+    /// Returns `0` when `total_shares == 0` or `total_assets == 0` because
+    /// there is no defined exchange rate.
+    ///
+    /// # Overflow handling
+    ///
+    /// The intermediate `shares * total_assets` product uses `checked_mul`,
+    /// which panics on overflow and reverts the transaction.
+    ///
+    /// # See also
+    ///
+    /// `docs/ROUNDING_TABLE.md` — complete rounding-policy reference for every
+    /// entrypoint.
     #[inline]
     fn convert_to_assets_internal(env: &Env, shares: i128) -> i128 {
         if shares == 0 {
@@ -10256,6 +10348,19 @@ impl NeuroWealthVault {
     ///
     /// Called after every supply/withdraw leg so the cheap local getters never
     /// drift from the pools' own accounting.
+    ///
+    /// # Asset conservation
+    ///
+    /// This function is the enforcement point that keeps `DeployedToBlend` and
+    /// `DeployedToDex` in sync with on-chain reality after each rebalance.
+    /// By overwriting the local trackers with live cross-contract reads, any
+    /// slippage or partial-fill from an external protocol call is automatically
+    /// reflected in the vault's accounting — preventing phantom deployment
+    /// state from accumulating.
+    ///
+    /// # See also
+    ///
+    /// `docs/ASSET_CONSERVATION.md` — full invariant definition and proof.
     fn sync_deployed_split(env: &Env) -> (i128, i128) {
         let blend = Self::get_protocol_balance(env, &symbol_short!("blend"));
         let dex = Self::get_protocol_balance(env, &symbol_short!("dex"));
@@ -10288,6 +10393,32 @@ impl NeuroWealthVault {
 
     /// Splits `total` across the two venues by basis points, giving any
     /// rounding remainder to Blend so the parts never exceed `total`.
+    ///
+    /// # Asset conservation invariant
+    ///
+    /// Both legs use **floor** division, so:
+    ///
+    /// ```text
+    /// blend_target = floor(total × blend_bps / 10_000)
+    /// dex_target   = floor(total × dex_bps   / 10_000)
+    /// idle         = total − blend_target − dex_target  ≥ 0
+    /// ```
+    ///
+    /// The idle remainder is at most `2` stroops (one per leg).  This ensures
+    /// `blend_target + dex_target ≤ total` always holds, so the vault can never
+    /// attempt to supply more than its deployable balance.
+    ///
+    /// # Overflow handling
+    ///
+    /// `total × bps` uses `checked_mul`; overflow panics and reverts the
+    /// transaction before any state is written.  In practice `total` is bounded
+    /// by the TVL cap (≤ 100 M USDC × 10^7 = 10^15 stroops) and `bps ≤ 10_000`,
+    /// so the product fits comfortably in i128.
+    ///
+    /// # See also
+    ///
+    /// `docs/ASSET_CONSERVATION.md` — full proof of the accounting invariant
+    /// across all allocation modes.
     fn split_by_bps(total: i128, blend_bps: u32, dex_bps: u32) -> (i128, i128) {
         if total <= 0 {
             return (0, 0);
