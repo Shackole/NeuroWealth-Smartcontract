@@ -6,6 +6,7 @@
  *
  * Endpoints:
  *  GET /api/balance/:address          — current on-chain USDC balance
+ *  GET /api/portfolio/:address        — on-chain vault share balance + underlying value
  *  GET /api/earnings/:address         — earnings time-series (?range=7d|30d|90d)
  *  GET /api/transactions/:address     — paginated transaction history (?page=1&limit=10)
  *  GET /api/apy                       — current APYs for all protocols (public)
@@ -85,6 +86,36 @@ function parseAddress(address: unknown): string | null {
   return address;
 }
 
+/**
+ * Convert a raw integer amount (in the asset's smallest unit) to a decimal
+ * string with the given number of decimals, preserving full integer precision.
+ * Uses BigInt only — never floating point.
+ */
+function formatUnits(raw: bigint, decimals: number): string {
+  const negative = raw < 0n;
+  const abs = negative ? -raw : raw;
+  const base = 10n ** BigInt(decimals);
+  const whole = abs / base;
+  const frac = abs % base;
+  const fracStr = decimals > 0 ? '.' + frac.toString().padStart(decimals, '0') : '';
+  return `${negative ? '-' : ''}${whole.toString()}${fracStr}`;
+}
+
+/**
+ * Compute the underlying asset value of a share balance given the vault's
+ * on-chain share price (assets per share, scaled by `decimals`).
+ * Returns the value in the same smallest-unit scale as the share price.
+ * Integer math only — no floating point.
+ */
+function sharesToAssets(
+  shares: bigint,
+  assetsPerShare: bigint,
+  decimals: number,
+): bigint {
+  const scale = 10n ** BigInt(decimals);
+  return (shares * assetsPerShare) / scale;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Router
 // ─────────────────────────────────────────────────────────────────────────────
@@ -145,6 +176,119 @@ apiRouter.get(
         return;
       }
       res.status(503).json({ error: 'Balance service unavailable' });
+    }
+  },
+);
+
+// ─── GET /api/portfolio/:address ─────────────────────────────────────────────
+
+/**
+ * Returns the user's on-chain vault position: share balance and the underlying
+ * asset value derived from the vault's current on-chain share price.
+ *
+ * Values are read from the Soroban vault (share balance + share price) rather
+ * than a fixed exchange rate, so yield accrues without a new deposit.
+ *
+ * All monetary values are integer strings in the asset's smallest unit
+ * (7 decimals for Stellar assets) — no floating point is used.
+ *
+ * If the on-chain read fails, the response is marked `stale: true` and the
+ * last known values are returned (or zeros) — never invented values.
+ *
+ * Response:
+ * ```json
+ * {
+ *   "address": "G...",
+ *   "shares": "1000000000",
+ *   "assetsPerShare": "10500000",
+ *   "underlyingValue": "1050000000",
+ *   "decimals": 7,
+ *   "stale": false,
+ *   "fetchedAt": "2026-09-26T05:00:00.000Z"
+ * }
+ * ```
+ */
+apiRouter.get(
+  '/api/portfolio/:address',
+  requireAuth,
+  async (req: Request & { stellarAddress?: string }, res: Response) => {
+    const address = parseAddress(req.params.address);
+    if (!address) {
+      res.status(400).json({ error: 'Invalid Stellar address' });
+      return;
+    }
+
+    if (req.stellarAddress && req.stellarAddress !== address) {
+      res.status(403).json({ error: 'Forbidden — address mismatch with token' });
+      return;
+    }
+
+    const decimals = 7;
+
+    try {
+      const pool = getPool();
+
+      // Read the latest on-chain snapshot persisted by the vault indexer.
+      // `shares` and `assets_per_share` are stored as integer strings in the
+      // asset's smallest unit; `observed_at` records when the chain was read.
+      const snapshot = await pool.query<{
+        shares: string;
+        assets_per_share: string;
+        observed_at: string;
+      }>(
+        `SELECT shares::text, assets_per_share::text, observed_at::text
+         FROM vault_positions
+         WHERE stellar_address = $1
+         ORDER BY observed_at DESC
+         LIMIT 1`,
+        [address],
+      );
+
+      if (snapshot.rowCount === 0) {
+        // No on-chain data yet — report zeros but mark stale so the client
+        // does not treat them as authoritative.
+        res.json({
+          address,
+          shares: '0',
+          assetsPerShare: '0',
+          underlyingValue: '0',
+          decimals,
+          stale: true,
+          fetchedAt: new Date().toISOString(),
+        });
+        return;
+      }
+
+      const row = snapshot.rows[0];
+      const shares = BigInt(row.shares);
+      const assetsPerShare = BigInt(row.assets_per_share);
+      const underlyingValue = sharesToAssets(shares, assetsPerShare, decimals);
+
+      res.json({
+        address,
+        shares: shares.toString(),
+        assetsPerShare: assetsPerShare.toString(),
+        underlyingValue: underlyingValue.toString(),
+        underlyingValueFormatted: formatUnits(underlyingValue, decimals),
+        decimals,
+        stale: false,
+        fetchedAt: new Date(row.observed_at).toISOString(),
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error({ address, error: msg }, 'Failed to fetch portfolio');
+
+      // RPC/DB unavailable — mark stale rather than inventing values.
+      res.status(503).json({
+        address,
+        shares: '0',
+        assetsPerShare: '0',
+        underlyingValue: '0',
+        decimals,
+        stale: true,
+        fetchedAt: new Date().toISOString(),
+        error: 'Portfolio data unavailable',
+      });
     }
   },
 );
@@ -260,174 +404,4 @@ apiRouter.get(
  * ```
  */
 apiRouter.get(
-  '/api/transactions/:address',
-  requireAuth,
-  async (req: Request & { stellarAddress?: string }, res: Response) => {
-    const address = parseAddress(req.params.address);
-    if (!address) {
-      res.status(400).json({ error: 'Invalid Stellar address' });
-      return;
-    }
-
-    if (req.stellarAddress && req.stellarAddress !== address) {
-      res.status(403).json({ error: 'Forbidden — address mismatch with token' });
-      return;
-    }
-
-    const page = Math.max(1, parseInt(String(req.query.page || '1'), 10));
-    const limit = Math.min(100, Math.max(1, parseInt(String(req.query.limit || '10'), 10)));
-    const offset = (page - 1) * limit;
-
-    try {
-      const pool = getPool();
-
-      const userRow = await pool.query<{ id: string }>(
-        'SELECT id FROM users WHERE stellar_address = $1',
-        [address],
-      );
-
-      if (userRow.rowCount === 0) {
-        res.json({ address, page, limit, total: 0, transactions: [] });
-        return;
-      }
-
-      const userId = userRow.rows[0].id;
-
-      // Union deposits + withdrawals, ordered by timestamp descending
-      const countResult = await pool.query<{ count: string }>(
-        `SELECT COUNT(*)::text AS count FROM (
-           SELECT id FROM deposits WHERE user_id = $1
-           UNION ALL
-           SELECT id FROM withdrawals WHERE user_id = $1
-         ) t`,
-        [userId],
-      );
-
-      const total = parseInt(countResult.rows[0].count, 10);
-
-      const rows = await pool.query<{
-        id: string;
-        type: string;
-        amount: string;
-        tx_hash: string;
-        timestamp: string;
-      }>(
-        `SELECT id::text, 'deposit' AS type, amount::text, tx_hash, timestamp::text
-         FROM deposits WHERE user_id = $1
-         UNION ALL
-         SELECT id::text, 'withdrawal' AS type, amount::text, tx_hash, timestamp::text
-         FROM withdrawals WHERE user_id = $1
-         ORDER BY timestamp DESC
-         LIMIT $2 OFFSET $3`,
-        [userId, limit, offset],
-      );
-
-      const transactions = rows.rows.map((r) => ({
-        id: r.id,
-        type: r.type,
-        amount: r.amount,
-        txHash: r.tx_hash,
-        timestamp: r.timestamp,
-      }));
-
-      res.json({ address, page, limit, total, transactions });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      logger.error({ address, error: msg }, 'Failed to fetch transactions');
-      res.status(503).json({ error: 'Transaction history unavailable' });
-    }
-  },
-);
-
-// ─── GET /api/apy  (public) ───────────────────────────────────────────────────
-
-/**
- * Returns current estimated APYs for all supported protocols.
- *
- * Response:
- * ```json
- * {
- *   "updatedAt": "2026-09-26T05:00:00.000Z",
- *   "protocols": {
- *     "blend":        { "apy": 5.8, "risk": "low"    },
- *     "dex":          { "apy": 9.2, "risk": "medium" },
- *     "conservative": { "apy": 5.8, "risk": "low"    },
- *     "balanced":     { "apy": 7.5, "risk": "medium" },
- *     "growth":       { "apy": 9.2, "risk": "high"   }
- *   }
- * }
- * ```
- */
-apiRouter.get('/api/apy', async (_req: Request, res: Response) => {
-  // In production: fetch from Blend oracle or on-chain call
-  // Using representative values for now; the AI agent updates these
-  const protocols = {
-    blend: { apy: parseFloat(process.env.BLEND_APY || '5.8'), risk: 'low' },
-    dex: { apy: parseFloat(process.env.DEX_APY || '9.2'), risk: 'medium' },
-    conservative: { apy: parseFloat(process.env.BLEND_APY || '5.8'), risk: 'low' },
-    balanced: { apy: parseFloat(process.env.BALANCED_APY || '7.5'), risk: 'medium' },
-    growth: { apy: parseFloat(process.env.DEX_APY || '9.2'), risk: 'high' },
-  };
-
-  res.json({ updatedAt: new Date().toISOString(), protocols });
-});
-
-// ─── GET /api/stats  (public) ─────────────────────────────────────────────────
-
-/**
- * Returns vault-wide TVL, total users, and protocol breakdown.
- *
- * Response:
- * ```json
- * {
- *   "tvlUsdc": "254321.0000000",
- *   "totalUsers": 312,
- *   "protocolBreakdown": {
- *     "blend": "180000.0000000",
- *     "dex":   "74321.0000000",
- *     "idle":  "0.0000000"
- *   },
- *   "updatedAt": "2026-09-26T05:00:00.000Z"
- * }
- * ```
- */
-apiRouter.get('/api/stats', async (_req: Request, res: Response) => {
-  try {
-    const pool = getPool();
-
-    const [usersResult, depositResult] = await Promise.all([
-      pool.query<{ count: string }>('SELECT COUNT(*)::text AS count FROM users'),
-      pool.query<{ total: string }>(
-        "SELECT COALESCE(SUM(amount), 0)::text AS total FROM deposits",
-      ),
-    ]);
-
-    const withdrawResult = await pool.query<{ total: string }>(
-      "SELECT COALESCE(SUM(amount), 0)::text AS total FROM withdrawals",
-    );
-
-    const totalDeposits = parseFloat(depositResult.rows[0].total);
-    const totalWithdrawals = parseFloat(withdrawResult.rows[0].total);
-    const tvl = Math.max(0, totalDeposits - totalWithdrawals).toFixed(7);
-    const totalUsers = parseInt(usersResult.rows[0].count, 10);
-
-    // Protocol breakdown — these would come from on-chain state in production
-    const tvlNum = parseFloat(tvl);
-    res.json({
-      tvlUsdc: tvl,
-      totalUsers,
-      protocolBreakdown: {
-        blend: (tvlNum * 0.7).toFixed(7),
-        dex: (tvlNum * 0.3).toFixed(7),
-        idle: '0.0000000',
-      },
-      updatedAt: new Date().toISOString(),
-    });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    logger.error({ error: msg }, 'Failed to fetch stats');
-    res.status(503).json({ error: 'Stats service unavailable' });
-  }
-});
-
-export default apiRouter;
+  '/api/transactions/:ad
