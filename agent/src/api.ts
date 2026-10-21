@@ -1,8 +1,42 @@
 import { Router, Request, Response } from 'express';
+import type { PoolClient } from 'pg';
 import { pool } from './db';
 import { authenticateToken, generateToken, UserPayload } from './auth';
+import logger from './logger';
+import { getRequestId } from './requestContext';
 
 export const apiRouter = Router();
+
+function sendApiError(
+  req: Request,
+  res: Response,
+  status: number,
+  code: string,
+  error: string,
+  diagnostic?: unknown,
+): void {
+  const requestId = getRequestId();
+
+  if (diagnostic !== undefined) {
+    logger.error(
+      { err: diagnostic, code, requestId, method: req.method, path: req.path },
+      'API request failed',
+    );
+  }
+
+  res.status(status).json({ error, code, requestId });
+}
+
+function sendDatabaseError(req: Request, res: Response, diagnostic: unknown): void {
+  sendApiError(
+    req,
+    res,
+    503,
+    'DATABASE_UNAVAILABLE',
+    'Service temporarily unavailable',
+    diagnostic,
+  );
+}
 
 // ==========================================
 // Authentication Endpoints (/api/auth/*)
@@ -12,7 +46,7 @@ apiRouter.post('/auth/login', async (req: Request, res: Response): Promise<void>
   const { stellarAddress } = req.body;
 
   if (!stellarAddress || typeof stellarAddress !== 'string' || stellarAddress.trim().length === 0) {
-    res.status(400).json({ error: 'Missing or invalid stellarAddress', code: 'INVALID_INPUT' });
+    sendApiError(req, res, 400, 'INVALID_INPUT', 'Missing or invalid stellarAddress');
     return;
   }
 
@@ -41,8 +75,8 @@ apiRouter.post('/auth/login', async (req: Request, res: Response): Promise<void>
         strategyPreference: user.strategy_preference,
       },
     });
-  } catch (err: any) {
-    res.status(500).json({ error: 'Database authentication error', details: err.message });
+  } catch (err: unknown) {
+    sendDatabaseError(req, res, err);
   }
 });
 
@@ -67,7 +101,7 @@ apiRouter.get('/balance', authenticateToken, async (req: Request, res: Response)
     );
 
     if (userRes.rows.length === 0) {
-      res.status(404).json({ error: 'User not found' });
+      sendApiError(req, res, 404, 'USER_NOT_FOUND', 'User not found');
       return;
     }
 
@@ -99,8 +133,8 @@ apiRouter.get('/balance', authenticateToken, async (req: Request, res: Response)
       strategy: userRes.rows[0].strategy_preference,
       exchangeRate: 1.042,
     });
-  } catch (err: any) {
-    res.status(500).json({ error: 'Failed to retrieve balance', details: err.message });
+  } catch (err: unknown) {
+    sendDatabaseError(req, res, err);
   }
 });
 
@@ -141,8 +175,8 @@ apiRouter.get('/earnings', authenticateToken, async (req: Request, res: Response
         dailyEarnings: parseFloat(r.daily_earnings),
       })),
     });
-  } catch (err: any) {
-    res.status(500).json({ error: 'Failed to retrieve earnings', details: err.message });
+  } catch (err: unknown) {
+    sendDatabaseError(req, res, err);
   }
 });
 
@@ -178,8 +212,8 @@ apiRouter.get('/transactions', authenticateToken, async (req: Request, res: Resp
         timestamp: tx.timestamp,
       })),
     });
-  } catch (err: any) {
-    res.status(500).json({ error: 'Failed to retrieve transactions', details: err.message });
+  } catch (err: unknown) {
+    sendDatabaseError(req, res, err);
   }
 });
 
@@ -188,27 +222,28 @@ apiRouter.post('/transactions', authenticateToken, async (req: Request, res: Res
   const { type, amount, shares, txHash } = req.body;
 
   if (!type || !['deposit', 'withdraw'].includes(type)) {
-    res.status(400).json({ error: 'Invalid transaction type; must be deposit or withdraw' });
+    sendApiError(req, res, 400, 'INVALID_INPUT', 'Invalid transaction type; must be deposit or withdraw');
     return;
   }
 
   if (typeof amount !== 'number' || amount <= 0) {
-    res.status(400).json({ error: 'Amount must be a positive number' });
+    sendApiError(req, res, 400, 'INVALID_INPUT', 'Amount must be a positive number');
     return;
   }
 
   if (typeof shares !== 'number' || shares <= 0) {
-    res.status(400).json({ error: 'Shares must be a positive number' });
+    sendApiError(req, res, 400, 'INVALID_INPUT', 'Shares must be a positive number');
     return;
   }
 
   if (!txHash || typeof txHash !== 'string' || !txHash.trim()) {
-    res.status(400).json({ error: 'Missing or invalid txHash' });
+    sendApiError(req, res, 400, 'INVALID_INPUT', 'Missing or invalid txHash');
     return;
   }
 
-  const client = await pool.connect();
+  let client: PoolClient | undefined;
   try {
+    client = await pool.connect();
     await client.query('BEGIN');
 
     const table = type === 'deposit' ? 'deposits' : 'withdrawals';
@@ -241,11 +276,26 @@ apiRouter.post('/transactions', authenticateToken, async (req: Request, res: Res
         timestamp: record.timestamp,
       },
     });
-  } catch (err: any) {
-    await client.query('ROLLBACK');
-    res.status(500).json({ error: 'Transaction failed', details: err.message });
+  } catch (err: unknown) {
+    if (client) {
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackError: unknown) {
+        logger.error(
+          {
+            err: rollbackError,
+            code: 'DATABASE_ROLLBACK_FAILED',
+            requestId: getRequestId(),
+            method: req.method,
+            path: req.path,
+          },
+          'API transaction rollback failed',
+        );
+      }
+    }
+    sendDatabaseError(req, res, err);
   } finally {
-    client.release();
+    client?.release();
   }
 });
 
@@ -266,7 +316,7 @@ apiRouter.get('/apy', (_req: Request, res: Response): void => {
 // Stats Endpoint (/api/stats)
 // ==========================================
 
-apiRouter.get('/stats', async (_req: Request, res: Response): Promise<void> => {
+apiRouter.get('/stats', async (req: Request, res: Response): Promise<void> => {
   try {
     const userCountRes = await pool.query('SELECT COUNT(*) AS total_users FROM users');
     const depositSumRes = await pool.query('SELECT COALESCE(SUM(amount), 0) AS total_deposits FROM deposits');
@@ -300,7 +350,7 @@ apiRouter.get('/stats', async (_req: Request, res: Response): Promise<void> => {
       totalWithdrawals,
       activeStrategies,
     });
-  } catch (err: any) {
-    res.status(500).json({ error: 'Failed to retrieve stats', details: err.message });
+  } catch (err: unknown) {
+    sendDatabaseError(req, res, err);
   }
 });
