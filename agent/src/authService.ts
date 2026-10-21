@@ -39,6 +39,8 @@ export interface JWTPayload {
   iat: number;
   exp: number;
   type: 'access' | 'refresh';
+  /** Explicit operator scope; absent for ordinary user tokens. */
+  role?: 'operator';
 }
 
 export interface AuthTokenPair {
@@ -133,9 +135,9 @@ function signToken(payload: Omit<JWTPayload, 'iat' | 'exp'>, ttlSeconds: number)
   return jwt.sign(payload, JWT_SECRET, { expiresIn: ttlSeconds });
 }
 
-export function issueTokenPair(address: string): AuthTokenPair {
-  const accessToken = signToken({ sub: address, type: 'access' }, ACCESS_TOKEN_TTL_S);
-  const refreshToken = signToken({ sub: address, type: 'refresh' }, REFRESH_TOKEN_TTL_S);
+export function issueTokenPair(address: string, role?: 'operator'): AuthTokenPair {
+  const accessToken = signToken({ sub: address, type: 'access', ...(role ? { role } : {}) }, ACCESS_TOKEN_TTL_S);
+  const refreshToken = signToken({ sub: address, type: 'refresh', ...(role ? { role } : {}) }, REFRESH_TOKEN_TTL_S);
   return { accessToken, refreshToken, expiresIn: ACCESS_TOKEN_TTL_S };
 }
 
@@ -183,8 +185,8 @@ export async function rotateRefreshToken(
   // 3. Invalidate old token
   await redis.del(`${REFRESH_PREFIX}${hash}`);
 
-  // 4. Issue new pair
-  const newPair = issueTokenPair(payload.sub);
+  // 4. Issue new pair (preserve operator scope across rotation)
+  const newPair = issueTokenPair(payload.sub, payload.role === 'operator' ? 'operator' : undefined);
   await storeRefreshToken(redis, payload.sub, newPair.refreshToken);
   return newPair;
 }
@@ -201,4 +203,12 @@ export function verifyAccessToken(token: string): JWTPayload | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Returns true only when the verified payload carries an explicit operator
+ * scope.  Used by transaction status routes to gate operational access.
+ */
+export function isOperator(payload: JWTPayload | null | undefined): boolean {
+  return payload?.role === 'operator';
 }

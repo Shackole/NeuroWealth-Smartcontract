@@ -85,6 +85,22 @@ function parseAddress(address: unknown): string | null {
   return address;
 }
 
+/**
+ * Returns true when the authenticated request carries an explicit operator
+ * authorization (operator role/scope). Operators must be granted this
+ * explicitly — a plain user token never qualifies.
+ */
+function isOperator(req: Request & { stellarAddress?: string }): boolean {
+  const r = req as Request & {
+    stellarAddress?: string;
+    user?: { role?: string; scopes?: string[] };
+    auth?: { role?: string; scopes?: string[] };
+  };
+  const role = r.user?.role ?? r.auth?.role;
+  const scopes = r.user?.scopes ?? r.auth?.scopes ?? [];
+  return role === 'operator' || scopes.includes('operator:read');
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Router
 // ─────────────────────────────────────────────────────────────────────────────
@@ -269,13 +285,20 @@ apiRouter.get(
       return;
     }
 
-    if (req.stellarAddress && req.stellarAddress !== address) {
-      res.status(403).json({ error: 'Forbidden — address mismatch with token' });
+    // Ownership check: a user may only inspect their own transaction history.
+    // Operators require explicit authorization to read any address.
+    const ownsAddress = req.stellarAddress === address;
+    if (!ownsAddress && !isOperator(req)) {
+      // Do not reveal whether the address exists or has any jobs.
+      res.status(403).json({ error: 'Forbidden' });
       return;
     }
 
-    const page = Math.max(1, parseInt(String(req.query.page || '1'), 10));
-    const limit = Math.min(100, Math.max(1, parseInt(String(req.query.limit || '10'), 10)));
+    const page = Math.max(1, parseInt(String(req.query.page ?? '1'), 10) || 1);
+    const limit = Math.min(
+      Math.max(1, parseInt(String(req.query.limit ?? '10'), 10) || 10),
+      100,
+    );
     const offset = (page - 1) * limit;
 
     try {
@@ -287,37 +310,30 @@ apiRouter.get(
       );
 
       if (userRow.rowCount === 0) {
+        // Missing identifier: return an empty page without leaking contents.
         res.json({ address, page, limit, total: 0, transactions: [] });
         return;
       }
 
       const userId = userRow.rows[0].id;
 
-      // Union deposits + withdrawals, ordered by timestamp descending
-      const countResult = await pool.query<{ count: string }>(
-        `SELECT COUNT(*)::text AS count FROM (
-           SELECT id FROM deposits WHERE user_id = $1
-           UNION ALL
-           SELECT id FROM withdrawals WHERE user_id = $1
-         ) t`,
+      const countRow = await pool.query<{ count: string }>(
+        'SELECT COUNT(*)::text AS count FROM transactions WHERE user_id = $1',
         [userId],
       );
-
-      const total = parseInt(countResult.rows[0].count, 10);
+      const total = parseInt(countRow.rows[0]?.count ?? '0', 10);
 
       const rows = await pool.query<{
         id: string;
         type: string;
         amount: string;
         tx_hash: string;
-        timestamp: string;
+        created_at: string;
       }>(
-        `SELECT id::text, 'deposit' AS type, amount::text, tx_hash, timestamp::text
-         FROM deposits WHERE user_id = $1
-         UNION ALL
-         SELECT id::text, 'withdrawal' AS type, amount::text, tx_hash, timestamp::text
-         FROM withdrawals WHERE user_id = $1
-         ORDER BY timestamp DESC
+        `SELECT id, type, amount::text, tx_hash, created_at::text
+         FROM transactions
+         WHERE user_id = $1
+         ORDER BY created_at DESC
          LIMIT $2 OFFSET $3`,
         [userId, limit, offset],
       );
@@ -327,107 +343,14 @@ apiRouter.get(
         type: r.type,
         amount: r.amount,
         txHash: r.tx_hash,
-        timestamp: r.timestamp,
+        timestamp: r.created_at,
       }));
 
       res.json({ address, page, limit, total, transactions });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       logger.error({ address, error: msg }, 'Failed to fetch transactions');
-      res.status(503).json({ error: 'Transaction history unavailable' });
+      res.status(503).json({ error: 'Transactions service unavailable' });
     }
   },
 );
-
-// ─── GET /api/apy  (public) ───────────────────────────────────────────────────
-
-/**
- * Returns current estimated APYs for all supported protocols.
- *
- * Response:
- * ```json
- * {
- *   "updatedAt": "2026-09-26T05:00:00.000Z",
- *   "protocols": {
- *     "blend":        { "apy": 5.8, "risk": "low"    },
- *     "dex":          { "apy": 9.2, "risk": "medium" },
- *     "conservative": { "apy": 5.8, "risk": "low"    },
- *     "balanced":     { "apy": 7.5, "risk": "medium" },
- *     "growth":       { "apy": 9.2, "risk": "high"   }
- *   }
- * }
- * ```
- */
-apiRouter.get('/api/apy', async (_req: Request, res: Response) => {
-  // In production: fetch from Blend oracle or on-chain call
-  // Using representative values for now; the AI agent updates these
-  const protocols = {
-    blend: { apy: parseFloat(process.env.BLEND_APY || '5.8'), risk: 'low' },
-    dex: { apy: parseFloat(process.env.DEX_APY || '9.2'), risk: 'medium' },
-    conservative: { apy: parseFloat(process.env.BLEND_APY || '5.8'), risk: 'low' },
-    balanced: { apy: parseFloat(process.env.BALANCED_APY || '7.5'), risk: 'medium' },
-    growth: { apy: parseFloat(process.env.DEX_APY || '9.2'), risk: 'high' },
-  };
-
-  res.json({ updatedAt: new Date().toISOString(), protocols });
-});
-
-// ─── GET /api/stats  (public) ─────────────────────────────────────────────────
-
-/**
- * Returns vault-wide TVL, total users, and protocol breakdown.
- *
- * Response:
- * ```json
- * {
- *   "tvlUsdc": "254321.0000000",
- *   "totalUsers": 312,
- *   "protocolBreakdown": {
- *     "blend": "180000.0000000",
- *     "dex":   "74321.0000000",
- *     "idle":  "0.0000000"
- *   },
- *   "updatedAt": "2026-09-26T05:00:00.000Z"
- * }
- * ```
- */
-apiRouter.get('/api/stats', async (_req: Request, res: Response) => {
-  try {
-    const pool = getPool();
-
-    const [usersResult, depositResult] = await Promise.all([
-      pool.query<{ count: string }>('SELECT COUNT(*)::text AS count FROM users'),
-      pool.query<{ total: string }>(
-        "SELECT COALESCE(SUM(amount), 0)::text AS total FROM deposits",
-      ),
-    ]);
-
-    const withdrawResult = await pool.query<{ total: string }>(
-      "SELECT COALESCE(SUM(amount), 0)::text AS total FROM withdrawals",
-    );
-
-    const totalDeposits = parseFloat(depositResult.rows[0].total);
-    const totalWithdrawals = parseFloat(withdrawResult.rows[0].total);
-    const tvl = Math.max(0, totalDeposits - totalWithdrawals).toFixed(7);
-    const totalUsers = parseInt(usersResult.rows[0].count, 10);
-
-    // Protocol breakdown — these would come from on-chain state in production
-    const tvlNum = parseFloat(tvl);
-    res.json({
-      tvlUsdc: tvl,
-      totalUsers,
-      protocolBreakdown: {
-        blend: (tvlNum * 0.7).toFixed(7),
-        dex: (tvlNum * 0.3).toFixed(7),
-        idle: '0.0000000',
-      },
-      updatedAt: new Date().toISOString(),
-    });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    logger.error({ error: msg }, 'Failed to fetch stats');
-    res.status(503).json({ error: 'Stats service unavailable' });
-  }
-});
-
-export default apiRouter;
