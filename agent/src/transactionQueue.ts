@@ -8,8 +8,10 @@
  *  - Sequence-number mismatch → up to 3 re-fetches + re-sign attempts
  *  - Exponential backoff for generic RPC errors (base 2 s, max 30 s)
  *  - Deduplication: same `deduplicationKey` within 60 s is silently dropped
- *  - Failed jobs moved to `transactions:failed` dead-letter queue with full
- *    error context attached as `failedReason`
+ *  - Failed jobs moved to `transactions:failed` dead-letter queue with
+ *    redacted error context attached as `failedReason`
+ *  - Dead-letter records are retained for a bounded window and purged
+ *    predictably (see DLQ retention constants below)
  *  - GET /api/queue/stats exposes queue depth and counts
  */
 
@@ -54,6 +56,23 @@ export interface TransactionJobResult {
   submittedAt: string;
 }
 
+/**
+ * Redacted failure record stored on the dead-letter queue. Sensitive payload
+ * fields (signed XDR envelopes, secrets) are never persisted here.
+ */
+export interface DeadLetterRecord {
+  deduplicationKey: string;
+  userAddress: string;
+  type: TransactionType;
+  amountStroops: string;
+  destinationAddress?: string;
+  requestedAt: string;
+  /** Redacted error message — no secrets, no raw XDR. */
+  error: string;
+  /** ISO timestamp when the job was dead-lettered. */
+  failedAt: string;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
@@ -72,6 +91,21 @@ const DLQ_NAME = 'transactions:failed';
 const CONCURRENCY = 5;
 const MAX_SEQUENCE_RETRIES = 3;
 const DEDUP_TTL_MS = 60_000; // 60 seconds
+
+/**
+ * Dead-letter retention window. Records older than this are purged by the
+ * scheduled sweep. Configurable via env for operators; defaults to 7 days.
+ */
+const DLQ_RETENTION_MS = (() => {
+  const raw = parseInt(process.env.DLQ_RETENTION_MS || '', 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : 7 * 24 * 60 * 60 * 1000;
+})();
+
+/** How often the retention sweep runs. Defaults to 1 hour. */
+const DLQ_SWEEP_INTERVAL_MS = (() => {
+  const raw = parseInt(process.env.DLQ_SWEEP_INTERVAL_MS || '', 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : 60 * 60 * 1000;
+})();
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Queue setup
@@ -108,6 +142,87 @@ export const deadLetterQueue: Queue<TransactionJobData> = new Bull<TransactionJo
 
 // Horizon server for sequence number fetching and submission
 const server = new Horizon.Server(STELLAR_RPC_URL);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Redaction helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Strip secrets and sensitive payload fields from an error before it is
+ * persisted as dead-letter failure data. Never store signed XDR envelopes,
+ * secret keys, or raw error objects that may embed them.
+ */
+export function redactFailure(
+  data: TransactionJobData,
+  err: unknown,
+): DeadLetterRecord {
+  const rawMsg = err instanceof Error ? err.message : String(err);
+  // Scrub anything that looks like a secret key or a base64 XDR envelope.
+  const error = rawMsg
+    .replace(/S[A-Z2-7]{55}/g, '[REDACTED_SECRET]')
+    .replace(/[A-Za-z0-9+/]{80,}={0,2}/g, '[REDACTED_PAYLOAD]');
+
+  return {
+    deduplicationKey: data.deduplicationKey,
+    userAddress: data.userAddress,
+    type: data.type,
+    amountStroops: data.amountStroops,
+    destinationAddress: data.destinationAddress,
+    requestedAt: data.requestedAt,
+    error,
+    failedAt: new Date().toISOString(),
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Dead-letter retention
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Purge dead-letter records older than the retention window. Returns the
+ * number of records removed. Predictable: based on `failedAt` timestamp.
+ */
+export async function purgeExpiredDeadLetters(
+  now: number = Date.now(),
+): Promise<number> {
+  const cutoff = now - DLQ_RETENTION_MS;
+  const jobs = await deadLetterQueue.getJobs(
+    ['completed', 'failed', 'waiting', 'delayed'],
+    0,
+    -1,
+    false,
+  );
+
+  let purged = 0;
+  for (const job of jobs) {
+    const record = job.data as unknown as DeadLetterRecord;
+    const failedAt = record?.failedAt ? Date.parse(record.failedAt) : NaN;
+    const ts = Number.isFinite(failedAt) ? failedAt : job.timestamp;
+    if (ts < cutoff) {
+      await job.remove();
+      purged += 1;
+    }
+  }
+
+  if (purged > 0) {
+    logger.info({ purged, cutoff }, 'Purged expired dead-letter records');
+  }
+  return purged;
+}
+
+/**
+ * Start the periodic retention sweep. Returns a stop function for tests.
+ */
+export function startDeadLetterRetentionSweep(): () => void {
+  const timer = setInterval(() => {
+    purgeExpiredDeadLetters().catch((err) =>
+      logger.error({ err }, 'Dead-letter retention sweep failed'),
+    );
+  }, DLQ_SWEEP_INTERVAL_MS);
+  // Do not keep the process alive solely for the sweep.
+  if (typeof timer.unref === 'function') timer.unref();
+  return () => clearInterval(timer);
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Deduplication helpers (Redis SET with TTL via Bull's own Redis connection)
@@ -163,6 +278,45 @@ export async function enqueueTransaction(
     { jobId: job.id, type: data.type, userAddress: data.userAddress },
     'Transaction enqueued',
   );
+  return job;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Operator replay controls
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Replay a dead-lettered transaction. Preserves authorization (the original
+ * `userAddress` is retained) and idempotency (the original `deduplicationKey`
+ * is reused, so a duplicate in-flight job is still rejected).
+ *
+ * Returns the re-enqueued job, or `null` if it was deduplicated.
+ */
+export async function replayDeadLetter(
+  jobId: string | number,
+): Promise<Job<TransactionJobData> | null> {
+  const dlJob = await deadLetterQueue.getJob(jobId);
+  if (!dlJob) {
+    throw new Error(`Dead-letter job ${jobId} not found`);
+  }
+
+  const record = dlJob.data as unknown as DeadLetterRecord;
+  const data: TransactionJobData = {
+    deduplicationKey: record.deduplicationKey,
+    userAddress: record.userAddress,
+    type: record.type,
+    amountStroops: record.amountStroops,
+    destinationAddress: record.destinationAddress,
+    requestedAt: record.requestedAt,
+  };
+
+  const job = await enqueueTransaction(data);
+  if (job) {
+    logger.info(
+      { dlJobId: jobId, newJobId: job.id, userAddress: data.userAddress },
+      'Dead-letter transaction replayed',
+    );
+  }
   return job;
 }
 
@@ -249,167 +403,56 @@ async function buildAndSignTransaction(
 }
 
 /**
- * Submit a signed transaction XDR to Horizon with sequence-number retry logic.
+ * Submit a signed transaction to Horizon.
  */
-async function submitWithSequenceRetry(
-  keypair: Keypair,
-  data: TransactionJobData,
-): Promise<TransactionJobResult> {
-  let lastError: unknown;
-
-  for (let attempt = 0; attempt < MAX_SEQUENCE_RETRIES; attempt++) {
-    try {
-      const xdr = await buildAndSignTransaction(keypair, data);
-      const response = await server.submitTransaction(
-        TransactionBuilder.fromXDR(xdr, NETWORK_PASSPHRASE),
-      );
-
-      return {
-        txHash: response.hash,
-        ledger: response.ledger,
-        submittedAt: new Date().toISOString(),
-      };
-    } catch (err) {
-      lastError = err;
-
-      if (isSequenceMismatch(err) && attempt < MAX_SEQUENCE_RETRIES - 1) {
-        logger.warn(
-          { attempt: attempt + 1, userAddress: data.userAddress },
-          'Sequence mismatch — re-fetching sequence and retrying',
-        );
-        // Small jitter before next attempt
-        await new Promise((r) => setTimeout(r, 200 + Math.random() * 300));
-        continue;
-      }
-
-      // For non-sequence errors, re-throw immediately so Bull handles retries
-      throw err;
-    }
-  }
-
-  throw lastError;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Register worker
-// ─────────────────────────────────────────────────────────────────────────────
-
-transactionQueue.process(CONCURRENCY, async (job: Job<TransactionJobData>) => {
-  const { data } = job;
-
-  logger.info(
-    { jobId: job.id, type: data.type, attempt: job.attemptsMade },
-    'Processing transaction job',
-  );
-
-  if (!AGENT_SECRET) {
-    throw new Error('AGENT_SECRET_KEY environment variable is not set');
-  }
-
-  const keypair = Keypair.fromSecret(AGENT_SECRET);
-  const result = await submitWithSequenceRetry(keypair, data);
-
-  logger.info(
-    { jobId: job.id, txHash: result.txHash, ledger: result.ledger },
-    'Transaction submitted successfully',
-  );
-
-  return result;
-});
-
-// Move exhausted jobs to dead-letter queue with full error context
-transactionQueue.on('failed', async (job: Job<TransactionJobData>, err: Error) => {
-  if (job.attemptsMade >= (job.opts.attempts ?? 3)) {
-    logger.error(
-      {
-        jobId: job.id,
-        type: job.data.type,
-        userAddress: job.data.userAddress,
-        error: err.message,
-        attempts: job.attemptsMade,
-      },
-      'Transaction exhausted retries — moving to dead-letter queue',
-    );
-
-    await deadLetterQueue.add(
-      {
-        ...job.data,
-      },
-      {
-        // Attach error context as job name for visibility in dashboards
-        jobId: `dlq:${job.id}`,
-      },
-    );
-  }
-});
-
-transactionQueue.on('completed', (job: Job<TransactionJobData>, result: TransactionJobResult) => {
-  logger.info(
-    { jobId: job.id, txHash: result.txHash },
-    'Transaction job completed',
-  );
-});
-
-transactionQueue.on('error', (err: Error) => {
-  logger.error({ error: err.message }, 'Transaction queue error');
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Stats helper — used by the /api/queue/stats endpoint
-// ─────────────────────────────────────────────────────────────────────────────
-
-export interface QueueStats {
-  queue: string;
-  waiting: number;
-  active: number;
-  completed: number;
-  failed: number;
-  delayed: number;
-  paused: boolean;
-  deadLetter: {
-    queue: string;
-    waiting: number;
-    failed: number;
-  };
-}
-
-export async function getQueueStats(): Promise<QueueStats> {
-  const [waiting, active, completed, failed, delayed, isPaused] =
-    await Promise.all([
-      transactionQueue.getWaitingCount(),
-      transactionQueue.getActiveCount(),
-      transactionQueue.getCompletedCount(),
-      transactionQueue.getFailedCount(),
-      transactionQueue.getDelayedCount(),
-      transactionQueue.isPaused(),
-    ]);
-
-  const [dlqWaiting, dlqFailed] = await Promise.all([
-    deadLetterQueue.getWaitingCount(),
-    deadLetterQueue.getFailedCount(),
-  ]);
-
+async function submitTransaction(xdr: string): Promise<TransactionJobResult> {
+  const tx = TransactionBuilder.fromXDR(xdr, NETWORK_PASSPHRASE);
+  const response = await server.submitTransaction(tx);
   return {
-    queue: QUEUE_NAME,
-    waiting,
-    active,
-    completed,
-    failed,
-    delayed,
-    paused: isPaused,
-    deadLetter: {
-      queue: DLQ_NAME,
-      waiting: dlqWaiting,
-      failed: dlqFailed,
-    },
+    txHash: response.hash,
+    ledger: response.ledger,
+    submittedAt: new Date().toISOString(),
   };
 }
 
 /**
- * Gracefully close both queues (drain connections).
- * Call during server shutdown.
+ * Process a single transaction job. Retries sequence mismatches internally,
+ * then submits. On terminal failure, the job is moved to the dead-letter
+ * queue with a redacted failure record (no secrets, no raw XDR).
  */
-export async function closeQueues(): Promise<void> {
-  await Promise.all([transactionQueue.close(), deadLetterQueue.close()]);
-  logger.info('Transaction queues closed');
+async function processJob(
+  job: Job<TransactionJobData>,
+): Promise<TransactionJobResult> {
+  const data = job.data;
+  const keypair = Keypair.fromSecret(AGENT_SECRET);
+
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < MAX_SEQUENCE_RETRIES; attempt++) {
+    try {
+      const xdr = await buildAndSignTransaction(keypair, data);
+      return await submitTransaction(xdr);
+    } catch (err) {
+      lastErr = err;
+      if (!isSequenceMismatch(err)) break;
+      logger.warn(
+        { jobId: job.id, attempt: attempt + 1 },
+        'Sequence mismatch — retrying with fresh sequence',
+      );
+    }
+  }
+
+  // Terminal failure — dead-letter with redacted record.
+  const record = redactFailure(data, lastErr);
+  await deadLetterQueue.add(record as unknown as TransactionJobData);
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+}
+
+/**
+ * Start the worker. Returns the queue for lifecycle management.
+ */
+export function startTransactionWorker(): Queue<TransactionJobData> {
+  transactionQueue.process(CONCURRENCY, processJob);
+  startDeadLetterRetentionSweep();
+  logger.info({ concurrency: CONCURRENCY }, 'Transaction worker started');
+  return transactionQueue;
 }
