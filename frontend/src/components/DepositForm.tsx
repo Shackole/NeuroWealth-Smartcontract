@@ -13,7 +13,7 @@
  *   7. Failure state with human-readable error messages
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useForm, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import {
@@ -43,11 +43,9 @@ import {
   humanizeError,
   explorerUrl,
   fromRawUnits,
-  STELLAR_NETWORK_LABEL,
-  TransactionDelayedError,
-  type DepositProgressUpdate,
 } from '@/lib/vaultHelpers';
-import { TransactionProgress, type TransactionStep } from '@/components/TransactionProgress';
+import { useDialogFocus } from '@/lib/useDialogFocus';
+import { parseUsdcAmount } from '@/lib/moneyInput';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -98,8 +96,6 @@ const STRATEGY_META: Record<
 
 interface PreviewModalProps {
   amount: number;
-  userPublicKey: string;
-  networkLabel: string;
   strategy: Strategy;
   estimatedShares: number | null;
   isLoading: boolean;
@@ -110,8 +106,6 @@ interface PreviewModalProps {
 
 const PreviewModal: React.FC<PreviewModalProps> = ({
   amount,
-  userPublicKey,
-  networkLabel,
   strategy,
   estimatedShares,
   isLoading,
@@ -119,6 +113,8 @@ const PreviewModal: React.FC<PreviewModalProps> = ({
   onCancel,
   isSigning,
 }) => {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialogFocus(dialogRef, true, isSigning ? undefined : onCancel);
   const meta = STRATEGY_META[strategy];
   const Icon: LucideIcon = meta.icon;
 
@@ -128,8 +124,9 @@ const PreviewModal: React.FC<PreviewModalProps> = ({
       role="dialog"
       aria-modal="true"
       aria-labelledby="preview-modal-title"
+      tabIndex={-1}
     >
-      <div className="w-full max-w-sm rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl animate-in fade-in zoom-in duration-150">
+      <div ref={dialogRef} className="w-full max-w-sm rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl animate-in fade-in zoom-in duration-150">
         <div className="flex items-center justify-between mb-5">
           <h3 id="preview-modal-title" className="text-base font-bold text-white">
             Transaction Preview
@@ -146,18 +143,6 @@ const PreviewModal: React.FC<PreviewModalProps> = ({
         {/* Summary rows */}
         <div className="space-y-3 mb-5 text-sm font-mono">
           <div className="flex justify-between items-center text-slate-300">
-            <span className="text-slate-400">Asset</span>
-            <span className="font-semibold text-white">USDC</span>
-          </div>
-          <div className="flex justify-between items-start gap-3 text-slate-300">
-            <span className="text-slate-400">Network</span>
-            <span className="text-right text-white">{networkLabel}</span>
-          </div>
-          <div className="flex justify-between items-start gap-3 text-slate-300">
-            <span className="text-slate-400">Wallet</span>
-            <span className="max-w-[65%] break-all text-right text-white">{userPublicKey}</span>
-          </div>
-          <div className="flex justify-between items-center text-slate-300">
             <span className="text-slate-400">Depositing</span>
             <span className="font-semibold text-white">{amount.toLocaleString()} USDC</span>
           </div>
@@ -165,7 +150,7 @@ const PreviewModal: React.FC<PreviewModalProps> = ({
             <span className="text-slate-400">Strategy</span>
             <span className={`flex items-center gap-1.5 font-semibold ${meta.color}`}>
               <Icon size={13} />
-              {meta.label} preference
+              {meta.label}
               <span className="text-slate-400 font-normal">({meta.apy} APY)</span>
             </span>
           </div>
@@ -188,19 +173,15 @@ const PreviewModal: React.FC<PreviewModalProps> = ({
             )}
           </div>
           <div className="flex justify-between items-center text-slate-300">
-            <span className="text-slate-400">Estimated network fee</span>
+            <span className="text-slate-400">Network Fee</span>
             <span className="text-slate-400">&lt; 0.00001 XLM</span>
           </div>
         </div>
 
         <p className="text-[11px] text-slate-500 mb-5 leading-relaxed">
-          Your selected strategy is a preference; current shared-pool allocation can differ. Review and approve both transactions in Freighter: save the preference, then deposit USDC. The final fee is shown by your wallet.
+          Two transactions will be signed: (1) set your strategy preference, (2) deposit USDC.
+          Both require approval in your Freighter wallet.
         </p>
-        {!isLoading && estimatedShares === null && (
-          <p className="text-xs text-amber-300 mb-4" role="status">
-            Share estimate is unavailable, so signing is disabled. Go back to edit or retry the preview.
-          </p>
-        )}
 
         {/* Actions */}
         <div className="flex gap-3">
@@ -209,11 +190,11 @@ const PreviewModal: React.FC<PreviewModalProps> = ({
             disabled={isSigning}
             className="flex-1 py-2.5 rounded-xl border border-slate-700 text-slate-300 hover:bg-slate-800 transition-colors text-sm font-medium disabled:opacity-50"
           >
-            Back to edit
+            Cancel
           </button>
           <button
             onClick={onConfirm}
-            disabled={isSigning || isLoading || estimatedShares === null}
+            disabled={isSigning}
             className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-slate-950 font-bold text-sm transition-all shadow-glow-emerald disabled:opacity-60 disabled:cursor-not-allowed"
           >
             {isSigning ? (
@@ -222,7 +203,7 @@ const PreviewModal: React.FC<PreviewModalProps> = ({
                 Signing…
               </>
             ) : (
-              'Review and approve in Freighter'
+              'Confirm & Sign'
             )}
           </button>
         </div>
@@ -238,7 +219,6 @@ interface SuccessStateProps {
   strategyHash?: string;
   amount: number;
   strategy: Strategy;
-  networkLabel: string;
   onClose: () => void;
 }
 
@@ -246,7 +226,6 @@ const SuccessState: React.FC<SuccessStateProps> = ({
   depositHash,
   amount,
   strategy,
-  networkLabel,
   onClose,
 }) => {
   const meta = STRATEGY_META[strategy];
@@ -284,7 +263,7 @@ const SuccessState: React.FC<SuccessStateProps> = ({
       </a>
 
       <p className="text-xs text-emerald-400 bg-emerald-500/10 py-2 px-3 rounded-lg border border-emerald-500/20 mb-6 mt-3">
-        Ledger confirmed on {networkLabel}. Confirmation time depends on network conditions.
+        Confirmed on Stellar Testnet · ~3–5 second finality
       </p>
 
       <button
@@ -331,79 +310,53 @@ const ErrorState: React.FC<ErrorStateProps> = ({ message, onRetry, onClose }) =>
   </div>
 );
 
-// ─── Deposit progress ─────────────────────────────────────────────────────────
+// ─── Signing Progress ─────────────────────────────────────────────────────────
 
-function buildDepositProgressSteps(progress: DepositProgressUpdate | null): TransactionStep[] {
-  const currentTransaction = progress?.transaction;
-  const currentStage = progress?.stage;
-  const hash = progress?.hash;
-  const stageIndex = currentStage === 'signature'
-    ? 0
-    : currentStage === 'submitted'
-      ? 1
-      : currentStage === 'confirming'
-        ? 2
-        : currentStage === 'confirmed'
-          ? 3
-          : currentStage === 'delayed' || currentStage === 'failed'
-            ? 2
-            : -1;
+const SIGNING_STEPS = [
+  'Fetching account state…',
+  'Simulating strategy transaction…',
+  'Awaiting Freighter approval (1/2)…',
+  'Broadcasting strategy update…',
+  'Simulating deposit transaction…',
+  'Awaiting Freighter approval (2/2)…',
+  'Broadcasting deposit…',
+  'Confirming on-chain…',
+];
 
-  const stepStatus = (transaction: 'strategy' | 'deposit', index: number): TransactionStep['status'] => {
-    if (!currentTransaction) return 'pending';
-    if (currentTransaction === 'deposit' && transaction === 'strategy') return 'done';
-    if (currentTransaction !== transaction) return 'pending';
-    if (currentStage === 'confirmed') return 'done';
-    if (currentStage === 'delayed' && index === 2) return 'delayed';
-    if (currentStage === 'failed' && index === 2) return 'error';
-    if (index < stageIndex) return 'done';
-    if (index === stageIndex) return 'active';
-    return 'pending';
-  };
-
-  const makeTransactionSteps = (transaction: 'strategy' | 'deposit', title: string): TransactionStep[] => [
-    {
-      id: `${transaction}-signature`,
-      label: `${title}: signature requested`,
-      subText: 'Freighter opens so you can review and approve this transaction.',
-      nextAction: 'Approve or reject the request in Freighter.',
-      status: stepStatus(transaction, 0),
-    },
-    {
-      id: `${transaction}-submitted`,
-      label: `${title}: submitted to Stellar`,
-      subText: 'Submission is not confirmation; the ledger result is still being checked.',
-      nextAction: 'Wait while the network returns a ledger result.',
-      status: stepStatus(transaction, 1),
-      explorerUrl: hash ? explorerUrl(hash) : undefined,
-    },
-    {
-      id: `${transaction}-confirmation`,
-      label: `${title}: ledger confirmation`,
-      subText: 'This step is complete only after the ledger reports success.',
-      nextAction: currentStage === 'delayed'
-        ? 'Check the explorer before retrying; do not submit again while status is unknown.'
-        : 'Wait for the confirmed ledger result.',
-      status: stepStatus(transaction, 2),
-      explorerUrl: hash ? explorerUrl(hash) : undefined,
-    },
-  ];
-
-  return [
-    {
-      id: 'review',
-      label: 'Review deposit details',
-      subText: 'USDC amount, network, wallet, strategy preference, and estimated shares.',
-      status: 'done',
-    },
-    ...makeTransactionSteps('strategy', 'Save strategy preference'),
-    ...makeTransactionSteps('deposit', 'Deposit USDC'),
-  ];
+interface SigningProgressProps {
+  step: number;
 }
+
+const SigningProgress: React.FC<SigningProgressProps> = ({ step }) => (
+  <div className="py-6 text-center" aria-live="polite" aria-label="Transaction in progress">
+    <div className="h-16 w-16 flex items-center justify-center mx-auto mb-5 relative">
+      <div className="absolute inset-0 rounded-full bg-emerald-500/10 border border-emerald-500/30 animate-pulse" />
+      <Loader2 size={32} className="text-emerald-400 animate-spin" aria-hidden="true" />
+    </div>
+    <h3 className="text-lg font-bold text-white mb-2">Processing Transaction</h3>
+    <p className="text-sm text-slate-400 mb-6">
+      {SIGNING_STEPS[Math.min(step, SIGNING_STEPS.length - 1)]}
+    </p>
+    {/* Progress bar */}
+    <div className="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden">
+      <div
+        className="h-full bg-gradient-to-r from-emerald-500 to-teal-400 rounded-full transition-all duration-500"
+        style={{ width: `${((step + 1) / SIGNING_STEPS.length) * 100}%` }}
+        role="progressbar"
+        aria-valuenow={step + 1}
+        aria-valuemin={1}
+        aria-valuemax={SIGNING_STEPS.length}
+      />
+    </div>
+    <p className="text-xs text-slate-500 mt-3">
+      Do not close this window. Stellar confirms in ~3–5 seconds.
+    </p>
+  </div>
+);
 
 // ─── Main DepositForm ─────────────────────────────────────────────────────────
 
-type FormView = 'form' | 'signing' | 'delayed' | 'success' | 'error';
+type FormView = 'form' | 'signing' | 'success' | 'error';
 
 export const DepositForm: React.FC<DepositFormProps> = ({
   isOpen,
@@ -411,6 +364,12 @@ export const DepositForm: React.FC<DepositFormProps> = ({
   userPublicKey,
   onDepositSuccess,
 }) => {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const operationGeneration = useRef(0);
+  const previewGeneration = useRef(0);
+  const lastAccount = useRef(userPublicKey);
+  const activeAccount = useRef(userPublicKey);
+  activeAccount.current = userPublicKey;
   // Form
   const {
     register,
@@ -436,10 +395,37 @@ export const DepositForm: React.FC<DepositFormProps> = ({
   const [showPreview, setShowPreview] = useState<boolean>(false);
   const [estimatedShares, setEstimatedShares] = useState<number | null>(null);
   const [previewLoading, setPreviewLoading] = useState<boolean>(false);
-  const [progressUpdate, setProgressUpdate] = useState<DepositProgressUpdate | null>(null);
-  const [delayedHash, setDelayedHash] = useState<string | null>(null);
+  const [signingStep, setSigningStep] = useState<number>(0);
   const [depositResult, setDepositResult] = useState<{ depositHash: string; strategyHash?: string } | null>(null);
   const [errorMessage, setErrorMessage] = useState<string>('');
+
+  const handleClose = useCallback(() => {
+    operationGeneration.current += 1;
+    previewGeneration.current += 1;
+    reset();
+    setView('form');
+    setShowPreview(false);
+    setEstimatedShares(null);
+    setDepositResult(null);
+    setErrorMessage('');
+    setSigningStep(0);
+    onClose();
+  }, [onClose, reset]);
+  useDialogFocus(dialogRef, isOpen && !showPreview, handleClose);
+
+  useEffect(() => {
+    if (lastAccount.current === userPublicKey) return;
+    lastAccount.current = userPublicKey;
+    operationGeneration.current += 1;
+    previewGeneration.current += 1;
+    reset({ amount: '', strategy: 'Balanced' });
+    setView('form');
+    setShowPreview(false);
+    setEstimatedShares(null);
+    setDepositResult(null);
+    setErrorMessage('');
+    setUsdcBalance(0);
+  }, [userPublicKey, reset]);
 
   // ── Load USDC balance when modal opens ───────────────────────────────────
   useEffect(() => {
@@ -465,27 +451,30 @@ export const DepositForm: React.FC<DepositFormProps> = ({
 
   // ── Fetch preview shares when amount changes ─────────────────────────────
   const fetchPreview = useCallback(
-    async (amount: string) => {
-      const num = parseFloat(amount);
-      if (!num || num <= 0 || !userPublicKey) {
+    async (amount: string, generation: number) => {
+      const num = parseUsdcAmount(amount);
+      if (num === null || num <= 0 || !userPublicKey) {
         setEstimatedShares(null);
         return;
       }
       setPreviewLoading(true);
       try {
         const shares = await previewDepositToShares(userPublicKey, num);
+        if (generation !== previewGeneration.current) return;
         setEstimatedShares(shares);
       } catch {
+        if (generation !== previewGeneration.current) return;
         setEstimatedShares(null);
       } finally {
-        setPreviewLoading(false);
+        if (generation === previewGeneration.current) setPreviewLoading(false);
       }
     },
     [userPublicKey],
   );
 
   useEffect(() => {
-    const timer = setTimeout(() => fetchPreview(watchedAmount), 600);
+    const generation = ++previewGeneration.current;
+    const timer = setTimeout(() => fetchPreview(watchedAmount, generation), 600);
     return () => clearTimeout(timer);
   }, [watchedAmount, fetchPreview]);
 
@@ -504,54 +493,55 @@ export const DepositForm: React.FC<DepositFormProps> = ({
 
   // ── Execute deposit ───────────────────────────────────────────────────────
   const handleConfirmDeposit = async () => {
+    const account = userPublicKey;
+    const generation = ++operationGeneration.current;
     setShowPreview(false);
     setView('signing');
-    setProgressUpdate(null);
-    setDelayedHash(null);
+    setSigningStep(0);
 
-    const amount = parseFloat(watchedAmount);
+    const amount = parseUsdcAmount(watchedAmount);
+    if (amount === null) return;
     const strategy = watchedStrategy;
 
+    let progressInterval: ReturnType<typeof setInterval> | undefined;
     try {
-      const result = await executeDeposit(userPublicKey, amount, strategy, setProgressUpdate);
+      // Simulate progress steps during signing
+      progressInterval = setInterval(() => {
+        setSigningStep((s) => Math.min(s + 1, SIGNING_STEPS.length - 2));
+      }, 2500);
+
+      const result = await executeDeposit(account, amount, strategy);
+
+      clearInterval(progressInterval);
+      if (generation !== operationGeneration.current || account !== activeAccount.current) return;
+      setSigningStep(SIGNING_STEPS.length - 1);
+
+      // Brief pause so the last step message is visible
+      await new Promise((r) => setTimeout(r, 400));
+      if (generation !== operationGeneration.current || account !== activeAccount.current) return;
 
       setDepositResult(result);
       setView('success');
       onDepositSuccess?.();
     } catch (err) {
-      if (err instanceof TransactionDelayedError) {
-        setDelayedHash(err.transactionHash ?? null);
-        setView('delayed');
-        return;
-      }
+      if (generation !== operationGeneration.current || account !== activeAccount.current) return;
       setErrorMessage(humanizeError(err));
       setView('error');
+    } finally {
+      if (progressInterval) clearInterval(progressInterval);
     }
   };
 
   // ── Reset and close ───────────────────────────────────────────────────────
-  const handleClose = () => {
-    reset();
-    setView('form');
-    setShowPreview(false);
-    setEstimatedShares(null);
-    setDepositResult(null);
-    setProgressUpdate(null);
-    setDelayedHash(null);
-    setErrorMessage('');
-    onClose();
-  };
-
   const handleRetry = () => {
     setView('form');
     setErrorMessage('');
-    setProgressUpdate(null);
-    setDelayedHash(null);
+    setSigningStep(0);
   };
 
   if (!isOpen) return null;
 
-  const numAmount = parseFloat(watchedAmount) || 0;
+  const numAmount = parseUsdcAmount(watchedAmount) ?? 0;
   const strategyMeta = STRATEGY_META[watchedStrategy];
   const StrategyIcon = strategyMeta.icon;
 
@@ -569,8 +559,10 @@ export const DepositForm: React.FC<DepositFormProps> = ({
           role="dialog"
           aria-modal="true"
           aria-labelledby="deposit-modal-title"
+          tabIndex={-1}
+          ref={dialogRef}
         >
-          {/* Keep the dialog open while a wallet action is in progress. */}
+          {/* Close button — visible except during signing */}
           {view !== 'signing' && (
             <button
               onClick={handleClose}
@@ -749,46 +741,8 @@ export const DepositForm: React.FC<DepositFormProps> = ({
             </form>
           )}
 
-          {/* ── Transaction progress ──────────────────────────────────────── */}
-          {view === 'signing' && (
-            <TransactionProgress
-              steps={buildDepositProgressSteps(progressUpdate)}
-              title="Deposit transaction progress"
-            />
-          )}
-
-          {view === 'delayed' && (
-            <div className="space-y-4">
-              <TransactionProgress
-                steps={buildDepositProgressSteps(progressUpdate)}
-                title="Confirmation is delayed"
-              />
-              {delayedHash ? (
-                <a
-                  href={explorerUrl(delayedHash)}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-amber-500/30 px-4 text-sm font-semibold text-amber-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-300"
-                >
-                  Check transaction in Stellar Explorer
-                </a>
-              ) : (
-                <p className="text-sm text-amber-200" role="status">
-                  The network did not return a transaction hash. Check Freighter and your wallet activity before retrying.
-                </p>
-              )}
-              <p className="text-xs text-slate-400">
-                Do not submit this deposit again until you confirm whether the transaction was included in a ledger.
-              </p>
-              <button
-                type="button"
-                onClick={handleClose}
-                className="w-full min-h-11 rounded-xl border border-slate-700 text-slate-200 font-semibold hover:bg-slate-800"
-              >
-                Close
-              </button>
-            </div>
-          )}
+          {/* ── Signing progress ──────────────────────────────────────────── */}
+          {view === 'signing' && <SigningProgress step={signingStep} />}
 
           {/* ── Success state ─────────────────────────────────────────────── */}
           {view === 'success' && depositResult && (
@@ -797,7 +751,6 @@ export const DepositForm: React.FC<DepositFormProps> = ({
               strategyHash={depositResult.strategyHash}
               amount={numAmount}
               strategy={watchedStrategy}
-              networkLabel={STELLAR_NETWORK_LABEL}
               onClose={handleClose}
             />
           )}
@@ -817,8 +770,6 @@ export const DepositForm: React.FC<DepositFormProps> = ({
       {showPreview && (
         <PreviewModal
           amount={numAmount}
-          userPublicKey={userPublicKey}
-          networkLabel={STELLAR_NETWORK_LABEL}
           strategy={watchedStrategy}
           estimatedShares={estimatedShares}
           isLoading={previewLoading}

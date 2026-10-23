@@ -157,6 +157,7 @@ jobs:
               ;;
             frontend-lint)
               npm ci
+              npm run check:i18n
               npm run lint
               ;;
             build-wasm)
