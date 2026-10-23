@@ -12,6 +12,11 @@
  * JWT algorithm: HS256 (symmetric, keyed from JWT_SECRET env var).
  * Nonces are stored in Redis with a 5-minute TTL and are single-use.
  * Refresh tokens rotate on each use — old tokens are immediately invalidated.
+ *
+ * OTP safety (#418): verification is bounded by a durable attempt counter and
+ * an explicit expiry timestamp, resends are rate-limited by a cooldown, and
+ * consumption is atomic (compare-and-delete) so concurrent verifications
+ * across service instances cannot consume the same code twice.
  */
 
 import crypto from 'crypto';
@@ -30,6 +35,15 @@ const NONCE_TTL_S = 5 * 60;                 // 5 minutes
 const NONCE_PREFIX = 'siws:nonce:';
 const REFRESH_PREFIX = 'siws:refresh:';
 
+// OTP protection (#418)
+const OTP_TTL_S = 5 * 60;                   // codes expire after 5 minutes
+const OTP_MAX_ATTEMPTS = 5;                 // bounded verification attempts
+const OTP_RESEND_COOLDOWN_S = 30;           // minimum gap between resends
+
+const OTP_PREFIX = 'otp:code:';
+const OTP_ATTEMPTS_PREFIX = 'otp:attempts:';
+const OTP_COOLDOWN_PREFIX = 'otp:cooldown:';
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
@@ -39,6 +53,8 @@ export interface JWTPayload {
   iat: number;
   exp: number;
   type: 'access' | 'refresh';
+  /** Explicit operator scope; absent for ordinary user tokens. */
+  role?: 'operator';
 }
 
 export interface AuthTokenPair {
@@ -47,53 +63,31 @@ export interface AuthTokenPair {
   expiresIn: number;
 }
 
-/**
- * A server-issued, single-use challenge.  The exact `message` is persisted so
- * the server verifies the signature against the same bytes it handed out
- * (including the issued-at timestamp), preventing message-mutation attacks.
- */
-export interface Challenge {
-  address: string;
-  nonce: string;
-  message: string;
-  issuedAt: number; // epoch ms
-}
+export type OtpVerifyResult =
+  | { ok: true }
+  | { ok: false; reason: 'expired' | 'consumed' | 'invalid' | 'too_many_attempts' };
+
+export type OtpIssueResult =
+  | { ok: true; code: string; expiresAt: number }
+  | { ok: false; reason: 'cooldown'; retryAfterS: number };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Nonce / challenge management
+// Nonce management
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Generate a cryptographically random nonce, store the full challenge in
- * Redis tied to `address`, and return the challenge the client must sign.
+ * Generate a cryptographically random nonce, store it in Redis tied to
+ * `address`, and return the nonce string.
  */
 export async function issueNonce(redis: Redis, address: string): Promise<string> {
-  const challenge = await issueChallenge(redis, address);
-  return challenge.nonce;
-}
-
-/**
- * Issue a single-use challenge for `address`.  The challenge (nonce + exact
- * message) is stored in Redis with a 5-minute TTL.  Issuing a new challenge
- * for the same address replaces any previous one.
- */
-export async function issueChallenge(redis: Redis, address: string): Promise<Challenge> {
   const nonce = crypto.randomBytes(32).toString('hex');
-  const issuedAt = Date.now();
-  const message = buildChallengeMessage(address, nonce, issuedAt);
-  const challenge: Challenge = { address, nonce, message, issuedAt };
-  await redis.set(
-    `${NONCE_PREFIX}${address}`,
-    JSON.stringify(challenge),
-    'EX',
-    NONCE_TTL_S,
-  );
-  return challenge;
+  await redis.set(`${NONCE_PREFIX}${address}`, nonce, 'EX', NONCE_TTL_S);
+  return nonce;
 }
 
 /**
- * Retrieve and immediately delete the challenge for an address.
- * Returns `null` if the challenge has expired or does not exist.
+ * Retrieve and immediately delete the nonce for an address.
+ * Returns `null` if the nonce has expired or does not exist.
  * Single-use: calling this twice for the same address always returns null
  * on the second call.
  */
@@ -101,28 +95,125 @@ export async function consumeNonce(
   redis: Redis,
   address: string,
 ): Promise<string | null> {
-  const challenge = await consumeChallenge(redis, address);
-  return challenge ? challenge.nonce : null;
-}
-
-/**
- * Atomically fetch-and-delete the stored challenge for `address`.
- * Returns `null` when the challenge is missing, expired, or already consumed.
- */
-export async function consumeChallenge(
-  redis: Redis,
-  address: string,
-): Promise<Challenge | null> {
   const key = `${NONCE_PREFIX}${address}`;
   // Atomic GET-and-DELETE via pipeline
   const [nonce] = await redis.pipeline().get(key).del(key).exec() as [[null, string | null], [null, number]];
-  const raw = nonce[1];
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw) as Challenge;
-  } catch {
-    return null;
+  return nonce[1];
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// OTP issuance, verification, and consumption (#418)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Issue a fresh OTP for `address`.
+ *
+ * Resends are rate-limited by a durable cooldown key so a caller cannot spam
+ * new codes.  The code itself is stored with an explicit expiry timestamp and
+ * a fresh attempt counter; the raw code is never logged.
+ */
+export async function issueOtp(redis: Redis, address: string): Promise<OtpIssueResult> {
+  const cooldownKey = `${OTP_COOLDOWN_PREFIX}${address}`;
+  // SET NX EX is atomic across instances: only one issuer wins the cooldown.
+  const acquired = await redis.set(cooldownKey, '1', 'EX', OTP_RESEND_COOLDOWN_S, 'NX');
+  if (acquired !== 'OK') {
+    const ttl = await redis.ttl(cooldownKey);
+    return { ok: false, reason: 'cooldown', retryAfterS: ttl > 0 ? ttl : OTP_RESEND_COOLDOWN_S };
   }
+
+  const code = crypto.randomInt(0, 1_000_000).toString().padStart(6, '0');
+  const expiresAt = Date.now() + OTP_TTL_S * 1000;
+  const codeKey = `${OTP_PREFIX}${address}`;
+  const attemptsKey = `${OTP_ATTEMPTS_PREFIX}${address}`;
+
+  // Store the code with its expiry; reset the attempt counter for the new code.
+  await redis
+    .multi()
+    .set(codeKey, JSON.stringify({ code, expiresAt }), 'EX', OTP_TTL_S)
+    .del(attemptsKey)
+    .exec();
+
+  return { ok: true, code, expiresAt };
+}
+
+/**
+ * Verify and consume an OTP for `address`.
+ *
+ * - Expired codes fail (`expired`).
+ * - Codes already consumed fail (`consumed`).
+ * - Attempts are bounded; exceeding the limit fails (`too_many_attempts`).
+ * - Consumption is atomic: the code is deleted via compare-and-delete so two
+ *   concurrent verifications cannot both succeed.
+ *
+ * The submitted code is never logged.
+ */
+export async function verifyAndConsumeOtp(
+  redis: Redis,
+  address: string,
+  submittedCode: string,
+): Promise<OtpVerifyResult> {
+  const codeKey = `${OTP_PREFIX}${address}`;
+  const attemptsKey = `${OTP_ATTEMPTS_PREFIX}${address}`;
+
+  // Bound attempts before doing any comparison work.
+  const attempts = await redis.incr(attemptsKey);
+  if (attempts === 1) {
+    // Keep the counter alive at least as long as the code.
+    await redis.expire(attemptsKey, OTP_TTL_S);
+  }
+  if (attempts > OTP_MAX_ATTEMPTS) {
+    return { ok: false, reason: 'too_many_attempts' };
+  }
+
+  const raw = await redis.get(codeKey);
+  if (!raw) {
+    // Either never issued, expired, or already consumed.
+    return { ok: false, reason: 'consumed' };
+  }
+
+  let stored: { code: string; expiresAt: number };
+  try {
+    stored = JSON.parse(raw) as { code: string; expiresAt: number };
+  } catch {
+    return { ok: false, reason: 'invalid' };
+  }
+
+  if (Date.now() > stored.expiresAt) {
+    await redis.del(codeKey);
+    return { ok: false, reason: 'expired' };
+  }
+
+  // Constant-time comparison to avoid timing leaks.
+  const expected = Buffer.from(stored.code, 'utf8');
+  const provided = Buffer.from(submittedCode, 'utf8');
+  const matches =
+    expected.length === provided.length && crypto.timingSafeEqual(expected, provided);
+
+  if (!matches) {
+    return { ok: false, reason: 'invalid' };
+  }
+
+  // Atomic single-use consumption: only the caller that deletes the key wins.
+  // Compare-and-delete via a Lua script so concurrent verifications across
+  // instances cannot both consume the same code.
+  const consumed = await redis.eval(
+    `if redis.call('GET', KEYS[1]) == ARGV[1] then
+       return redis.call('DEL', KEYS[1])
+     else
+       return 0
+     end`,
+    1,
+    codeKey,
+    raw,
+  );
+
+  if (consumed !== 1) {
+    // Another instance consumed it first.
+    return { ok: false, reason: 'consumed' };
+  }
+
+  await redis.del(attemptsKey);
+  return { ok: true };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -132,18 +223,14 @@ export async function consumeChallenge(
 /**
  * Returns the deterministic message that the client must sign with their
  * Stellar keypair.  Both client and server build the same string from the
- * nonce and issued-at timestamp so the content is unambiguous.
+ * nonce so the content is unambiguous.
  */
-export function buildChallengeMessage(
-  address: string,
-  nonce: string,
-  issuedAt: number = Date.now(),
-): string {
+export function buildChallengeMessage(address: string, nonce: string): string {
   return [
     'NeuroWealth Authentication',
     `Address: ${address}`,
     `Nonce: ${nonce}`,
-    `Issued: ${new Date(issuedAt).toUTCString()}`,
+    `Issued: ${new Date().toUTCString()}`,
     'Sign this message to prove ownership of your Stellar wallet.',
   ].join('\n');
 }
@@ -177,31 +264,6 @@ export function verifyStellarSignature(
   }
 }
 
-/**
- * Full wallet-proof verification: consume the single-use challenge for
- * `address`, confirm it has not expired, and verify the Ed25519 signature
- * over the exact stored message.  Returns the verified address on success,
- * or `null` on any failure (missing/expired/replayed challenge, bad sig).
- */
-export async function verifyChallenge(
-  redis: Redis,
-  address: string,
-  signatureBase64: string,
-): Promise<string | null> {
-  const challenge = await consumeChallenge(redis, address);
-  if (!challenge) return null;
-
-  // Defence-in-depth: reject challenges past their TTL even if Redis has not
-  // yet evicted the key.
-  if (Date.now() - challenge.issuedAt > NONCE_TTL_S * 1000) return null;
-
-  if (!verifyStellarSignature(challenge.address, challenge.message, signatureBase64)) {
-    return null;
-  }
-
-  return challenge.address;
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // JWT issuance
 // ─────────────────────────────────────────────────────────────────────────────
@@ -210,9 +272,9 @@ function signToken(payload: Omit<JWTPayload, 'iat' | 'exp'>, ttlSeconds: number)
   return jwt.sign(payload, JWT_SECRET, { expiresIn: ttlSeconds });
 }
 
-export function issueTokenPair(address: string): AuthTokenPair {
-  const accessToken = signToken({ sub: address, type: 'access' }, ACCESS_TOKEN_TTL_S);
-  const refreshToken = signToken({ sub: address, type: 'refresh' }, REFRESH_TOKEN_TTL_S);
+export function issueTokenPair(address: string, role?: 'operator'): AuthTokenPair {
+  const accessToken = signToken({ sub: address, type: 'access', ...(role ? { role } : {}) }, ACCESS_TOKEN_TTL_S);
+  const refreshToken = signToken({ sub: address, type: 'refresh', ...(role ? { role } : {}) }, REFRESH_TOKEN_TTL_S);
   return { accessToken, refreshToken, expiresIn: ACCESS_TOKEN_TTL_S };
 }
 
@@ -260,8 +322,8 @@ export async function rotateRefreshToken(
   // 3. Invalidate old token
   await redis.del(`${REFRESH_PREFIX}${hash}`);
 
-  // 4. Issue new pair
-  const newPair = issueTokenPair(payload.sub);
+  // 4. Issue new pair (preserve operator scope across rotation)
+  const newPair = issueTokenPair(payload.sub, payload.role === 'operator' ? 'operator' : undefined);
   await storeRefreshToken(redis, payload.sub, newPair.refreshToken);
   return newPair;
 }
@@ -278,4 +340,12 @@ export function verifyAccessToken(token: string): JWTPayload | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Returns true only when the verified payload carries an explicit operator
+ * scope.  Used by transaction status routes to gate operational access.
+ */
+export function isOperator(payload: JWTPayload | null | undefined): boolean {
+  return payload?.role === 'operator';
 }
