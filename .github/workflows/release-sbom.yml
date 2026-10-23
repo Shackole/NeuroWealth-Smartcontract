@@ -1,0 +1,61 @@
+name: Release SBOMs
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  sbom:
+    name: Build and publish release inventories
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Checkout the released revision
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Build deployable Node runtime images
+        env:
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          docker build --pull -f agent/Dockerfile -t "neurowealth-agent:${RELEASE_SHA}" agent
+          docker build --pull -f packages/monitoring/Dockerfile -t "neurowealth-monitoring:${RELEASE_SHA}" .
+
+      - name: Generate lockfile inventory
+        uses: anchore/sbom-action@v0.17.0
+        with:
+          path: .
+          format: cyclonedx-json
+          syft-version: 1.54.1
+          output-file: ${{ runner.temp }}/sbom-source-${{ github.sha }}.cdx.json
+          artifact-name: sbom-source-${{ github.sha }}
+          upload-artifact: true
+          upload-release-assets: true
+
+      - name: Generate agent runtime image inventory
+        uses: anchore/sbom-action@v0.17.0
+        with:
+          image: neurowealth-agent:${{ github.sha }}
+          format: cyclonedx-json
+          syft-version: 1.54.1
+          output-file: ${{ runner.temp }}/sbom-agent-${{ github.sha }}.cdx.json
+          artifact-name: sbom-agent-${{ github.sha }}
+          upload-artifact: true
+          upload-release-assets: true
+
+      - name: Generate monitoring runtime image inventory
+        uses: anchore/sbom-action@v0.17.0
+        with:
+          image: neurowealth-monitoring:${{ github.sha }}
+          format: cyclonedx-json
+          syft-version: 1.54.1
+          output-file: ${{ runner.temp }}/sbom-monitoring-${{ github.sha }}.cdx.json
+          artifact-name: sbom-monitoring-${{ github.sha }}
+          upload-artifact: true
+          upload-release-assets: true
