@@ -1,8 +1,9 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { ShieldCheck, Zap, TrendingUp, Check } from 'lucide-react';
 import { setUserStrategy } from '@/lib/contract';
+import { fetchPoolAllocation } from '@/lib/vaultHelpers';
 
 export type StrategyType = 'conservative' | 'balanced' | 'growth';
 
@@ -21,7 +22,7 @@ export const STRATEGIES: StrategyOption[] = [
     name: 'Conservative',
     apy: 5.2,
     risk: 'Low',
-    description: '100% Blend lending pool allocation prioritizing principal safety and steady yield.',
+    description: 'Preference for lower volatility and steady lending yield.',
     icon: ShieldCheck
   },
   {
@@ -29,7 +30,7 @@ export const STRATEGIES: StrategyOption[] = [
     name: 'Balanced',
     apy: 8.4,
     risk: 'Medium',
-    description: 'Dynamic allocation between Blend and DEX pools automated by AI rebalancing.',
+    description: 'Preference for a balance of lending yield and market opportunities.',
     icon: Zap
   },
   {
@@ -37,44 +38,89 @@ export const STRATEGIES: StrategyOption[] = [
     name: 'Growth',
     apy: 12.1,
     risk: 'High',
-    description: 'Aggressive multi-protocol yield farming maximizing compound returns.',
+    description: 'Preference for higher growth opportunities with greater market risk.',
     icon: TrendingUp
   }
 ];
 
 export interface StrategySelectorProps {
   userPublicKey?: string | null;
+  /** Saved user preference. It does not assert how the shared pool is currently deployed. */
   activeStrategy?: StrategyType;
   onSelectStrategy?: (strategy: StrategyType) => void;
+  /** Current pool-level allocation, expressed in basis points. */
+  currentAllocation?: Array<{ protocol: string; weightBps: number }> | null;
+  allocationUpdatedAt?: string | null;
 }
 
 export const StrategySelector: React.FC<StrategySelectorProps> = ({
   userPublicKey,
   activeStrategy = 'balanced',
-  onSelectStrategy
+  onSelectStrategy,
+  currentAllocation,
+  allocationUpdatedAt,
 }) => {
   const [selected, setSelected] = useState<StrategyType>(activeStrategy);
   const [loading, setLoading] = useState<boolean>(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [onChainAllocation, setOnChainAllocation] = useState<Array<{ protocol: string; weightBps: number }> | null>(null);
+  const [allocationLoading, setAllocationLoading] = useState(false);
+  const [allocationUpdatedAtOnChain, setAllocationUpdatedAtOnChain] = useState<string | null>(null);
+
+  useEffect(() => setSelected(activeStrategy), [activeStrategy]);
+
+  useEffect(() => {
+    if (currentAllocation !== undefined) {
+      setOnChainAllocation(currentAllocation);
+      return;
+    }
+    if (!userPublicKey) {
+      setOnChainAllocation(null);
+      return;
+    }
+
+    let cancelled = false;
+    setAllocationLoading(true);
+    fetchPoolAllocation(userPublicKey)
+      .then((allocation) => {
+        if (cancelled) return;
+        setOnChainAllocation(allocation);
+        setAllocationUpdatedAtOnChain(new Date().toISOString());
+      })
+      .catch(() => {
+        if (!cancelled) setOnChainAllocation(null);
+      })
+      .finally(() => {
+        if (!cancelled) setAllocationLoading(false);
+      });
+
+    return () => { cancelled = true; };
+  }, [currentAllocation, userPublicKey]);
 
   const handleSelect = async (strategyId: StrategyType) => {
+    if (loading || strategyId === selected) return;
+    const previousPreference = selected;
     setSelected(strategyId);
     setStatusMessage(null);
 
-    if (onSelectStrategy) {
-      onSelectStrategy(strategyId);
+    if (!userPublicKey) {
+      onSelectStrategy?.(strategyId);
+      setStatusMessage('Preference selected for this session; connect a wallet to save it.');
+      return;
     }
 
-    if (userPublicKey) {
-      setLoading(true);
-      try {
-        await setUserStrategy(userPublicKey, strategyId);
-        setStatusMessage(`Strategy set to ${strategyId.toUpperCase()}`);
-      } catch (err: any) {
-        setStatusMessage(`Failed to update strategy: ${err.message}`);
-      } finally {
-        setLoading(false);
-      }
+    setLoading(true);
+    try {
+      const result = await setUserStrategy(userPublicKey, strategyId);
+      if (!result.success) throw new Error(result.error || 'The preference was not saved.');
+      onSelectStrategy?.(strategyId);
+      setStatusMessage(`Strategy set to ${strategyId} preference; current pool allocation may differ.`);
+    } catch (err: unknown) {
+      setSelected(previousPreference);
+      const message = err instanceof Error ? err.message : 'Please try again.';
+      setStatusMessage(`Failed to update strategy preference: ${message}`);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -87,13 +133,13 @@ export const StrategySelector: React.FC<StrategySelectorProps> = ({
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h3 className="text-lg font-bold text-white">Investment Strategy</h3>
-          <p className="text-xs text-slate-400">Select how autonomous AI deploys your deposited assets</p>
+          <h3 className="text-lg font-bold text-white">Strategy preference</h3>
+          <p className="text-xs text-slate-400">This guides the agent; it does not directly change the shared pool allocation.</p>
         </div>
         {statusMessage && (
-          <span role="status" className="text-xs text-emerald-400 font-mono">
+          <span role="status" className={`text-xs font-mono ${statusMessage.startsWith('Failed') ? 'text-rose-300' : 'text-emerald-400'}`}>
             {statusMessage}
           </span>
         )}
@@ -113,9 +159,10 @@ export const StrategySelector: React.FC<StrategySelectorProps> = ({
               key={st.id}
               role="radio"
               aria-checked={isSelected}
-              aria-label={`${st.name} Strategy`}
+              aria-label={`${st.name} Strategy preference`}
+              aria-disabled={loading}
               tabIndex={0}
-              onClick={() => handleSelect(st.id)}
+              onClick={() => { if (!loading) void handleSelect(st.id); }}
               onKeyDown={(e) => handleKeyDown(e, st.id)}
               className={`cursor-pointer rounded-2xl p-5 border transition-all relative overflow-hidden select-none focus:outline-none focus:ring-2 focus:ring-emerald-400 ${
                 isSelected
@@ -131,15 +178,15 @@ export const StrategySelector: React.FC<StrategySelectorProps> = ({
                 </div>
                 <div className="text-right">
                   <span className="text-lg font-extrabold text-white">{st.apy}%</span>
-                  <span className="text-[10px] text-slate-400 block font-mono">EST. APY</span>
+                  <span className="text-[10px] text-slate-400 block font-mono">INDICATIVE APY</span>
                 </div>
               </div>
 
               <div className="flex items-center gap-2 mb-1">
                 <h4 className="font-bold text-white text-base">{st.name}</h4>
                 {isSelected && (
-                  <span className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-emerald-400 bg-emerald-500/20 px-1.5 py-0.5 rounded">
-                    <Check size={10} aria-hidden="true" /> Active
+                    <span className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-emerald-400 bg-emerald-500/20 px-1.5 py-0.5 rounded">
+                    <Check size={10} aria-hidden="true" /> Preference selected
                   </span>
                 )}
               </div>
@@ -160,6 +207,30 @@ export const StrategySelector: React.FC<StrategySelectorProps> = ({
           );
         })}
       </div>
+
+      <section className="rounded-xl border border-slate-800 bg-slate-900/50 p-4" aria-labelledby="pool-allocation-title">
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <div>
+            <h4 id="pool-allocation-title" className="text-sm font-semibold text-white">On-chain protocol allocation</h4>
+            <p className="text-xs text-slate-400">These are the vault’s target weights for deployable assets. They may differ from your preference and do not describe an individual user’s exact positions.</p>
+          </div>
+          {(allocationUpdatedAt || allocationUpdatedAtOnChain) && <time className="text-xs text-slate-500" dateTime={allocationUpdatedAt || allocationUpdatedAtOnChain || undefined}>Updated {new Date(allocationUpdatedAt || allocationUpdatedAtOnChain || '').toLocaleString()}</time>}
+        </div>
+        {allocationLoading ? (
+          <p className="mt-3 text-xs text-slate-400" role="status">Loading current on-chain weights…</p>
+        ) : onChainAllocation?.length ? (
+          <ul className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2" aria-label="Current protocol weights">
+            {onChainAllocation.map(({ protocol, weightBps }) => (
+              <li key={protocol} className="flex items-center justify-between gap-3 rounded-lg bg-slate-950/60 px-3 py-2 text-sm">
+                <span className="text-slate-300">{protocol}</span>
+                <strong className="font-mono text-white">{(weightBps / 100).toFixed(2)}%</strong>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="mt-3 text-xs text-amber-300" role="status">Current protocol weights are unavailable.</p>
+        )}
+      </section>
     </div>
   );
 };
