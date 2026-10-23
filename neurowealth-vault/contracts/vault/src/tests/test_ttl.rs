@@ -1,7 +1,7 @@
 //! Tests for persistent-storage TTL behavior on user share entries.
 
 use super::utils::*;
-use crate::DataKey;
+use crate::{DataKey, MultiAssetKey};
 use soroban_sdk::testutils::storage::Persistent as _;
 use soroban_sdk::{testutils::Address as _, Address, Env};
 
@@ -245,6 +245,87 @@ fn test_touch_does_not_extend_when_ttl_equals_threshold() {
         ttl_at_threshold, ttl_after,
         "TTL must not change when it is already at the threshold (100 is not < 100)"
     );
+}
+
+/// A keeper touch refreshes exact multi-asset positions and the per-user
+/// preference/lock metadata alongside legacy shares. Migration configuration
+/// remains instance state and is not confused with persistent per-user TTL.
+#[test]
+fn test_touch_restores_multi_asset_position_preference_and_lock_ttls() {
+    use soroban_sdk::Symbol;
+
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, _agent, owner, usdc_token) = setup_vault_with_token(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+    let user = Address::generate(&env);
+    let usdt_token = env.register_contract(None, TestToken);
+    let usdt = Symbol::new(&env, "USDT");
+
+    client.add_supported_asset(&usdt, &usdt_token, &0, &0, &0);
+    mint_and_deposit(&env, &client, &usdc_token, &user, 5_000_000_i128);
+    TestTokenClient::new(&env, &usdt_token).mint(&user, &8_000_000_i128);
+    client.deposit_asset(&user, &usdt, &8_000_000_i128);
+    client.set_user_strategy(&user, &Symbol::new(&env, "growth"));
+    client.lock_shares(&user, &1_000_000_i128, &30);
+
+    let new_vault = Address::generate(&env);
+    client.set_migration_target(&owner, &new_vault);
+    client.set_migration_paused(&owner, &true);
+
+    let tracked_data_keys = [
+        DataKey::Shares(user.clone()),
+        DataKey::UserStrategy(user.clone()),
+        DataKey::LockedShares(user.clone()),
+        DataKey::LockExpiry(user.clone()),
+        DataKey::LastDepositLedger(user.clone()),
+        DataKey::DepositSnapshot(user.clone()),
+    ];
+    let tracked_asset_keys = [MultiAssetKey::Shares(user.clone(), usdt.clone())];
+    env.as_contract(&contract_id, || {
+        for key in &tracked_data_keys {
+            env.storage().persistent().extend_ttl(key, 0, 1);
+        }
+        for key in &tracked_asset_keys {
+            env.storage().persistent().extend_ttl(key, 0, 1);
+        }
+    });
+
+    assert!(client.touch_user_ttl(&user));
+    env.as_contract(&contract_id, || {
+        for key in &tracked_data_keys {
+            assert!(
+                env.storage().persistent().get_ttl(key) >= 100,
+                "touch_user_ttl must restore the TTL for every existing user record"
+            );
+        }
+        for key in &tracked_asset_keys {
+            assert!(
+                env.storage().persistent().get_ttl(key) >= 100,
+                "touch_user_ttl must restore the TTL for every existing user record"
+            );
+        }
+        assert_eq!(
+            env.storage().instance().get::<_, Address>(&DataKey::MigrationTarget),
+            Some(new_vault.clone()),
+            "migration target remains in instance storage"
+        );
+        assert_eq!(
+            env.storage().instance().get::<_, bool>(&DataKey::MigrationPaused),
+            Some(true),
+            "migration pause remains in instance storage"
+        );
+    });
+
+    assert_eq!(client.get_shares(&user), 5_000_000_i128);
+    assert_eq!(client.get_balance_asset(&user, &usdt), 8_000_000_i128);
+    assert_eq!(
+        client.get_user_strategy(&user),
+        Symbol::new(&env, "growth")
+    );
+    let (locked, expiry) = client.get_locked_shares(&user);
+    assert_eq!(locked, 1_000_000_i128);
+    assert!(expiry > env.ledger().sequence());
 }
 
 /// Boundary — one below threshold: TTL == 99 IS below threshold, so

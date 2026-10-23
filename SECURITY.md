@@ -381,7 +381,7 @@ to compound yield during this window:
 | Function | Caller | Paused Behaviour | Rationale |
 |----------|--------|-----------------|-----------|
 | `deposit` | User | 🔴 BLOCKED | No new deposits accepted during an emergency |
-| `batch_deposit` | User | 🔴 BLOCKED | Same reason as `deposit` |
+| `batch_deposit` | Agent | 🔴 BLOCKED | Agent-submitted batch deposits move funds and stop while paused |
 | `withdraw` | User | 🔴 BLOCKED | See note below on withdrawal semantics |
 | `withdraw_all` | User | 🔴 BLOCKED | See note below on withdrawal semantics |
 | `rebalance` | Agent | 🔴 BLOCKED | No fund movement while vault is paused |
@@ -414,6 +414,42 @@ to compound yield during this window:
 | `set_user_strategy` | User | 🟢 ALLOWED | Preference storage; no fund movement |
 | `touch_user_ttl` | Anyone | 🟢 ALLOWED | Permissionless TTL maintenance; no fund movement |
 | `initialize` | Deployer | 🟢 ALLOWED | Initialization runs before pause is even possible |
+
+### Additional Public Mutators
+
+The following entries complete the inventory for the current public contract
+surface. “ALLOWED” means the method is not blocked by the main vault pause;
+the method's own state, authorization, and validation checks still apply.
+
+| Function | Allowed actor | Paused behaviour | Notes |
+|----------|---------------|------------------|-------|
+| `deposit_asset` | User | 🔴 BLOCKED | Same pause boundary as `deposit` |
+| `withdraw_asset` | User | 🔴 BLOCKED | Same pause boundary as `withdraw` |
+| `rebalance_multi` | Agent | 🔴 BLOCKED | No protocol movement while paused |
+| `migrate_shares` | User | 🟢 ALLOWED | Controlled by the separate migration-pause flag and target |
+| `lock_shares` | User | 🟢 ALLOWED | Share restriction only; does not move assets |
+| `unlock_shares` | User | 🟢 ALLOWED | Lock expiry and user authorization still apply |
+| `emergency_withdraw` | User | 🟢 ALLOWED | Explicit user recovery path during a pause |
+| `enable_multi_protocol` | Owner | 🟢 ALLOWED | Configuration only |
+| `set_protocol_apy` | Agent | 🟢 ALLOWED | Agent report, no direct fund movement |
+| `reset_circuit_breaker` | Owner | 🟢 ALLOWED | Owner recovery control |
+| `set_migration_target` | Owner | 🟢 ALLOWED | Migration configuration |
+| `set_migration_paused` | Owner | 🟢 ALLOWED | Independent migration safety switch |
+| `set_rate_limit` | Owner | 🟢 ALLOWED | Configuration only |
+| `set_rate_limit_config` | Owner | 🟢 ALLOWED | Alias for `set_rate_limit` |
+| `set_max_batch_size` | Owner | 🟢 ALLOWED | Configuration only |
+| `set_batch_size_limit` | Owner | 🟢 ALLOWED | Alias for `set_max_batch_size` |
+| `set_min_holding_period` | Owner | 🟢 ALLOWED | Configuration only |
+| `submit_mev_report` | Agent | 🟢 ALLOWED | Risk report and accounting metadata |
+| `set_max_acceptable_mev_loss` | Owner | 🟢 ALLOWED | Configuration only |
+| `submit_apy_prediction` | Agent | 🟢 ALLOWED | Prediction metadata |
+| `set_guardian` | Owner | 🟢 ALLOWED | Upgrade authorization configuration |
+| `remove_guardian` | Owner | 🟢 ALLOWED | Owner recovery path for upgrade signing |
+| `add_supported_asset` | Owner | 🟢 ALLOWED | Asset configuration only |
+| `update_asset_limits` | Owner | 🟢 ALLOWED | Asset configuration only |
+| `remove_supported_asset` | Owner | 🟢 ALLOWED | Only when that asset has no shares or assets |
+| `touch_user_ttl` | Anyone | 🟢 ALLOWED | Permissionless storage maintenance |
+| `batch_touch_ttl` | Anyone | 🟢 ALLOWED | Permissionless storage maintenance |
 
 ### Read-Only / View Functions
 
