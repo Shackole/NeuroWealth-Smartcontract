@@ -2,6 +2,33 @@
 
 This document describes the security architecture, trust model, and threat model for the NeuroWealth Vault contract.
 
+## Wallet custody differs by product flow
+
+The web and WhatsApp paths have different signing and recovery models. Do not
+describe the entire product as non-custodial:
+
+- **Web / Freighter:** the browser requests the user's public key and asks the
+  Freighter extension to sign transactions. The web application does not
+  receive the wallet's secret key. Users remain responsible for their wallet
+  backup and recovery.
+- **WhatsApp:** the service generates and signs with a server-managed Stellar
+  keypair after phone verification. This is custodial: operators who control
+  the signing service and its encryption material may be able to authorize
+  transactions for that wallet. Phone-number verification is not proof of
+  wallet ownership and does not provide independent key recovery.
+
+The current WhatsApp implementation stores encrypted wallet records in an
+in-process `Map`; a service restart loses the records. Its encryption module
+also contains a development fallback key. Until durable encrypted storage,
+managed key rotation/recovery, production secret configuration, and operational
+access controls are implemented and reviewed, treat WhatsApp wallet handling
+as a prototype and do not use it to custody real funds. The user-facing
+distinction is described in the [WhatsApp guide](docs/WHATSAPP_USER_GUIDE.md).
+
+The vault contract's on-chain controls do not remove the custodial risks of a
+server-managed signing key. A deployed contract may restrict where funds can
+move, but the WhatsApp operator still controls signing for that account.
+
 ## Threat Model & Trust Boundaries (Issue #563)
 
 The `NeuroWealthVault` smart contract operates in a multi-actor ecosystem involving privileged governance keys, automated off-chain execution services, end users, external DeFi protocols, and token issuers. System security depends on defining explicit trust boundaries and technical constraints around each actor.

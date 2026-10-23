@@ -10,6 +10,7 @@ This guide covers environment setup, coding conventions, testing, and the PR rev
 - [Good First Issues](#good-first-issues)
 - [Reporting Issues](#reporting-issues)
 - [Development Environment Setup](#development-environment-setup)
+  - [Clean-checkout local walkthrough](#clean-checkout-local-walkthrough)
   - [Prerequisites](#prerequisites)
   - [Smart Contract Setup](#smart-contract-setup)
   - [Backend / Agent Setup](#backend--agent-setup)
@@ -87,6 +88,12 @@ advisory system. We triage security reports within 48 hours.
 
 ## Development Environment Setup
 
+### Clean-checkout local walkthrough
+
+For an ordered fresh-clone setup covering package installs, local database and
+Redis services, ports, contract build, and teardown, follow
+[`docs/LOCAL_DEVELOPMENT.md`](docs/LOCAL_DEVELOPMENT.md).
+
 ### Prerequisites
 
 Install all tools listed here **before** running any build or test command.
@@ -161,12 +168,16 @@ stellar contract build
 
 ```bash
 # From the repo root
-cd agent        # (planned directory — not yet in repo)
-npm install
-cp .env.example .env
-# Edit .env with your Stellar key, Claude/OpenAI key, and database URL
-npm run dev
+cp agent/.env.local.template agent/.env.local
+cd agent
+npm ci
+npm run start:dev
 ```
+
+The agent directory and service are present. Database-backed local use also
+requires PostgreSQL and Redis; the complete clean-checkout instructions are in
+[`docs/LOCAL_DEVELOPMENT.md`](docs/LOCAL_DEVELOPMENT.md). Do not put production
+keys in a local development file.
 
 ---
 
@@ -174,13 +185,16 @@ npm run dev
 
 ```bash
 # From the repo root
-cd frontend     # (planned directory — see README.md Planned Components)
-npm install
-cp .env.local.example .env.local
-# Edit .env.local with your RPC URL and contract ID
+cd frontend
+npm ci
 npm run dev
 # Open http://localhost:3000
 ```
+
+The frontend directory is present. Set public testnet RPC/network/contract
+values only when overriding its safe development defaults. See
+[`docs/ENVIRONMENT_VARIABLES.md`](docs/ENVIRONMENT_VARIABLES.md) for the
+public-versus-secret distinction.
 
 ---
 
