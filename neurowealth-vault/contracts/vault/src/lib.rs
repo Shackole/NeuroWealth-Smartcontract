@@ -10034,8 +10034,17 @@ impl NeuroWealthVault {
         );
     }
 
-    /// Panics when `min_out > 0` and fewer assets were received than required.
+    /// Binds slippage protection to the actual amount returned by the protocol
+    /// leg being evaluated.
+    ///
+    /// - `min_out < 0` is rejected by the caller before we reach this helper.
+    /// - `min_out == 0` disables the check.
+    /// - `min_out > 0` compares the realized protocol return value against the
+    ///   floor, so a leg returning less than the minimum fails the call.
     fn require_min_out(env: &Env, actual: i128, min_out: i128, leg: &str) {
+        if min_out == 0 {
+            return;
+        }
         if min_out > 0 && actual < min_out {
             let _ = leg;
             panic_with_error!(env, VaultError::MinOutNotMet);
