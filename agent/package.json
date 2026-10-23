@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "build": "tsc",
-    "test": "ts-node --transpile-only src/openAiKeyManager.test.ts && ts-node --transpile-only src/rateLimiter.test.ts && ts-node --transpile-only src/db.test.ts",
+    "test": "ts-node --transpile-only src/openAiKeyManager.test.ts && ts-node --transpile-only src/rateLimiter.test.ts && ts-node --transpile-only src/db.test.ts && ts-node --transpile-only src/backgroundWork.test.ts",
     "start:prod": "npx ts-node src/index.ts",
     "start:dev": "ts-node src/index.ts"
   },
@@ -25,6 +25,7 @@
     "dotenv": "^18.0.3",
     "express": "^5.2.1",
     "express-rate-limit": "^8.7.0",
+    "ioredis": "^6.0.0",
     "openai": "^7.0.0",
     "pg": "^8.22.0",
     "pino": "^10.3.1"

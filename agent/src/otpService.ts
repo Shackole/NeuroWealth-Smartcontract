@@ -19,6 +19,7 @@ import IORedis from 'ioredis';
 import { Pool } from 'pg';
 import { Keypair } from '@stellar/stellar-sdk';
 import logger from './logger';
+import { registerRedisClient } from './redisClients';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Config
@@ -72,7 +73,7 @@ export interface WalletCreateResult {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function createOTPRedisClient(): IORedis {
-  const client = new IORedis(REDIS_URL, { lazyConnect: true });
+  const client = registerRedisClient(new IORedis(REDIS_URL, { lazyConnect: true }));
   client.on('error', (err) =>
     logger.error({ error: err.message }, 'Redis error (OTP service)'),
   );
