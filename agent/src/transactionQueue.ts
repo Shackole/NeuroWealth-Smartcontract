@@ -11,12 +11,6 @@
  *  - Failed jobs moved to `transactions:failed` dead-letter queue with full
  *    error context attached as `failedReason`
  *  - GET /api/queue/stats exposes queue depth and counts
- *  - Per-signing-account sequence allocation is serialized via a Redis lock so
- *    parallel workers never sign the same sequence, while independent signing
- *    accounts still progress concurrently (#414)
- *  - Submitted transaction hashes are persisted before submission and
- *    reconciled after RPC timeouts so an accepted transaction is never
- *    re-executed; unknown results stay pending within a bounded policy (#415)
  */
 
 import Bull from 'bull';
@@ -31,6 +25,8 @@ import {
   Horizon,
 } from '@stellar/stellar-sdk';
 import logger from './logger';
+import { withAccountSequenceLock, type RedisLockClient } from './accountSequence';
+import { shouldRetrySequenceMismatch, SubmissionOutcomeUnknownError, submitExactlyOnceOnTimeout } from './transactionSubmission';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -50,6 +46,8 @@ export interface TransactionJobData {
   destinationAddress?: string;
   /** Optional: Soroban contract invocation XDR (if pre-built by caller) */
   xdrEnvelope?: string;
+  /** Optional public key selecting a signer configured in SIGNER_SECRET_KEYS_JSON. */
+  signerAddress?: string;
   /** ISO timestamp when this job was created by the caller. */
   requestedAt: string;
 }
@@ -58,27 +56,6 @@ export interface TransactionJobResult {
   txHash: string;
   ledger: number;
   submittedAt: string;
-}
-
-/**
- * Durable record of a submission attempt. Persisted to Redis before the
- * transaction is broadcast so that a timeout leaves a recoverable hash.
- */
-export type SubmissionStatus =
-  | 'pending'
-  | 'accepted'
-  | 'failed'
-  | 'unknown';
-
-export interface SubmissionRecord {
-  txHash: string;
-  status: SubmissionStatus;
-  /** ISO timestamp of the last status update. */
-  updatedAt: string;
-  /** Number of reconciliation polls performed so far. */
-  reconcileAttempts: number;
-  /** Terminal error message when status === 'failed'. */
-  error?: string;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -93,28 +70,13 @@ const NETWORK_PASSPHRASE =
     ? Networks.PUBLIC
     : Networks.TESTNET;
 const AGENT_SECRET = process.env.AGENT_SECRET_KEY || '';
+const SIGNER_SECRET_KEYS_JSON = process.env.SIGNER_SECRET_KEYS_JSON || '{}';
 
 const QUEUE_NAME = 'transactions';
 const DLQ_NAME = 'transactions:failed';
 const CONCURRENCY = 5;
 const MAX_SEQUENCE_RETRIES = 3;
 const DEDUP_TTL_MS = 60_000; // 60 seconds
-
-// Per-signing-account sequence lock (#414).
-// The lock is scoped to the signing account's public key so that independent
-// accounts never contend with each other, while workers sharing one account
-// are serialized. TTL guards against a crashed worker holding the lock forever.
-const SEQ_LOCK_TTL_MS = 30_000;
-const SEQ_LOCK_RETRY_MS = 50;
-const SEQ_LOCK_MAX_WAIT_MS = 30_000;
-
-// Submission reconciliation policy (#415).
-// After an RPC timeout we poll the network for the persisted hash a bounded
-// number of times before declaring the outcome unknown. Records are retained
-// long enough to cover the reconciliation window.
-const SUBMISSION_RECORD_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
-const RECONCILE_MAX_ATTEMPTS = 5;
-const RECONCILE_INTERVAL_MS = 2_000;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Queue setup
@@ -181,165 +143,6 @@ async function markSeen(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Submission record persistence (#415)
-// ─────────────────────────────────────────────────────────────────────────────
-
-function submissionKey(txHash: string): string {
-  return `submission:tx:${txHash}`;
-}
-
-/**
- * Persist a submission record before broadcasting. The hash is written first
- * so that a timeout during submission still leaves a durable record we can
- * reconcile against the network.
- */
-async function persistSubmission(record: SubmissionRecord): Promise<void> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const client = (transactionQueue as any).client as import('ioredis').Redis;
-  await client.set(
-    submissionKey(record.txHash),
-    JSON.stringify(record),
-    'PX',
-    SUBMISSION_RECORD_TTL_MS,
-  );
-}
-
-async function loadSubmission(
-  txHash: string,
-): Promise<SubmissionRecord | null> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const client = (transactionQueue as any).client as import('ioredis').Redis;
-  const raw = await client.get(submissionKey(txHash));
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw) as SubmissionRecord;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Query the network for the status of a previously submitted hash.
- * Returns 'accepted' when the transaction is on-chain, 'failed' when the
- * network reports a terminal failure, and 'unknown' when the outcome cannot
- * yet be determined (e.g. not found / still pending).
- */
-async function querySubmissionStatus(
-  txHash: string,
-): Promise<SubmissionStatus> {
-  try {
-    const tx = await server.transactions().transaction(txHash).call();
-    if (tx && tx.successful === true) {
-      return 'accepted';
-    }
-    if (tx && tx.successful === false) {
-      return 'failed';
-    }
-    return 'unknown';
-  } catch (err) {
-    // 404 → not yet visible on-chain; treat as unknown so we keep polling.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const status = (err as any)?.response?.status;
-    if (status === 404) {
-      return 'unknown';
-    }
-    logger.warn({ txHash, err }, 'Failed to query submission status');
-    return 'unknown';
-  }
-}
-
-/**
- * Reconcile an uncertain submission within a bounded policy. Polls the network
- * for the persisted hash up to RECONCILE_MAX_ATTEMPTS times. Returns the final
- * status: 'accepted' (do not retry), 'failed' (terminal), or 'unknown' (still
- * pending — caller must not construct a replacement).
- */
-async function reconcileSubmission(
-  txHash: string,
-): Promise<SubmissionRecord> {
-  let record = await loadSubmission(txHash);
-  if (!record) {
-    record = {
-      txHash,
-      status: 'unknown',
-      updatedAt: new Date().toISOString(),
-      reconcileAttempts: 0,
-    };
-  }
-
-  while (record.reconcileAttempts < RECONCILE_MAX_ATTEMPTS) {
-    const status = await querySubmissionStatus(txHash);
-    record = {
-      ...record,
-      status,
-      updatedAt: new Date().toISOString(),
-      reconcileAttempts: record.reconcileAttempts + 1,
-    };
-    await persistSubmission(record);
-
-    if (status === 'accepted' || status === 'failed') {
-      return record;
-    }
-    await sleep(RECONCILE_INTERVAL_MS);
-  }
-
-  // Bounded policy exhausted — remain pending/unknown, never retry blindly.
-  logger.warn(
-    { txHash, reconcileAttempts: record.reconcileAttempts },
-    'Submission still unknown after bounded reconciliation — leaving pending',
-  );
-  return record;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Per-signing-account sequence lock (#414)
-// ─────────────────────────────────────────────────────────────────────────────
-
-function seqLockKey(publicKey: string): string {
-  return `seq:lock:${publicKey}`;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/**
- * Acquire a per-signing-account lock. Returns a release function on success.
- * The lock is keyed by the signing account's public key, so two independent
- * accounts acquire independent locks and progress concurrently.
- */
-async function acquireSequenceLock(
-  publicKey: string,
-): Promise<() => Promise<void>> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const client = (transactionQueue as any).client as import('ioredis').Redis;
-  const key = seqLockKey(publicKey);
-  const token = `${process.pid}:${Date.now()}:${Math.random()
-    .toString(36)
-    .slice(2)}`;
-  const deadline = Date.now() + SEQ_LOCK_MAX_WAIT_MS;
-
-  while (Date.now() < deadline) {
-    const ok = await client.set(key, token, 'PX', SEQ_LOCK_TTL_MS, 'NX');
-    if (ok === 'OK') {
-      return async () => {
-        // Only release if we still own the lock (avoid deleting a lock that
-        // expired and was re-acquired by another worker).
-        const current = await client.get(key);
-        if (current === token) {
-          await client.del(key);
-        }
-      };
-    }
-    await sleep(SEQ_LOCK_RETRY_MS);
-  }
-
-  throw new Error(
-    `Timed out acquiring sequence lock for signing account ${publicKey}`,
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Public API — add a job
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -376,113 +179,292 @@ export async function enqueueTransaction(
  * Returns true when the error message indicates a sequence number conflict —
  * the only case where we re-fetch sequence and retry within the same attempt.
  */
-function isSequenceMismatch(err: unknown): boolean {
-  const message = err instanceof Error ? err.message : String(err);
-  return /tx_bad_seq|sequence/i.test(message);
-}
-
 /**
- * Returns true when the error indicates an RPC timeout / uncertain outcome —
- * the submission may or may not have been accepted on-chain.
+ * Build and sign a Stellar transaction.
+ * Fetches a fresh sequence number before each call.
  */
-function isUncertainSubmission(err: unknown): boolean {
-  const message = err instanceof Error ? err.message : String(err);
-  return /timeout|timed out|ETIMEDOUT|ECONNRESET|socket hang up/i.test(message);
-}
+async function buildAndSignTransaction(
+  keypair: Keypair,
+  data: TransactionJobData,
+): Promise<string> {
+  // If the caller already built and serialised the XDR, just re-sign with
+  // a fresh sequence number rather than rebuilding from scratch.
+  if (data.xdrEnvelope) {
+    const tx = TransactionBuilder.fromXDR(data.xdrEnvelope, NETWORK_PASSPHRASE);
 
-/**
- * Submit a signed transaction envelope, persisting the hash before broadcast
- * and reconciling uncertain outcomes before any retry (#415).
- *
- * Returns the accepted result, or throws a terminal error. When the outcome
- * remains unknown after bounded reconciliation, throws a non-retryable error
- * so the job is not re-executed.
- */
-async function submitWithReconciliation(
-  signedXdr: string,
-  txHash: string,
-): Promise<TransactionJobResult> {
-  // Persist the hash BEFORE broadcasting so a timeout leaves a durable record.
-  await persistSubmission({
-    txHash,
-    status: 'pending',
-    updatedAt: new Date().toISOString(),
-    reconcileAttempts: 0,
+    // Re-sign with this keypair
+    tx.sign(keypair);
+    return tx.toEnvelope().toXDR('base64');
+  }
+
+  // Otherwise build a simple payment or internal transfer
+  const account = await server.loadAccount(keypair.publicKey());
+  const usdcAsset = new Asset(
+    'USDC',
+    process.env.USDC_ISSUER ||
+      'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN',
+  );
+
+  const txBuilder = new TransactionBuilder(account, {
+    fee: BASE_FEE,
+    networkPassphrase: NETWORK_PASSPHRASE,
   });
 
-  try {
-    const response = await server.submitTransaction(
-      TransactionBuilder.fromXDR(signedXdr, NETWORK_PASSPHRASE),
-    );
-    const result: TransactionJobResult = {
-      txHash: response.hash,
-      ledger: response.ledger,
-      submittedAt: new Date().toISOString(),
-    };
-    await persistSubmission({
-      txHash: response.hash,
-      status: 'accepted',
-      updatedAt: result.submittedAt,
-      reconcileAttempts: 0,
-    });
-    return result;
-  } catch (err) {
-    if (!isUncertainSubmission(err)) {
-      // Deterministic rejection — record terminal failure and surface it.
-      const message = err instanceof Error ? err.message : String(err);
-      await persistSubmission({
-        txHash,
-        status: 'failed',
-        updatedAt: new Date().toISOString(),
-        reconcileAttempts: 0,
-        error: message,
-      });
-      throw err;
-    }
-
-    // Uncertain outcome — reconcile against the network before any retry.
-    logger.warn(
-      { txHash, err },
-      'Submission outcome uncertain — reconciling before retry',
-    );
-    const record = await reconcileSubmission(txHash);
-
-    if (record.status === 'accepted') {
-      // Already on-chain — do NOT re-execute.
-      return {
-        txHash,
-        ledger: 0,
-        submittedAt: record.updatedAt,
-      };
-    }
-
-    if (record.status === 'failed') {
-      const terminal = new Error(
-        `Transaction ${txHash} failed on-chain: ${record.error ?? 'unknown'}`,
+  switch (data.type) {
+    case 'deposit':
+    case 'withdrawal': {
+      const destination = data.destinationAddress || keypair.publicKey();
+      txBuilder.addOperation(
+        Operation.payment({
+          destination,
+          asset: usdcAsset,
+          amount: formatStroops(data.amountStroops),
+        }),
       );
-      // Mark non-retryable so Bull does not re-execute.
-      (terminal as Error & { retryable?: boolean }).retryable = false;
-      throw terminal;
+      break;
+    }
+    case 'rebalance': {
+      // Rebalance is always a contract invocation — we expect xdrEnvelope
+      // for this type. Log a warning and create a no-op.
+      logger.warn(
+        { type: data.type },
+        'Rebalance job missing xdrEnvelope — skipping operation',
+      );
+      txBuilder.addOperation(
+        Operation.manageData({ name: 'noop', value: null }),
+      );
+      break;
+    }
+  }
+
+  const tx = txBuilder.setTimeout(30).build();
+  tx.sign(keypair);
+  return tx.toEnvelope().toXDR('base64');
+}
+
+function formatStroops(amountStroops: string): string {
+  if (!/^\d+$/.test(amountStroops)) throw new Error('INVALID_STROOPS_AMOUNT');
+  const units = BigInt(amountStroops);
+  const scale = 10_000_000n;
+  const whole = units / scale;
+  const fraction = (units % scale).toString().padStart(7, '0');
+  return `${whole}.${fraction}`;
+}
+
+function isSubmissionTimeout(error: unknown): boolean {
+  const value = error as { message?: string; status?: number; statusCode?: number };
+  const message = value?.message ?? String(error);
+  return value?.status === 504 || value?.statusCode === 504 || /timeout|timed out|ETIMEDOUT|ECONNRESET/i.test(message);
+}
+
+/**
+ * Submit a signed transaction XDR to Horizon with sequence-number retry logic.
+ */
+async function submitWithSequenceRetry(
+  keypair: Keypair,
+  data: TransactionJobData,
+): Promise<TransactionJobResult> {
+  // Bull exposes this Redis connection; the token-checked lease coordinates
+  // sequence use across worker processes sharing the same queue backend.
+  const redis = (transactionQueue as unknown as { client: RedisLockClient }).client;
+  return withAccountSequenceLock(keypair.publicKey(), async () => {
+    let lastError: unknown;
+
+    for (let attempt = 0; attempt < MAX_SEQUENCE_RETRIES; attempt++) {
+      try {
+        const xdr = await buildAndSignTransaction(keypair, data);
+        const transaction = TransactionBuilder.fromXDR(xdr, NETWORK_PASSPHRASE);
+        const txHash = transaction.hash().toString('hex');
+        const response = await submitExactlyOnceOnTimeout(
+          async () => {
+            const submitted = await server.submitTransaction(transaction);
+            return { txHash: submitted.hash, ledger: submitted.ledger };
+          },
+          async () => {
+            try {
+              const accepted = await server.transactions().transaction(txHash).call();
+              return {
+                txHash: accepted.hash ?? txHash,
+                ledger: accepted.ledger,
+              };
+            } catch {
+              return null;
+            }
+          },
+          isSubmissionTimeout,
+          txHash,
+        );
+
+        return {
+          txHash: response.txHash,
+          ledger: response.ledger,
+          submittedAt: new Date().toISOString(),
+        };
+      } catch (err) {
+        lastError = err;
+
+        if (shouldRetrySequenceMismatch(err, attempt, MAX_SEQUENCE_RETRIES)) {
+          logger.warn(
+            { attempt: attempt + 1, userAddress: data.userAddress, signerAddress: keypair.publicKey() },
+            'Sequence mismatch — re-fetching sequence and retrying',
+          );
+          await new Promise((r) => setTimeout(r, 200 + Math.random() * 300));
+          continue;
+        }
+
+        throw err;
+      }
     }
 
-    // Still unknown after bounded reconciliation — remain pending, do not
-    // construct or sign a replacement.
-    const pending = new Error(
-      `Transaction ${txHash} outcome unknown after reconciliation — left pending`,
-    );
-    (pending as Error & { retryable?: boolean }).retryable = false;
-    throw pending;
+    throw lastError;
+  }, redis);
+}
+
+function resolveSigningKeypair(data: TransactionJobData): Keypair {
+  let secret = AGENT_SECRET;
+  if (data.signerAddress) {
+    let configured: Record<string, string>;
+    try {
+      configured = JSON.parse(SIGNER_SECRET_KEYS_JSON);
+    } catch {
+      throw new Error('SIGNER_SECRET_KEYS_JSON must be a JSON object keyed by public key');
+    }
+    secret = configured[data.signerAddress] ?? '';
+    if (!secret && AGENT_SECRET) {
+      const defaultKeypair = Keypair.fromSecret(AGENT_SECRET);
+      if (defaultKeypair.publicKey() === data.signerAddress) secret = AGENT_SECRET;
+    }
   }
+  if (!secret) throw new Error(`No configured transaction signer for ${data.signerAddress ?? 'default account'}`);
+  const keypair = Keypair.fromSecret(secret);
+  if (data.signerAddress && keypair.publicKey() !== data.signerAddress) {
+    throw new Error('Configured signer secret does not match signerAddress');
+  }
+  return keypair;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Exports for callers / tests
+// Register worker
 // ─────────────────────────────────────────────────────────────────────────────
 
-export {
-  submitWithReconciliation,
-  reconcileSubmission,
-  querySubmissionStatus,
-  loadSubmission,
-  isUncertainSubmission,
-};
+transactionQueue.process(CONCURRENCY, async (job: Job<TransactionJobData>) => {
+  const { data } = job;
+
+  logger.info(
+    { jobId: job.id, type: data.type, attempt: job.attemptsMade },
+    'Processing transaction job',
+  );
+
+  const keypair = resolveSigningKeypair(data);
+  let result: TransactionJobResult;
+  try {
+    result = await submitWithSequenceRetry(keypair, data);
+  } catch (error) {
+    if (error instanceof SubmissionOutcomeUnknownError) job.discard();
+    throw error;
+  }
+
+  logger.info(
+    { jobId: job.id, txHash: result.txHash, ledger: result.ledger },
+    'Transaction submitted successfully',
+  );
+
+  return result;
+});
+
+// Move exhausted jobs to dead-letter queue with full error context
+transactionQueue.on('failed', async (job: Job<TransactionJobData>, err: Error) => {
+  if (job.attemptsMade >= (job.opts.attempts ?? 3)) {
+    logger.error(
+      {
+        jobId: job.id,
+        type: job.data.type,
+        userAddress: job.data.userAddress,
+        error: err.message,
+        attempts: job.attemptsMade,
+      },
+      'Transaction exhausted retries — moving to dead-letter queue',
+    );
+
+    await deadLetterQueue.add(
+      {
+        ...job.data,
+      },
+      {
+        // Attach error context as job name for visibility in dashboards
+        jobId: `dlq:${job.id}`,
+      },
+    );
+  }
+});
+
+transactionQueue.on('completed', (job: Job<TransactionJobData>, result: TransactionJobResult) => {
+  logger.info(
+    { jobId: job.id, txHash: result.txHash },
+    'Transaction job completed',
+  );
+});
+
+transactionQueue.on('error', (err: Error) => {
+  logger.error({ error: err.message }, 'Transaction queue error');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Stats helper — used by the /api/queue/stats endpoint
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface QueueStats {
+  queue: string;
+  waiting: number;
+  active: number;
+  completed: number;
+  failed: number;
+  delayed: number;
+  paused: boolean;
+  deadLetter: {
+    queue: string;
+    waiting: number;
+    failed: number;
+  };
+}
+
+export async function getQueueStats(): Promise<QueueStats> {
+  const [waiting, active, completed, failed, delayed, isPaused] =
+    await Promise.all([
+      transactionQueue.getWaitingCount(),
+      transactionQueue.getActiveCount(),
+      transactionQueue.getCompletedCount(),
+      transactionQueue.getFailedCount(),
+      transactionQueue.getDelayedCount(),
+      transactionQueue.isPaused(),
+    ]);
+
+  const [dlqWaiting, dlqFailed] = await Promise.all([
+    deadLetterQueue.getWaitingCount(),
+    deadLetterQueue.getFailedCount(),
+  ]);
+
+  return {
+    queue: QUEUE_NAME,
+    waiting,
+    active,
+    completed,
+    failed,
+    delayed,
+    paused: isPaused,
+    deadLetter: {
+      queue: DLQ_NAME,
+      waiting: dlqWaiting,
+      failed: dlqFailed,
+    },
+  };
+}
+
+/**
+ * Gracefully close both queues (drain connections).
+ * Call during server shutdown.
+ */
+export async function closeQueues(): Promise<void> {
+  await Promise.all([transactionQueue.close(), deadLetterQueue.close()]);
+  logger.info('Transaction queues closed');
+}

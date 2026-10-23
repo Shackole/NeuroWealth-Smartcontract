@@ -4,6 +4,7 @@
  */
 
 import assert from 'assert';
+import { chooseStartLedger, eventRequestPosition, isHistoricalRangeUnavailable, nextLedgerAfterWindow, parseVaultEvent } from './eventCursor';
 
 // ── Event topic constants (mirrors topics.rs symbol_short! values) ────────────
 const EVENT_TOPICS = {
@@ -46,164 +47,9 @@ function classifyEvent(topics: string[]): VaultEventType | null {
   return null;
 }
 
-// ── Vault event schema decoding (mirrors production decodeEventPayload) ──────
-// The vault emits typed topics + a value payload. Deposit/withdraw carry the
-// actual asset amount (i128, in stroops) and the actor address. We decode them
-// instead of emitting a fixed placeholder alert amount.
-const SUPPORTED_SCHEMA_VERSIONS = [1] as const;
-
-interface DecodedVaultEvent {
-  type: VaultEventType;
-  schemaVersion: number;
-  amount: bigint | null;
-  address: string | null;
-}
-
-interface RawVaultEvent {
-  topics: string[];
-  value: { schemaVersion?: number; amount?: string; address?: string };
-}
-
-// Decode a raw event into a typed payload. Returns null for malformed events
-// (isolated so one bad event cannot corrupt the rest of the batch).
-function decodeEventPayload(raw: RawVaultEvent): DecodedVaultEvent | null {
-  const type = classifyEvent(raw.topics);
-  if (type === null) return null;
-
-  const schemaVersion = raw.value?.schemaVersion;
-  if (typeof schemaVersion !== 'number') return null;
-
-  if (type === EVENT_TOPICS.DEPOSIT || type === EVENT_TOPICS.WITHDRAW) {
-    const amountRaw = raw.value?.amount;
-    const address = raw.value?.address;
-    if (typeof amountRaw !== 'string' || typeof address !== 'string') {
-      return null;
-    }
-    let amount: bigint;
-    try {
-      amount = BigInt(amountRaw);
-    } catch {
-      return null;
-    }
-    if (amount < 0n) return null;
-    return { type, schemaVersion, amount, address };
-  }
-
-  return { type, schemaVersion, amount: null, address: null };
-}
-
-// Unsupported schema versions are observable: they are reported rather than
-// silently dropped or decoded with the wrong layout.
-function isSupportedSchemaVersion(version: number): boolean {
-  return (SUPPORTED_SCHEMA_VERSIONS as readonly number[]).includes(version);
-}
-
 // ── Exponential back-off helper (mirrors production logic) ───────────────────
 function computeBackoffMs(attempt: number, baseMs = 2000, maxMs = 60000): number {
   return Math.min(baseMs * Math.pow(2, attempt - 1), maxMs);
-}
-
-// ── Checkpoint / cursor helpers (mirror production persistence logic) ────────
-// A cursor is the last committed event paging token. Persisting it lets a
-// restart resume ingestion instead of jumping to the newest ledger.
-interface CheckpointStore {
-  load(): string | null;
-  save(cursor: string): void;
-}
-
-function createMemoryStore(initial: string | null = null): CheckpointStore {
-  let value = initial;
-  return {
-    load: () => value,
-    save: (cursor: string) => {
-      value = cursor;
-    },
-  };
-}
-
-// Resolve the starting cursor. A missing/expired cursor enters an explicit
-// recovery path: fall back to the configured start ledger rather than the
-// newest ledger, so no events are silently skipped.
-function resolveStartCursor(
-  store: CheckpointStore,
-  fallbackCursor: string,
-): { cursor: string; recovered: boolean } {
-  const persisted = store.load();
-  if (persisted === null || persisted === '') {
-    return { cursor: fallbackCursor, recovered: true };
-  }
-  return { cursor: persisted, recovered: false };
-}
-
-// Advance the checkpoint only after the batch has been durably processed.
-function commitAfterProcessing(
-  store: CheckpointStore,
-  batch: { cursor: string }[],
-  process: (batch: { cursor: string }[]) => void,
-): string | null {
-  if (batch.length === 0) return store.load();
-  process(batch);
-  const last = batch[batch.length - 1].cursor;
-  store.save(last);
-  return last;
-}
-
-// ── Paginated drain helpers (mirror production page-draining logic) ──────────
-// A single RPC page returns at most `pageSize` events plus a paging cursor for
-// the next page. A ledger window may span multiple pages, so we must keep
-// following the cursor until the RPC reports no more pages before advancing
-// the checkpoint.
-interface EventPage {
-  events: { id: string; cursor: string }[];
-  nextCursor: string | null;
-}
-
-// Fetch a single page starting at `cursor`. `pageSize` mirrors the RPC limit
-// (100 events per page).
-function fetchPage(
-  allEvents: { id: string; cursor: string }[],
-  cursor: string,
-  pageSize = 100,
-): EventPage {
-  const start = allEvents.findIndex((e) => e.cursor === cursor);
-  const from = start === -1 ? 0 : start;
-  const slice = allEvents.slice(from, from + pageSize);
-  const nextCursor =
-    from + pageSize < allEvents.length
-      ? allEvents[from + pageSize].cursor
-      : null;
-  return { events: slice, nextCursor };
-}
-
-// Drain every page for the window, processing each event exactly once, then
-// commit the checkpoint to the last consumed cursor. If processing throws, the
-// checkpoint stays at the last committed cursor so a restart resumes there.
-function drainAllPages(
-  store: CheckpointStore,
-  allEvents: { id: string; cursor: string }[],
-  startCursor: string,
-  process: (events: { id: string; cursor: string }[]) => void,
-  pageSize = 100,
-): { processed: number; committed: string | null } {
-  const seen = new Set<string>();
-  let cursor: string | null = startCursor;
-  let lastCommitted = store.load();
-  let processed = 0;
-
-  while (cursor !== null) {
-    const page = fetchPage(allEvents, cursor, pageSize);
-    const fresh = page.events.filter((e) => !seen.has(e.id));
-    if (fresh.length > 0) {
-      process(fresh);
-      for (const e of fresh) seen.add(e.id);
-      processed += fresh.length;
-      lastCommitted = fresh[fresh.length - 1].cursor;
-      store.save(lastCommitted);
-    }
-    cursor = page.nextCursor;
-  }
-
-  return { processed, committed: lastCommitted };
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -281,78 +127,33 @@ test('does not confuse rebalance_cooldown (reb_cd) with rebalance', () => {
   assert.notStrictEqual(classifyEvent(['reb_cd']), 'rebalance');
 });
 
-// Event payload decoding
-test('decodes deposit amount and address from payload', () => {
-  const decoded = decodeEventPayload({
-    topics: ['deposit', 'GABC…'],
-    value: { schemaVersion: 1, amount: '15000000', address: 'GDEPOSITOR…' },
+test('parses a valid event while rejecting malformed payloads without aborting a batch', () => {
+  assert.deepStrictEqual(parseVaultEvent({ id: 'event-1', ledger: 22, topic: ['deposit'] }), {
+    eventType: 'deposit', id: 'event-1', ledger: 22,
   });
-  assert.ok(decoded);
-  assert.strictEqual(decoded!.type, 'deposit');
-  assert.strictEqual(decoded!.amount, 15000000n);
-  assert.strictEqual(decoded!.address, 'GDEPOSITOR…');
+  assert.strictEqual(parseVaultEvent({ id: 'bad-event', ledger: '22', topic: ['deposit'] }), null);
+  assert.deepStrictEqual(parseVaultEvent({ id: 'event-2', ledger: 23, topic: ['withdraw'] })?.eventType, 'withdraw');
 });
 
-test('decodes withdraw amount and address from payload', () => {
-  const decoded = decodeEventPayload({
-    topics: ['withdraw', 'GABC…'],
-    value: { schemaVersion: 1, amount: '2500000', address: 'GWITHDRAWER…' },
-  });
-  assert.ok(decoded);
-  assert.strictEqual(decoded!.type, 'withdraw');
-  assert.strictEqual(decoded!.amount, 2500000n);
-  assert.strictEqual(decoded!.address, 'GWITHDRAWER…');
+test('advances empty event windows through the RPC latest ledger', () => {
+  assert.strictEqual(nextLedgerAfterWindow(100, [], 107), 108);
+  assert.strictEqual(nextLedgerAfterWindow(100, [], 99), 100);
 });
 
-test('does not use a fixed placeholder amount', () => {
-  const a = decodeEventPayload({
-    topics: ['deposit'],
-    value: { schemaVersion: 1, amount: '1', address: 'GA…' },
+test('resumes from a persisted checkpoint rather than the current latest ledger', () => {
+  assert.strictEqual(chooseStartLedger(900, 742), 742);
+  assert.strictEqual(chooseStartLedger(900, null), 900);
+  assert.deepStrictEqual(eventRequestPosition(742, 'opaque-event-cursor', 100), {
+    pagination: { limit: 100, cursor: 'opaque-event-cursor' },
   });
-  const b = decodeEventPayload({
-    topics: ['deposit'],
-    value: { schemaVersion: 1, amount: '999999', address: 'GB…' },
+  assert.deepStrictEqual(eventRequestPosition(742, null, 100), {
+    startLedger: 742, pagination: { limit: 100 },
   });
-  assert.notStrictEqual(a!.amount, b!.amount);
 });
 
-test('isolates malformed deposit (missing amount)', () => {
-  const decoded = decodeEventPayload({
-    topics: ['deposit'],
-    value: { schemaVersion: 1, address: 'GA…' },
-  });
-  assert.strictEqual(decoded, null);
-});
-
-test('isolates malformed deposit (non-numeric amount)', () => {
-  const decoded = decodeEventPayload({
-    topics: ['deposit'],
-    value: { schemaVersion: 1, amount: 'not-a-number', address: 'GA…' },
-  });
-  assert.strictEqual(decoded, null);
-});
-
-test('isolates malformed event (missing schema version)', () => {
-  const decoded = decodeEventPayload({
-    topics: ['withdraw'],
-    value: { amount: '100', address: 'GA…' },
-  });
-  assert.strictEqual(decoded, null);
-});
-
-test('malformed event does not affect subsequent valid events', () => {
-  const batch: RawVaultEvent[] = [
-    { topics: ['deposit'], value: { schemaVersion: 1, address: 'GA…' } },
-    { topics: ['deposit'], value: { schemaVersion: 1, amount: '42', address: 'GB…' } },
-  ];
-  const decoded = batch.map(decodeEventPayload).filter((e) => e !== null);
-  assert.strictEqual(decoded.length, 1);
-  assert.strictEqual(decoded[0]!.amount, 42n);
-});
-
-test('reports unsupported schema versions as observable', () => {
-  assert.strictEqual(isSupportedSchemaVersion(1), true);
-  assert.strictEqual(isSupportedSchemaVersion(2), false);
+test('detects unavailable historical event ranges for an operator recovery signal', () => {
+  assert.strictEqual(isHistoricalRangeUnavailable(new Error('start ledger is older than available history')), true);
+  assert.strictEqual(isHistoricalRangeUnavailable(new Error('temporary gateway timeout')), false);
 });
 
 // Back-off logic
@@ -366,44 +167,6 @@ test('back-off is capped at maxMs', () => {
   assert.strictEqual(computeBackoffMs(100), 60000);
 });
 
-// Checkpoint persistence
-test('resumes from persisted cursor after restart', () => {
-  const store = createMemoryStore('cursor-100');
-  const { cursor, recovered } = resolveStartCursor(store, 'cursor-0');
-  assert.strictEqual(cursor, 'cursor-100');
-  assert.strictEqual(recovered, false);
-});
-
-test('falls back to start ledger when cursor is missing', () => {
-  const store = createMemoryStore(null);
-  const { cursor, recovered } = resolveStartCursor(store, 'cursor-0');
-  assert.strictEqual(cursor, 'cursor-0');
-  assert.strictEqual(recovered, true);
-});
-
-test('commits checkpoint only after batch processing', () => {
-  const store = createMemoryStore('cursor-0');
-  const committed = commitAfterProcessing(
-    store,
-    [{ cursor: 'cursor-1' }, { cursor: 'cursor-2' }],
-    () => {},
-  );
-  assert.strictEqual(committed, 'cursor-2');
-  assert.strictEqual(store.load(), 'cursor-2');
-});
-
-// Paginated drain
-test('drains multiple pages and commits last cursor', () => {
-  const store = createMemoryStore('c0');
-  const events = Array.from({ length: 250 }, (_, i) => ({
-    id: `e${i}`,
-    cursor: `c${i}`,
-  }));
-  const { processed, committed } = drainAllPages(store, events, 'c0', () => {});
-  assert.strictEqual(processed, 250);
-  assert.strictEqual(committed, 'c249');
-  assert.strictEqual(store.load(), 'c249');
-});
-
+// ── Summary ───────────────────────────────────────────────────────────────────
 console.log(`\n${passed} passed, ${failed} failed\n`);
 if (failed > 0) process.exit(1);
