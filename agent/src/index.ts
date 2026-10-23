@@ -1,59 +1,166 @@
+import 'dotenv/config';
 import express from 'express';
-import cors from 'cors';
-import helmet from 'helmet';
-import morgan from 'morgan';
-import rateLimit from 'express-rate-limit';
-import { config } from './config';
-import { logger } from './logger';
-import { apiRouter } from './apiRouter';
-import { startScheduler } from './scheduler';
+import { startEventListener, stopEventListener, server, pool } from './eventListener';
+import { evaluateYield } from './yieldComparison';
+import healthRouter, { configureHealthChecks } from './health';
+import logger from './logger';
+import { initializeTracing } from './tracing';
+import { getQueueStats, closeQueues } from './transactionQueue';
+import { renderOperationalMetrics } from './operationalMetrics';
+
+import { ipRateLimiter, userRateLimiter } from './rateLimiter';
+
+// Issue #40: USDC issuer freeze contingency monitor
+import { issuerFreezeMonitor } from './issuerFreezeMonitor';
+
+// Issue #41: Strategy preference aggregator
+import {
+  strategyRouter,
+  aggregateStrategyPreferences,
+  setLatestDistribution,
+  createDefaultRpcAdapter,
+} from './strategyAggregator';
+
+// Initialize OpenTelemetry tracing
+initializeTracing();
 
 const app = express();
+const PORT = parseInt(process.env.PORT || '3001', 10);
 
-app.use(helmet());
-app.use(cors());
-app.use(express.json({ limit: '1mb' }));
-app.use(morgan('combined', { stream: { write: (msg: string) => logger.info(msg.trim()) } }));
-
-const limiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 120,
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-app.use(limiter);
-
-app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', replica: config.replicaId });
+app.use(express.json());
+app.use(ipRateLimiter);
+app.use(userRateLimiter);
+app.use(healthRouter);
+app.get('/metrics', (_req, res) => {
+  res.type('text/plain; version=0.0.4; charset=utf-8').send(renderOperationalMetrics());
 });
 
-app.use('/api', apiRouter);
+// Mount strategy aggregator API route (Issue #41)
+app.use(strategyRouter);
 
-app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-  logger.error('Unhandled error', { error: err.message, stack: err.stack });
-  res.status(500).json({ error: 'Internal server error' });
-});
+let decisionInterval: ReturnType<typeof setInterval> | null = null;
+let queueMetricsInterval: ReturnType<typeof setInterval> | null = null;
 
-const server = app.listen(config.port, () => {
-  logger.info(`Agent listening on port ${config.port}`, { replica: config.replicaId });
-});
+/**
+ * Invokes the vault contract's `auto_compound(min_out)` function to harvest
+ * accrued yield and immediately reinvest it in the same protocol, maximizing
+ * compound growth without user intervention.
+ *
+ * @param minOut - Minimum amount of yield that must be compounded; reverts if
+ *                 the available yield is below this threshold.
+ */
+async function autoCompound(minOut: number = 0): Promise<void> {
+  const vaultAddress = process.env.VAULT_ADDRESS;
+  if (!vaultAddress) {
+    throw new Error("VAULT_ADDRESS environment variable is not set");
+  }
 
-// Start the yield scheduler. Each replica runs the scheduler loop, but the
-// distributed lease in scheduler.ts guarantees only one replica owns a given
-// rebalance interval at a time.
-const scheduler = startScheduler();
+  console.log(`Auto-compounding yield on vault ${vaultAddress} with min_out=${minOut}`);
 
-function shutdown(signal: string) {
-  logger.info(`Received ${signal}, shutting down`, { replica: config.replicaId });
-  scheduler.stop();
-  server.close(() => {
-    logger.info('HTTP server closed');
-    process.exit(0);
-  });
-  setTimeout(() => process.exit(1), 10_000).unref();
+  // TODO: Replace with a real Soroban contract invocation, e.g.:
+  // const vault = new Contract(vaultAddress);
+  // await vault.call('auto_compound', minOut);
+  // This is intentionally left as a placeholder because the RPC client
+  // configuration is environment-specific.
 }
 
-process.on('SIGTERM', () => shutdown('SIGTERM'));
-process.on('SIGINT', () => shutdown('SIGINT'));
+function startDecisionLoop() {
+  logger.info('Initializing hourly decision loop');
 
-export { app, server };
+  decisionInterval = setInterval(async () => {
+    try {
+      logger.info('Running hourly yield evaluation');
+
+      // Issue #41: Aggregate per-user strategy preferences and update cache.
+      const rpc = createDefaultRpcAdapter();
+      const distribution = await aggregateStrategyPreferences(rpc);
+      setLatestDistribution(distribution);
+      logger.info(
+        {
+          aggregateBlendBps: distribution.aggregateBlendBps,
+          aggregateDexBps: distribution.aggregateDexBps,
+          totalUsers: distribution.total,
+        },
+        'Strategy distribution updated',
+      );
+
+      const decision = await evaluateYield('balanced', 'blend', 6.5);
+
+      if (decision.shouldRebalance) {
+        logger.info({ targetProtocol: decision.targetProtocol }, 'Rebalance needed');
+      } else {
+        console.log(`Hourly check: Yield is optimal. No action needed.`);
+        // Yield is already in the best protocol; compound it for maximum growth
+        await autoCompound(0);
+      }
+    } catch (error) {
+      logger.error({ error: error instanceof Error ? error.message : error }, 'Decision loop error');
+    }
+  }, 60 * 60 * 1000);
+}
+
+async function main() {
+  logger.info('Starting NeuroWealth AI Agent');
+
+  configureHealthChecks(pool, server);
+  await startEventListener();
+  startDecisionLoop();
+
+  const refreshQueueMetrics = async () => {
+    try {
+      await getQueueStats();
+    } catch (error) {
+      logger.warn({ error: error instanceof Error ? error.message : error }, 'Queue metrics refresh failed');
+    }
+  };
+  await refreshQueueMetrics();
+  queueMetricsInterval = setInterval(refreshQueueMetrics, 15_000);
+
+  // Issue #40: Start USDC issuer freeze monitor (polls every 10 minutes).
+  issuerFreezeMonitor.start();
+
+  const serverInstance = app.listen(PORT, () => {
+    logger.info({ port: PORT }, 'Agent HTTP server listening');
+  });
+
+  // Graceful shutdown
+  async function shutdown(signal: string) {
+    logger.info(`${signal} received, shutting down`);
+
+    if (decisionInterval) {
+      clearInterval(decisionInterval);
+      decisionInterval = null;
+    }
+    if (queueMetricsInterval) {
+      clearInterval(queueMetricsInterval);
+      queueMetricsInterval = null;
+    }
+
+    stopEventListener();
+
+    // Issue #40: Stop freeze monitor cleanly.
+    issuerFreezeMonitor.stop();
+
+    serverInstance.close(() => {
+      logger.info('HTTP server closed');
+    });
+
+    try {
+      await closeQueues();
+      await pool.end();
+      logger.info('Database pool closed');
+    } catch {
+      // ignore
+    }
+
+    process.exit(0);
+  }
+
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
+}
+
+main().catch((err) => {
+  logger.fatal({ error: err.message }, 'Startup failed');
+  process.exit(1);
+});
