@@ -249,40 +249,37 @@ The AI agent calls `update_total_assets(new_total)` to report yield earned in ex
 
 When the agent calls `rebalance(protocol="blend", ...)` the vault:
 
-1. Approves the Blend pool to pull vault USDC (short-lived TTL approval stored in the shared `ApprovalTtl` key).
+1. Approves the Blend pool for no more than the vault's current USDC balance using the shared `ApprovalTtl` maximum lifetime.
 2. Calls `blend_pool.submit_with_allowance()` to supply USDC as a lender.
-3. Records `CurrentProtocol = "blend"`.
+3. Clears any unspent allowance after the supply call and records `CurrentProtocol = "blend"`.
 
 On withdrawal, if the vault's idle balance is insufficient, it calls `blend_pool.submit()` to withdraw the required amount before transferring to the user.
 
 ### Approval TTL Management (#57)
 
-Every `rebalance` and `harvest` call issues (or renews) a Stellar token approval
-granting the Blend or DEX pool contract the right to pull USDC from the vault.
+Every supply leg issues a Stellar token approval granting the active Blend or
+DEX pool permission to pull only the requested USDC amount. On successful
+supply the allowance is reset to zero, including any part left over after a
+partial fill. A failed Soroban invocation rolls the allowance change back
+atomically.
 
 | Parameter | Value | Notes |
 |-----------|-------|-------|
 | **Default TTL** | **100,000 ledgers** | ≈ 5.7 days at ~5 s/ledger on Stellar mainnet. Written as `DEFAULT_APPROVAL_TTL` in `lib.rs`. |
-| Minimum TTL | 1,000 ledgers | `set_approval_ttl` rejects anything below this. |
-| Maximum TTL | 500,000 ledgers | `set_approval_ttl` rejects anything above this. |
-| **Near-expiry renewal threshold** | **1,000 ledgers** | Written as `APPROVAL_RENEWAL_THRESHOLD`. |
+| Standard minimum TTL | 1,000 ledgers | `set_approval_ttl` rejects anything below this. |
+| Maximum TTL | 500,000 ledgers | Both TTL setters reject values above this; supply rejects invalid legacy stored values. |
+| Legacy TTL range | 0–500,000 ledgers | `set_blend_approval_ttl` retains zero and short TTL support for compatibility. |
 
-**Near-expiry renewal logic:**  
-Before executing any protocol call, `rebalance` and `harvest` check whether the
-stored approval expiry (`DataKey::BlendApprovalExpiry` / `DataKey::DexApprovalExpiry`)
-is within `APPROVAL_RENEWAL_THRESHOLD` (1,000) ledgers of the current ledger sequence.
-If so, the approval is refreshed to a full `ApprovalTtl` window before the protocol
-interaction proceeds. This prevents approval-expiry reverts when many ledgers elapse
-between agent calls.
-
-`supply_to_blend` and `supply_to_dex` always issue a fresh approval for the exact
-supply amount when they execute, and record the resulting expiry ledger in instance
-storage for the renewal guard to read on the next call.
+After a pool is replaced, its old allowance is explicitly zeroed before the new
+address is stored. Emergency withdrawals and protocol recalls also clear
+allowances. If a token approval/revocation call fails, the enclosing transaction
+reverts rather than storing a new pool configuration or reporting a successful
+exit.
 
 **Configuration:**  
-- `set_approval_ttl(ttl)` — owner sets TTL (bounds: 1,000–500,000 ledgers). Emits `ApprovalTtlUpdatedEvent`.  
+- `set_approval_ttl(ttl)` — owner sets TTL (bounds: 1,000–500,000 ledgers). Emits `ApprovalTtlUpdatedEvent`.
 - `get_approval_ttl()` — returns configured TTL or `DEFAULT_APPROVAL_TTL` (100,000) when unset.  
-- The legacy `set_blend_approval_ttl` / `get_blend_approval_ttl` setters write the same `ApprovalTtl` storage key and share the same audit trail.
+- The legacy `set_blend_approval_ttl` / `get_blend_approval_ttl` setters write the same `ApprovalTtl` storage key and share the same audit trail; the legacy setter accepts 0–500,000 ledgers.
 
 ### Historical: Phase 1 (1:1 accounting — deprecated)
 
@@ -488,7 +485,7 @@ research and rationale.
 |-----|---------|------|-------------|
 | | `DataKey::DexPool` | Instance | Address | DEX liquidity pool contract address. Absent until `set_dex_pool` is called; any rebalance targeting `"dex"` panics with `DexPoolNotConfigured` while unset. |
 | | `DataKey::CurrentProtocol` | Instance | Symbol | Set to `"dex"` once a supply leg succeeds. Shared with the Blend path — the vault is never deployed to both at once. |
-| | `DataKey::ApprovalTtl` | Instance | u32 | Shared with Blend. Each supply leg approves the DEX pool to spend USDC until `current_ledger + ApprovalTtl`. |
+| | `DataKey::ApprovalTtl` | Instance | u32 | Shared with Blend. Each supply leg approves only the supply amount until `current_ledger + ApprovalTtl`, then clears any unspent allowance. |
 
 `set_dex_pool(owner, pool_address)` is owner-only and probes the candidate
 pool's `balance` entrypoint before storing the address, so a wrong or

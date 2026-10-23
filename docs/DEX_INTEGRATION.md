@@ -50,9 +50,10 @@ Integrators deploying a production adapter should validate each one before going
    quotes LP shares rather than USDC, the adapter must convert internally.
 
 5. **`transfer_from` authorisation is handled by the vault.** The vault
-   pre-approves the pool for the supply amount with a TTL equal to
-   `DataKey::DexApprovalTtl`. The adapter must not modify or re-use that
-   approval for any purpose other than the requested supply.
+   approves the pool for no more than the current vault balance and uses the
+   shared `DataKey::ApprovalTtl` expiry. The vault clears unused allowance
+   after supply; the adapter must not retain or re-use that approval for any
+   purpose other than the requested supply.
 
 6. **`min_out` is treated as a hard floor.** If the pool cannot realise at least
    `min_out` USDC on a supply or withdraw leg, the vault reverts with
@@ -110,10 +111,12 @@ env.invoke_contract::<Val>(
 
 Supply flow (mirrors Blend):
 
-1. Vault `approve`s the DEX pool for the supply amount (TTL = `ApprovalTtl`).
+1. Vault `approve`s the DEX pool for no more than the supply amount (TTL =
+   `ApprovalTtl`).
 2. Vault authorizes `add_liquidity` with a `transfer_from` sub-invocation.
 3. Pool pulls USDC via `transfer_from`.
 4. Vault computes the realized amount from its own USDC balance delta.
+5. Vault sets the pool allowance to zero, including after a partial fill.
 
 Withdraw flow:
 
@@ -320,7 +323,7 @@ attacker capital and bears significant slippage risk).
 ## Further Reading
 
 - [`BLEND_INTEGRATION_RESEARCH.md`](BLEND_INTEGRATION_RESEARCH.md) — Blend protocol integration, mirrors the DEX approach
-- [`UPGRADE_MIGRATION.md`](UPGRADE_MIGRATION.md) — how `DataKey::DexPool` and `DexApprovalTtl` survive contract upgrades
+- [`UPGRADE_MIGRATION.md`](UPGRADE_MIGRATION.md) — how `DataKey::DexPool` and shared `ApprovalTtl` survive contract upgrades
 - [`../EVENTS.md`](../EVENTS.md) — full `DexSupplyEvent`, `DexWithdrawEvent`, `DexPoolConfiguredEvent` schemas
 - [`../SECURITY.md`](../SECURITY.md) — slippage, incomplete-exit, and pool-validation threat analysis
 

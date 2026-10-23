@@ -90,6 +90,7 @@ Contract versions correspond to the `DataKey::Version` value stored on-chain.
 - `set_approval_ttl` now emits `ApprovalTtlUpdatedEvent` (`ttl_upd`) (Issue #437).
 - Dedicated `TvlCapUpdatedEvent` / `UserDepositCapUpdatedEvent` replace `LimitsUpdatedEvent`
   for cap-only updates; indexer migration note in `EVENTS.md` (Issue #328).
+- **Protocol allowance cleanup (Issue #436):** Bound both approval TTL setters, approve no more than the vault's available USDC, clear residual allowances after supply/withdrawal/emergency exit, and revoke authority from replaced pools.
 
 ---
 

@@ -183,8 +183,8 @@ Signature: `method(signer: Keypair, ...contractParams): Promise<TxResult<ReturnT
 | `set_deposit_limits` | owner-only | Update min/max per tx |
 | `set_blend_pool` | owner-only | Configure Blend pool |
 | `set_dex_pool` | owner-only | Configure DEX pool |
-| `set_blend_approval_ttl` | owner-only | Set Blend approval TTL |
-| `set_approval_ttl` | owner-only | Set token approval TTL |
+| `set_blend_approval_ttl` | owner-only | Set shared Blend/DEX approval TTL (0–500,000 ledgers; zero is immediate expiry) |
+| `set_approval_ttl` | owner-only | Set shared token approval TTL (1,000–500,000 ledgers) |
 | `set_rebalance_cooldown` | owner-only | Set rebalance cooldown |
 | `update_agent` | owner-only | Propose agent update (timelock step 1) |
 | `confirm_agent_update` | owner-only | Confirm agent update (timelock step 2) |

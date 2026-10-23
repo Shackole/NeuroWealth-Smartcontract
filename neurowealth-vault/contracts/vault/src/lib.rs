@@ -3841,6 +3841,34 @@ impl NeuroWealthVault {
         let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
         let token_client = token::Client::new(&env, &usdc_token);
 
+        let approval_expiration = env.ledger().sequence().saturating_add(1);
+        if let Some(blend_pool) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Address>(&DataKey::BlendPool)
+        {
+            Self::set_protocol_allowance(
+                &env,
+                &usdc_token,
+                &blend_pool,
+                0,
+                approval_expiration,
+            );
+        }
+        if let Some(dex_pool) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Address>(&DataKey::DexPool)
+        {
+            Self::set_protocol_allowance(
+                &env,
+                &usdc_token,
+                &dex_pool,
+                0,
+                approval_expiration,
+            );
+        }
+
         // Check vault's idle USDC balance
         let vault_balance = token_client.balance(&env.current_contract_address());
         let mut from_idle = false;
@@ -7065,6 +7093,7 @@ impl NeuroWealthVault {
     ///
     /// Only the owner can set the Blend pool address. This must be called
     /// before the vault can interact with Blend for yield generation.
+    /// Replacing an existing pool clears that pool's USDC allowance first.
     ///
     /// # Arguments
     ///
@@ -7114,6 +7143,16 @@ impl NeuroWealthVault {
         let vault_address = env.current_contract_address();
         BlendPoolClient::get_balance(&env, &pool_address, &usdc_token, &vault_address);
 
+        if let Some(old_pool_address) = old_pool.as_ref() {
+            Self::set_protocol_allowance(
+                &env,
+                &usdc_token,
+                old_pool_address,
+                0,
+                env.ledger().sequence().saturating_add(1),
+            );
+        }
+
         env.storage()
             .instance()
             .set(&DataKey::BlendPool, &pool_address);
@@ -7137,7 +7176,7 @@ impl NeuroWealthVault {
 
     /// Configures the DEX liquidity pool contract address (owner only).
     ///
-    /// Mirrors [`set_blend_pool`](crate::NeuroWealthVault::set_blend_pool). The pool interface is validated by probing
+    /// Mirrors [`set_blend_pool`](crate::NeuroWealthVault::set_blend_pool). Replacing an existing pool clears its USDC allowance. The pool interface is validated by probing
     /// its `balance` entrypoint before the address is stored, so an invalid pool
     /// address is rejected at configuration time. `CurrentProtocol` is initialized
     /// to `"none"` when not already set.
@@ -7182,6 +7221,16 @@ impl NeuroWealthVault {
         let vault_address = env.current_contract_address();
         DexPoolClient::get_balance(&env, &pool_address, &usdc_token, &vault_address);
 
+        if let Some(old_pool_address) = old_pool.as_ref() {
+            Self::set_protocol_allowance(
+                &env,
+                &usdc_token,
+                old_pool_address,
+                0,
+                env.ledger().sequence().saturating_add(1),
+            );
+        }
+
         env.storage()
             .instance()
             .set(&DataKey::DexPool, &pool_address);
@@ -7206,7 +7255,10 @@ impl NeuroWealthVault {
     /// Updates the shared ledger TTL used when approving protocol token spend.
     ///
     /// The approval expiration ledger is computed as:
-    /// `env.ledger().sequence() + blend_approval_ttl`
+    /// `env.ledger().sequence() + blend_approval_ttl`, with a maximum TTL of
+    /// [`MAX_APPROVAL_TTL`]. This legacy setter permits zero for immediate expiry
+    /// and shorter-than-standard TTLs; use `set_approval_ttl` for the 1,000
+    /// ledger minimum.
     ///
     /// # Events
     ///
@@ -7214,11 +7266,19 @@ impl NeuroWealthVault {
     /// - [`ApprovalTtlUpdatedEvent`] (same topic as `set_approval_ttl`, since
     ///   both mutate the shared [`DataKey::ApprovalTtl`]), so indexers can
     ///   watch a single topic for every approval-TTL change.
+    ///
+    /// # Panics
+    ///
+    /// - [`VaultError::ApprovalTtlTooHigh`] if the TTL exceeds
+    ///   [`MAX_APPROVAL_TTL`].
     pub fn set_blend_approval_ttl(env: Env, owner: Address, blend_approval_ttl: u32) {
         Self::require_initialized(&env);
         owner.require_auth();
         let stored_owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
         Self::require(&env, owner == stored_owner, VaultError::CallerIsNotOwner);
+        if blend_approval_ttl > MAX_APPROVAL_TTL {
+            panic_with_error!(&env, VaultError::ApprovalTtlTooHigh);
+        }
 
         let old_ttl = Self::get_approval_ttl_internal(&env);
 
@@ -10090,6 +10150,50 @@ impl NeuroWealthVault {
         }
     }
 
+    /// Returns a bounded absolute expiration ledger for a protocol allowance.
+    fn protocol_approval_expiration(env: &Env) -> u32 {
+        let ttl = Self::get_approval_ttl_internal(env);
+        Self::require(env, ttl <= MAX_APPROVAL_TTL, VaultError::ApprovalTtlTooHigh);
+        env.ledger().sequence().saturating_add(ttl)
+    }
+
+    /// Sets or revokes the vault's USDC allowance for one protocol pool.
+    fn set_protocol_allowance(
+        env: &Env,
+        usdc_token: &Address,
+        pool_address: &Address,
+        amount: i128,
+        expiration_ledger: u32,
+    ) {
+        Self::require(env, amount >= 0, VaultError::InsufficientLiquidity);
+
+        let vault_address = env.current_contract_address();
+        let approval_args: Vec<Val> = vec![
+            env,
+            vault_address.clone().into_val(env),
+            pool_address.clone().into_val(env),
+            amount.into_val(env),
+            expiration_ledger.into_val(env),
+        ];
+        env.authorize_as_current_contract(vec![
+            env,
+            InvokerContractAuthEntry::Contract(SubContractInvocation {
+                context: ContractContext {
+                    contract: usdc_token.clone(),
+                    fn_name: Symbol::new(env, "approve"),
+                    args: approval_args,
+                },
+                sub_invocations: vec![env],
+            }),
+        ]);
+        token::Client::new(env, usdc_token).approve(
+            &vault_address,
+            pool_address,
+            &amount,
+            &expiration_ledger,
+        );
+    }
+
     /// Internal helper: Supplies USDC to the Blend pool.
     ///
     /// This function handles the cross-contract call to Blend's supply function.
@@ -10107,7 +10211,7 @@ impl NeuroWealthVault {
     /// - Returns 0 if amount <= 0
     /// - Panics if Blend pool address is not configured
     /// - Emits BlendSupplyEvent with success status
-    /// - Uses the shared approval TTL configuration from instance storage to set the approval expiry
+    /// - Approves no more than the vault's current USDC balance, uses a bounded TTL, and clears unspent allowance after supply
     fn supply_to_blend(env: &Env, amount: i128, min_out: i128) -> i128 {
         if amount <= 0 {
             return 0;
@@ -10123,19 +10227,15 @@ impl NeuroWealthVault {
 
         let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
         let vault_address = env.current_contract_address();
-        let approval_ledger = env
-            .ledger()
-            .sequence()
-            .saturating_add(Self::get_approval_ttl_internal(env));
+        let approval_ledger = Self::protocol_approval_expiration(env);
+        let token_client = token::Client::new(env, &usdc_token);
+        Self::require(
+            env,
+            token_client.balance(&vault_address) >= amount,
+            VaultError::InsufficientLiquidity,
+        );
 
         // Prepare authorization for token approval and Blend supply
-        let approval_args: Vec<Val> = vec![
-            env,
-            vault_address.clone().into_val(env),
-            pool_address.clone().into_val(env),
-            amount.into_val(env),
-            approval_ledger.into_val(env),
-        ];
         let submit_args: Vec<Val> = vec![
             env,
             vault_address.clone().into_val(env),
@@ -10159,20 +10259,8 @@ impl NeuroWealthVault {
             amount.into_val(env),
         ];
 
-        // Approve Blend pool to spend USDC
-        let token_client = token::Client::new(env, &usdc_token);
-        env.authorize_as_current_contract(vec![
-            env,
-            InvokerContractAuthEntry::Contract(SubContractInvocation {
-                context: ContractContext {
-                    contract: usdc_token.clone(),
-                    fn_name: Symbol::new(env, "approve"),
-                    args: approval_args,
-                },
-                sub_invocations: vec![env],
-            }),
-        ]);
-        token_client.approve(&vault_address, &pool_address, &amount, &approval_ledger);
+        // Approve only the amount available, then clear any unused allowance.
+        Self::set_protocol_allowance(env, &usdc_token, &pool_address, amount, approval_ledger);
 
         // Authorize and execute Blend supply
         env.authorize_as_current_contract(vec![
@@ -10202,6 +10290,7 @@ impl NeuroWealthVault {
             BlendPoolClient::supply(env, &pool_address, &usdc_token, amount, &vault_address);
 
         Self::require_min_out(env, supplied, min_out, "blend supply");
+        Self::set_protocol_allowance(env, &usdc_token, &pool_address, 0, approval_ledger);
 
         if supplied > 0 {
             Self::set_current_protocol(env, symbol_short!("blend"));
@@ -10271,6 +10360,13 @@ impl NeuroWealthVault {
         );
 
         Self::require_min_out(env, withdrawn, min_out, "blend withdraw");
+        Self::set_protocol_allowance(
+            env,
+            &usdc_token,
+            &pool_address,
+            0,
+            env.ledger().sequence().saturating_add(1),
+        );
 
         if withdrawn > 0 {
             let remaining =
@@ -10295,7 +10391,7 @@ impl NeuroWealthVault {
 
     /// Internal helper: Supplies USDC to the DEX liquidity pool.
     ///
-    /// Mirrors [`supply_to_blend`](crate::NeuroWealthVault::supply_to_blend): approves the pool to pull USDC, authorizes
+    /// Mirrors [`supply_to_blend`](crate::NeuroWealthVault::supply_to_blend): approves only available USDC, authorizes
     /// the cross-contract `add_liquidity` call (with its `transfer_from`
     /// sub-invocation), then supplies. The `min_out` floor is enforced both by
     /// forwarding it to the pool and by [`require_min_out`](crate::NeuroWealthVault::require_min_out) on the realized
@@ -10313,7 +10409,7 @@ impl NeuroWealthVault {
     /// - Returns 0 if amount <= 0
     /// - Panics if the DEX pool address is not configured
     /// - Panics with `MinOutNotMet` if the realized amount is below `min_out`
-    /// - Emits `DexSupplyEvent` with success status
+    /// - Clears unspent allowance after supply and emits `DexSupplyEvent` with success status
     fn supply_to_dex(env: &Env, amount: i128, min_out: i128) -> i128 {
         if amount <= 0 {
             return 0;
@@ -10329,18 +10425,14 @@ impl NeuroWealthVault {
 
         let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
         let vault_address = env.current_contract_address();
-        let approval_ledger = env
-            .ledger()
-            .sequence()
-            .saturating_add(Self::get_approval_ttl_internal(env));
-
-        let approval_args: Vec<Val> = vec![
+        let approval_ledger = Self::protocol_approval_expiration(env);
+        let token_client = token::Client::new(env, &usdc_token);
+        Self::require(
             env,
-            vault_address.clone().into_val(env),
-            pool_address.clone().into_val(env),
-            amount.into_val(env),
-            approval_ledger.into_val(env),
-        ];
+            token_client.balance(&vault_address) >= amount,
+            VaultError::InsufficientLiquidity,
+        );
+
         let add_liquidity_args: Vec<Val> = vec![
             env,
             vault_address.clone().into_val(env),
@@ -10356,20 +10448,8 @@ impl NeuroWealthVault {
             amount.into_val(env),
         ];
 
-        // Approve the DEX pool to spend USDC.
-        let token_client = token::Client::new(env, &usdc_token);
-        env.authorize_as_current_contract(vec![
-            env,
-            InvokerContractAuthEntry::Contract(SubContractInvocation {
-                context: ContractContext {
-                    contract: usdc_token.clone(),
-                    fn_name: Symbol::new(env, "approve"),
-                    args: approval_args,
-                },
-                sub_invocations: vec![env],
-            }),
-        ]);
-        token_client.approve(&vault_address, &pool_address, &amount, &approval_ledger);
+        // Approve only the amount available, then clear any unused allowance.
+        Self::set_protocol_allowance(env, &usdc_token, &pool_address, amount, approval_ledger);
 
         // Authorize and execute the DEX add_liquidity (pulls USDC via transfer_from).
         env.authorize_as_current_contract(vec![
@@ -10404,6 +10484,7 @@ impl NeuroWealthVault {
         );
 
         Self::require_min_out(env, supplied, min_out, "dex supply");
+        Self::set_protocol_allowance(env, &usdc_token, &pool_address, 0, approval_ledger);
 
         if supplied > 0 {
             Self::set_current_protocol(env, symbol_short!("dex"));
@@ -10472,6 +10553,13 @@ impl NeuroWealthVault {
         );
 
         Self::require_min_out(env, withdrawn, min_out, "dex withdraw");
+        Self::set_protocol_allowance(
+            env,
+            &usdc_token,
+            &pool_address,
+            0,
+            env.ledger().sequence().saturating_add(1),
+        );
 
         if withdrawn > 0 {
             let remaining =
