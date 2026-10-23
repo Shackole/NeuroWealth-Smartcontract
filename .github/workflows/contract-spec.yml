@@ -9,6 +9,9 @@ on:
       - 'neurowealth-vault/contracts/vault/src/**'
       - 'neurowealth-vault/Cargo.toml'
       - 'neurowealth-vault/Cargo.lock'
+      - 'contracts/vault/src/**'
+      - 'contracts/vault/README.md'
+      - 'scripts/check-contract-mirror.sh'
       - 'scripts/generate-spec.py'
       - 'scripts/validate-spec.py'
       - 'scripts/generate-client.js'
@@ -22,6 +25,9 @@ on:
       - 'neurowealth-vault/contracts/vault/src/**'
       - 'neurowealth-vault/Cargo.toml'
       - 'neurowealth-vault/Cargo.lock'
+      - 'contracts/vault/src/**'
+      - 'contracts/vault/README.md'
+      - 'scripts/check-contract-mirror.sh'
       - 'contract-spec.json'
       - 'scripts/generate-spec.py'
       - 'scripts/validate-spec.py'
@@ -43,6 +49,9 @@ jobs:
     steps:
       - name: 📥 Checkout repository
         uses: actions/checkout@v7
+
+      - name: Check legacy contract source mirror
+        run: bash scripts/check-contract-mirror.sh
       
       - name: 🐍 Set up Python
         uses: actions/setup-python@v7

@@ -155,3 +155,36 @@ fn test_deposit_withdraw_round_trip_conserves_tokens() {
     assert_eq!(token_client.balance(&contract_id), 0);
     assert_eq!(client.get_total_assets(), 0);
 }
+
+#[test]
+fn test_frozen_recipient_failed_exit_preserves_accounting_and_shares() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (contract_id, _agent, _owner, usdc_token) = setup_vault_with_token(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+    let token_client = TestTokenClient::new(&env, &usdc_token);
+    let user = Address::generate(&env);
+    let amount = 5_000_000_i128;
+    mint_and_deposit(&env, &client, &usdc_token, &user, amount);
+
+    let shares_before = client.get_shares(&user);
+    let total_shares_before = client.get_total_shares();
+    let assets_before = client.get_total_assets();
+    let deposits_before = client.get_total_deposits();
+    let vault_balance_before = token_client.balance(&contract_id);
+    let user_balance_before = token_client.balance(&user);
+
+    // A revoked issuer authorization makes the token contract reject payment
+    // to the user. Soroban rolls the whole invocation back, including any
+    // share/accounting writes that preceded the token call.
+    token_client.set_frozen(&user, &true);
+    assert!(client.try_withdraw(&user, &amount).is_err());
+
+    assert_eq!(client.get_shares(&user), shares_before);
+    assert_eq!(client.get_total_shares(), total_shares_before);
+    assert_eq!(client.get_total_assets(), assets_before);
+    assert_eq!(client.get_total_deposits(), deposits_before);
+    assert_eq!(token_client.balance(&contract_id), vault_balance_before);
+    assert_eq!(token_client.balance(&user), user_balance_before);
+}

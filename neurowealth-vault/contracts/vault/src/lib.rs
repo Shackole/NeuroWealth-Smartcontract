@@ -329,6 +329,8 @@ pub enum VaultError {
     ProtocolAdapterNotConfigured = 81,
     /// The requested protocol is not on the owner-managed whitelist (#656).
     ProtocolNotWhitelisted = 82,
+    /// Owner and agent must be separate authorities at initialization.
+    OwnerAndAgentMustDiffer = 83,
 
 }
 
@@ -2390,6 +2392,9 @@ impl NeuroWealthVault {
         }
         if usdc_token == zero {
             panic!("usdc_token cannot be zero address");
+        }
+        if owner == agent {
+            panic_with_error!(&env, VaultError::OwnerAndAgentMustDiffer);
         }
 
         // Verify the deployer is the one that actually deployed the contract

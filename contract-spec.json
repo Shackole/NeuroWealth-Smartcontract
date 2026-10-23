@@ -3453,6 +3453,10 @@
       "code": 80,
       "description": "A batch contains more entries than the configured maximum."
     },
+    "VaultError::OwnerAndAgentMustDiffer": {
+      "code": 83,
+      "description": "Owner and agent must be separate authorities at initialization."
+    },
     "ValidationError": {
       "code": 100,
       "description": "General validation error"
