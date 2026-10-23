@@ -10,7 +10,7 @@ import {
   RefreshCw,
 } from 'lucide-react';
 
-export type StepStatus = 'pending' | 'active' | 'done' | 'error';
+export type StepStatus = 'pending' | 'active' | 'done' | 'delayed' | 'error';
 
 export interface TransactionStep {
   /** Unique identifier for the step */
@@ -23,6 +23,8 @@ export interface TransactionStep {
   status: StepStatus;
   /** Error message — only used when status === 'error' */
   errorMessage?: string;
+  /** Concrete next action shown for this state. */
+  nextAction?: string;
   /** Stellar Explorer link — only shown when status === 'done' and a hash is available */
   explorerUrl?: string;
 }
@@ -64,6 +66,9 @@ function StepIcon({ status }: { status: StepStatus }) {
       />
     );
   }
+  if (status === 'delayed') {
+    return <Clock size={20} className="text-amber-300 flex-shrink-0" aria-hidden="true" />;
+  }
   // pending
   return (
     <Clock
@@ -78,6 +83,7 @@ function stepAriaLabel(step: TransactionStep, index: number): string {
   const ordinal = `Step ${index + 1} of ${step.label}`;
   if (step.status === 'done') return `${ordinal}: completed`;
   if (step.status === 'active') return `${ordinal}: in progress`;
+  if (step.status === 'delayed') return `${ordinal}: submitted, awaiting confirmation`;
   if (step.status === 'error') return `${ordinal}: failed — ${step.errorMessage ?? 'unknown error'}`;
   return `${ordinal}: waiting`;
 }
@@ -86,7 +92,8 @@ function stepAriaLabel(step: TransactionStep, index: number): string {
  * TransactionProgress
  *
  * Reusable step-by-step ledger confirmation tracker.
- * Supports four statuses: pending | active | done | error.
+ * Supports pending, active, done, delayed, and failed states. A delayed
+ * confirmation remains separate from a ledger execution failure.
  * Accessible: each step has aria-current="step" when active, role="listitem",
  * and a descriptive aria-label summarising its current state.
  *
@@ -106,6 +113,7 @@ export const TransactionProgress: React.FC<TransactionProgressProps> = ({
 }) => {
   const activeIndex = steps.findIndex((s) => s.status === 'active');
   const hasError = steps.some((s) => s.status === 'error');
+  const delayedIndex = steps.findIndex((s) => s.status === 'delayed');
 
   return (
     <div
@@ -129,6 +137,7 @@ export const TransactionProgress: React.FC<TransactionProgressProps> = ({
           const isActive = step.status === 'active';
           const isDone = step.status === 'done';
           const isError = step.status === 'error';
+          const isDelayed = step.status === 'delayed';
 
           return (
             <li
@@ -164,6 +173,8 @@ export const TransactionProgress: React.FC<TransactionProgressProps> = ({
                         ? 'text-white'
                         : isError
                         ? 'text-red-400'
+                        : isDelayed
+                          ? 'text-amber-300'
                         : 'text-slate-500'
                     }`}
                   >
@@ -171,7 +182,7 @@ export const TransactionProgress: React.FC<TransactionProgressProps> = ({
                   </span>
 
                   {/* Explorer link on completion */}
-                  {isDone && step.explorerUrl && (
+                  {(isDone || isDelayed) && step.explorerUrl && (
                     <a
                       href={step.explorerUrl}
                       target="_blank"
@@ -189,6 +200,18 @@ export const TransactionProgress: React.FC<TransactionProgressProps> = ({
                 {step.subText && (
                   <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">
                     {step.subText}
+                  </p>
+                )}
+
+                {step.nextAction && (
+                  <p className={`text-xs mt-1 leading-relaxed ${isError ? 'text-red-300' : isDelayed ? 'text-amber-200' : 'text-slate-400'}`}>
+                    Next: {step.nextAction}
+                  </p>
+                )}
+
+                {isDelayed && !step.nextAction && (
+                  <p className="text-xs text-amber-200 mt-1 leading-relaxed">
+                    Next: Check the explorer before retrying. Do not submit again while confirmation is pending.
                   </p>
                 )}
 
@@ -229,11 +252,13 @@ export const TransactionProgress: React.FC<TransactionProgressProps> = ({
       {/* Overall status summary for screen readers */}
       <span className="sr-only" aria-live="assertive">
         {hasError
-          ? 'Transaction failed. Please retry.'
+          ? 'Transaction failed on the ledger. Check its explorer status before retrying.'
+          : delayedIndex !== -1
+          ? `Transaction submitted. Ledger confirmation is delayed at step ${delayedIndex + 1}. Check the explorer before retrying.`
           : activeIndex !== -1
           ? `Step ${activeIndex + 1} in progress: ${steps[activeIndex].label}`
           : steps.every((s) => s.status === 'done')
-          ? 'Transaction confirmed successfully.'
+          ? 'Transaction confirmed in the Stellar ledger.'
           : ''}
       </span>
     </div>
