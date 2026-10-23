@@ -3201,11 +3201,28 @@ impl NeuroWealthVault {
         usdc_to_return
     }
 
-    /// Sets the Blend pool contract address for on-chain integration.
+    /// Deposits a supported asset into the vault via the multi-asset path (#646).
     ///
     /// Each asset has its own share pool with independent share pricing.
-    /// Validates the asset is supported, checks per-asset caps, transfers the
-    /// asset token, mints shares, and emits `AssetDepositEvent`.
+    /// Validates the asset is supported, checks **both** per-asset and global
+    /// caps, transfers the asset token, mints shares, and emits
+    /// `AssetDepositEvent`.
+    ///
+    /// # Cap enforcement (Issue #441)
+    ///
+    /// `deposit_asset` enforces the **same global caps** as `deposit` and
+    /// `batch_deposit` so multi-asset deposits cannot bypass vault-wide limits:
+    ///
+    /// | Cap | Check | Yield-inclusive? |
+    /// |----|-------|-----------------|
+    /// | Per-asset TVL cap (`config.tvl_cap`) | `totals.assets + amount ≤ config.tvl_cap` | Per-asset pool only |
+    /// | Global TVL cap (`TvLCap`) | `get_total_assets_internal() + amount ≤ TvLCap` | Yes — includes yield |
+    /// | Global user deposit cap (`UserDepositCap`) | `convert_to_assets(user_shares) + amount ≤ UserDepositCap` | Yes — includes yield |
+    ///
+    /// The global checks use yield-inclusive semantics identical to
+    /// `require_within_tvl_cap` and `require_within_deposit_cap` used by the
+    /// USDC `deposit` path, ensuring equivalent deposit paths enforce
+    /// identical cap semantics.
     pub fn deposit_asset(env: Env, user: Address, asset: Symbol, amount: i128) {
         Self::require_initialized(&env);
         user.require_auth();
@@ -3225,6 +3242,24 @@ impl NeuroWealthVault {
         if config.deposit_limit > 0 {
             Self::require(&env, amount <= config.deposit_limit, VaultError::MaximumDepositExceeded);
         }
+
+        // ── Global cap enforcement (Issue #441) ──────────────────────────────
+        // `deposit_asset` must enforce the same global caps as `deposit` and
+        // `batch_deposit` so that multi-asset deposits cannot bypass the
+        // vault-wide TVL cap or the per-user deposit cap. Both checks use
+        // yield-inclusive semantics matching the USDC paths:
+        //
+        //   • Global TVL cap:  `get_total_assets_internal() + amount <= TvLCap`
+        //     (TotalAssets includes accrued yield, just like `require_within_tvl_cap`.)
+        //
+        //   • Global user deposit cap:  `convert_to_assets_internal(user_shares) + amount <= UserDepositCap`
+        //     (The user's USDC share value is converted at the current rate,
+        //     which includes yield — identical to `require_within_deposit_cap`.)
+        //
+        // The per-asset `config.tvl_cap` (checked below) is independent and
+        // caps each asset's own pool; the global cap caps the whole vault.
+        Self::require_within_tvl_cap(&env, amount);
+        Self::require_within_deposit_cap(&env, &user, amount);
 
         // Read all accounting state BEFORE the token transfer so a malicious
         // token contract cannot reenter and observe an inconsistent snapshot

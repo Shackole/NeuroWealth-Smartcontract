@@ -144,6 +144,23 @@ expired and removed).
 refreshes TTL as part of normal writes. Routine user activity keeps share data
 alive without calling `touch_user_ttl`.
 
+### Cap enforcement across deposit paths (Issue #441)
+
+All three deposit entrypoints — `deposit`, `batch_deposit`, and
+`deposit_asset` — enforce the **same global caps** using yield-inclusive
+semantics so no path can bypass vault-wide limits:
+
+| Entrypoint | Global TVL cap (`TvLCap`) | Global user cap (`UserDepositCap`) | Per-asset cap (`AssetConfig.tvl_cap`) |
+|---|---|---|---|
+| `deposit` | `get_total_assets_internal() + amount ≤ TvLCap` | `convert_to_assets(user_shares) + amount ≤ UserDepositCap` | N/A |
+| `batch_deposit` | Same (aggregate valid amount) | Same (per-entry) | N/A |
+| `deposit_asset` | Same | Same | `asset_totals.assets + amount ≤ config.tvl_cap` |
+
+Both global checks use `TotalAssets` (principal + yield) for the TVL cap and
+`convert_to_assets_internal` (current share value including yield) for the
+user deposit cap, ensuring that accrued yield is counted toward the caps in
+every deposit path.
+
 ## DataKey Structure
 
 ```rust
