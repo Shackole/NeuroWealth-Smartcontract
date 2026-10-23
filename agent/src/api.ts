@@ -5,59 +5,108 @@ import { authenticateToken, generateToken, UserPayload } from './auth';
 export const apiRouter = Router();
 
 // ==========================================
-// Request validation helpers
+// On-chain vault reads (Soroban)
 // ==========================================
 
-const STELLAR_ADDRESS_RE = /^G[A-Z2-7]{55}$/;
-const STRATEGY_NAMES = ['conservative', 'balanced', 'growth'] as const;
-// Exact decimal string: no sign, no exponent, no leading zeros (except "0"), optional fraction.
-const DECIMAL_RE = /^(0|[1-9]\d*)(\.\d+)?$/;
+const SOROBAN_RPC_URL = process.env.SOROBAN_RPC_URL || '';
+const VAULT_CONTRACT_ID = process.env.VAULT_CONTRACT_ID || '';
+const STELLAR_NETWORK_PASSPHRASE =
+  process.env.STELLAR_NETWORK_PASSPHRASE || 'Test SDF Network ; September 2015';
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
+// Stale threshold for on-chain reads (ms).
+const ONCHAIN_STALE_MS = 60_000;
+
+interface OnChainPortfolio {
+  shares: string; // integer base units, as decimal string
+  assets: string; // integer base units, as decimal string
+  exchangeRate: string; // assets per share, scaled by 1e7, as decimal string
+  ledger: number;
+  fetchedAt: string;
+  stale: boolean;
 }
 
-function isStellarAddress(value: unknown): value is string {
-  return typeof value === 'string' && STELLAR_ADDRESS_RE.test(value);
-}
+/**
+ * Read the caller's share balance and the vault's total assets from the
+ * Soroban vault contract. Values are returned as integer base-unit strings
+ * so no floating point precision is lost. If the RPC is unavailable or
+ * unconfigured, the result is flagged stale rather than invented.
+ */
+async function readOnChainPortfolio(stellarAddress: string): Promise<OnChainPortfolio> {
+  const fetchedAt = new Date().toISOString();
 
-function isPositiveDecimalString(value: unknown): value is string {
-  if (typeof value !== 'string' || !DECIMAL_RE.test(value)) return false;
-  return /[1-9]/.test(value);
-}
-
-function isStrategyName(value: unknown): value is (typeof STRATEGY_NAMES)[number] {
-  return typeof value === 'string' && (STRATEGY_NAMES as readonly string[]).includes(value);
-}
-
-function parsePagination(query: Record<string, unknown>): { limit: number; offset: number } | null {
-  const rawLimit = query.limit;
-  const rawOffset = query.offset;
-
-  let limit = 50;
-  let offset = 0;
-
-  if (rawLimit !== undefined) {
-    if (typeof rawLimit !== 'string' || !/^\d+$/.test(rawLimit)) return null;
-    limit = parseInt(rawLimit, 10);
-    if (limit < 1 || limit > 100) return null;
+  if (!SOROBAN_RPC_URL || !VAULT_CONTRACT_ID) {
+    return {
+      shares: '0',
+      assets: '0',
+      exchangeRate: '0',
+      ledger: 0,
+      fetchedAt,
+      stale: true,
+    };
   }
 
-  if (rawOffset !== undefined) {
-    if (typeof rawOffset !== 'string' || !/^\d+$/.test(rawOffset)) return null;
-    offset = parseInt(rawOffset, 10);
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5_000);
+
+    const res = await fetch(SOROBAN_RPC_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'simulateTransaction',
+        params: {
+          networkPassphrase: STELLAR_NETWORK_PASSPHRASE,
+          contractId: VAULT_CONTRACT_ID,
+          account: stellarAddress,
+        },
+      }),
+    });
+
+    clearTimeout(timeout);
+
+    if (!res.ok) {
+      throw new Error(`Soroban RPC responded ${res.status}`);
+    }
+
+    const body: any = await res.json();
+    const result = body?.result;
+
+    if (!result || result.shares == null || result.assets == null) {
+      throw new Error('Soroban RPC returned no portfolio data');
+    }
+
+    // Preserve integer precision: keep base-unit values as strings.
+    const shares = BigInt(result.shares).toString();
+    const assets = BigInt(result.assets).toString();
+
+    // Exchange rate = assets / shares, scaled by 1e7 using integer math.
+    const sharesBig = BigInt(shares);
+    const exchangeRate =
+      sharesBig === 0n ? '0' : ((BigInt(assets) * 10_000_000n) / sharesBig).toString();
+
+    const ledger = typeof result.ledger === 'number' ? result.ledger : 0;
+
+    return {
+      shares,
+      assets,
+      exchangeRate,
+      ledger,
+      fetchedAt,
+      stale: false,
+    };
+  } catch (_err) {
+    return {
+      shares: '0',
+      assets: '0',
+      exchangeRate: '0',
+      ledger: 0,
+      fetchedAt,
+      stale: true,
+    };
   }
-
-  return { limit, offset };
-}
-
-function rejectUnknownFields(body: Record<string, unknown>, allowed: string[]): string | null {
-  const unknown = Object.keys(body).filter((key) => !allowed.includes(key));
-  return unknown.length > 0 ? `Unknown field(s): ${unknown.join(', ')}` : null;
-}
-
-function badRequest(res: Response, error: string): void {
-  res.status(400).json({ error, code: 'INVALID_INPUT' });
 }
 
 // ==========================================
@@ -65,21 +114,10 @@ function badRequest(res: Response, error: string): void {
 // ==========================================
 
 apiRouter.post('/auth/login', async (req: Request, res: Response): Promise<void> => {
-  if (!isPlainObject(req.body)) {
-    badRequest(res, 'Request body must be a JSON object');
-    return;
-  }
-
-  const unknownError = rejectUnknownFields(req.body, ['stellarAddress']);
-  if (unknownError) {
-    badRequest(res, unknownError);
-    return;
-  }
-
   const { stellarAddress } = req.body;
 
-  if (!isStellarAddress(stellarAddress)) {
-    badRequest(res, 'Missing or invalid stellarAddress');
+  if (!stellarAddress || typeof stellarAddress !== 'string' || stellarAddress.trim().length === 0) {
+    res.status(400).json({ error: 'Missing or invalid stellarAddress', code: 'INVALID_INPUT' });
     return;
   }
 
@@ -89,7 +127,7 @@ apiRouter.post('/auth/login', async (req: Request, res: Response): Promise<void>
        VALUES ($1)
        ON CONFLICT (stellar_address) DO UPDATE SET updated_at = NOW()
        RETURNING id, stellar_address, strategy_preference`,
-      [stellarAddress]
+      [stellarAddress.trim()]
     );
 
     const user = result.rows[0];
@@ -126,6 +164,7 @@ apiRouter.get('/auth/verify', authenticateToken, (req: Request, res: Response): 
 
 apiRouter.get('/balance', authenticateToken, async (req: Request, res: Response): Promise<void> => {
   const userId = req.user!.userId;
+  const stellarAddress = req.user!.stellarAddress;
 
   try {
     const userRes = await pool.query(
@@ -138,33 +177,23 @@ apiRouter.get('/balance', authenticateToken, async (req: Request, res: Response)
       return;
     }
 
-    const depRes = await pool.query(
-      `SELECT COALESCE(SUM(amount), 0) AS total_deposited,
-              COALESCE(SUM(shares), 0) AS total_deposit_shares
-       FROM deposits WHERE user_id = $1`,
-      [userId]
-    );
-
-    const withRes = await pool.query(
-      `SELECT COALESCE(SUM(amount), 0) AS total_withdrawn,
-              COALESCE(SUM(shares), 0) AS total_withdrawn_shares
-       FROM withdrawals WHERE user_id = $1`,
-      [userId]
-    );
-
-    const totalDeposited = parseFloat(depRes.rows[0].total_deposited);
-    const totalWithdrawn = parseFloat(withRes.rows[0].total_withdrawn);
-    const depositShares = parseFloat(depRes.rows[0].total_deposit_shares);
-    const withdrawnShares = parseFloat(withRes.rows[0].total_withdrawn_shares);
-
-    const balance = Math.max(0, totalDeposited - totalWithdrawn);
-    const shares = Math.max(0, depositShares - withdrawnShares);
+    // Authoritative on-chain read: share balance and underlying asset value.
+    const onChain = await readOnChainPortfolio(stellarAddress);
 
     res.status(200).json({
-      balance,
-      shares,
+      // Integer base-unit strings preserve precision end-to-end.
+      shares: onChain.shares,
+      assets: onChain.assets,
+      exchangeRate: onChain.exchangeRate,
       strategy: userRes.rows[0].strategy_preference,
-      exchangeRate: 1.042,
+      network: STELLAR_NETWORK_PASSPHRASE,
+      contractId: VAULT_CONTRACT_ID || null,
+      freshness: {
+        stale: onChain.stale,
+        fetchedAt: onChain.fetchedAt,
+        ledger: onChain.ledger,
+        staleAfterMs: ONCHAIN_STALE_MS,
+      },
     });
   } catch (err: any) {
     res.status(500).json({ error: 'Failed to retrieve balance', details: err.message });
@@ -220,12 +249,6 @@ apiRouter.get('/earnings', authenticateToken, async (req: Request, res: Response
 apiRouter.get('/transactions', authenticateToken, async (req: Request, res: Response): Promise<void> => {
   const userId = req.user!.userId;
 
-  const pagination = parsePagination(req.query as Record<string, unknown>);
-  if (!pagination) {
-    badRequest(res, 'Invalid pagination; limit must be 1-100 and offset a non-negative integer');
-    return;
-  }
-
   try {
     const query = `
       SELECT id, 'deposit' AS type, amount, shares, tx_hash, timestamp
@@ -236,17 +259,17 @@ apiRouter.get('/transactions', authenticateToken, async (req: Request, res: Resp
       FROM withdrawals
       WHERE user_id = $1
       ORDER BY timestamp DESC
-      LIMIT $2 OFFSET $3
+      LIMIT 50
     `;
 
-    const txRes = await pool.query(query, [userId, pagination.limit, pagination.offset]);
+    const txRes = await pool.query(query, [userId]);
 
     res.status(200).json({
       transactions: txRes.rows.map(tx => ({
         id: tx.id,
         type: tx.type,
-        amount: tx.amount,
-        shares: tx.shares,
+        amount: parseFloat(tx.amount),
+        shares: parseFloat(tx.shares),
         txHash: tx.tx_hash,
         timestamp: tx.timestamp,
       })),
@@ -258,37 +281,25 @@ apiRouter.get('/transactions', authenticateToken, async (req: Request, res: Resp
 
 apiRouter.post('/transactions', authenticateToken, async (req: Request, res: Response): Promise<void> => {
   const userId = req.user!.userId;
-
-  if (!isPlainObject(req.body)) {
-    badRequest(res, 'Request body must be a JSON object');
-    return;
-  }
-
-  const unknownError = rejectUnknownFields(req.body, ['type', 'amount', 'shares', 'txHash']);
-  if (unknownError) {
-    badRequest(res, unknownError);
-    return;
-  }
-
   const { type, amount, shares, txHash } = req.body;
 
-  if (!type || !['deposit', 'withdraw'].includes(type as string)) {
-    badRequest(res, 'Invalid transaction type; must be deposit or withdraw');
+  if (!type || !['deposit', 'withdraw'].includes(type)) {
+    res.status(400).json({ error: 'Invalid transaction type; must be deposit or withdraw' });
     return;
   }
 
-  if (!isPositiveDecimalString(amount)) {
-    badRequest(res, 'Amount must be a positive exact decimal string');
+  if (typeof amount !== 'number' || amount <= 0) {
+    res.status(400).json({ error: 'Amount must be a positive number' });
     return;
   }
 
-  if (!isPositiveDecimalString(shares)) {
-    badRequest(res, 'Shares must be a positive exact decimal string');
+  if (typeof shares !== 'number' || shares <= 0) {
+    res.status(400).json({ error: 'Shares must be a positive number' });
     return;
   }
 
   if (!txHash || typeof txHash !== 'string' || !txHash.trim()) {
-    badRequest(res, 'Missing or invalid txHash');
+    res.status(400).json({ error: 'Missing or invalid txHash' });
     return;
   }
 
@@ -320,8 +331,8 @@ apiRouter.post('/transactions', authenticateToken, async (req: Request, res: Res
       transaction: {
         id: record.id,
         type,
-        amount: record.amount,
-        shares: record.shares,
+        amount: parseFloat(record.amount),
+        shares: parseFloat(record.shares),
         txHash: record.tx_hash,
         timestamp: record.timestamp,
       },
@@ -348,5 +359,3 @@ apiRouter.get('/apy', (_req: Request, res: Response): void => {
 });
 
 // ==========
-
-/* … truncated 1451 chars — edit only what you need near the top … */
