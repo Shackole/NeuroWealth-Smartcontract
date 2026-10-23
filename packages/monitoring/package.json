@@ -12,20 +12,19 @@
     "test": "jest"
   },
   "dependencies": {
-    "@neurowealth/vault-client": "file:../vault-client",
+    "@neurowealth/vault-client": "workspace:*",
     "@stellar/stellar-sdk": "^17.1.0",
     "pino": "^8.16.0",
-    "pino-pretty": "^13.2.0",
+    "pino-pretty": "^10.2.0",
     "axios": "^1.6.0",
+    "typescript": "^5.0.0",
     "dotenv": "^18.0.3"
   },
   "devDependencies": {
     "@types/node": "^26.6.2",
     "ts-node": "^10.9.0",
-    "typescript": "^5.0.0",
     "jest": "^30.5.2",
-    "@types/jest": "^29.0.0",
-    "ts-jest": "^29.0.0",
-    "typescript": "^5.0.0"
+    "@types/jest": "^30.0.0",
+    "ts-jest": "^29.0.0"
   }
 }
