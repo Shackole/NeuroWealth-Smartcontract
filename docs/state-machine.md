@@ -53,6 +53,10 @@ stateDiagram-v2
     }
 ```
 
+For both agent rotations and upgrades, the expiry ledger is the first executable
+ledger (`current_ledger >= effective_ledger`). Calls before it fail. Canceling
+clears the pending proposal; scheduling a replacement starts a fresh full delay.
+
 ---
 
 ## States

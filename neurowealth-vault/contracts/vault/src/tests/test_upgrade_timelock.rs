@@ -148,6 +148,71 @@ fn test_execute_before_timelock_rejected() {
     client.execute_upgrade(&owner);
 }
 
+#[test]
+fn test_upgrade_timelock_boundary_and_cancelled_proposal() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (contract_id, _agent, owner, _usdc_token) = setup_vault_with_token(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+    client.schedule_upgrade(&owner, &fake_hash(&env, 21));
+
+    let (_, expiry) = client.get_pending_upgrade().unwrap();
+    env.as_contract(&contract_id, || {
+        env.storage().instance().extend_ttl(20_000, 20_000);
+    });
+    env.ledger().set_sequence_number(expiry - 1);
+    assert_eq!(
+        client.try_execute_upgrade(&owner),
+        Err(Ok(soroban_sdk::Error::from_contract_error(50))),
+        "execution one ledger before expiry must fail"
+    );
+
+    env.ledger().set_sequence_number(expiry);
+    let boundary_result = client.try_execute_upgrade(&owner);
+    assert_ne!(
+        boundary_result,
+        Err(Ok(soroban_sdk::Error::from_contract_error(50))),
+        "execution at the expiry ledger must pass the timelock gate"
+    );
+
+    client.cancel_upgrade(&owner);
+    client.schedule_upgrade(&owner, &fake_hash(&env, 22));
+    client.cancel_upgrade(&owner);
+    assert_eq!(
+        client.try_execute_upgrade(&owner),
+        Err(Ok(soroban_sdk::Error::from_contract_error(49))),
+        "a cancelled upgrade proposal must not execute"
+    );
+}
+
+#[test]
+fn test_upgrade_replacement_starts_a_fresh_timelock() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (contract_id, _agent, owner, _usdc_token) = setup_vault_with_token(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+    client.schedule_upgrade(&owner, &fake_hash(&env, 23));
+
+    let (_, first_expiry) = client.get_pending_upgrade().unwrap();
+    let replacement_ledger = first_expiry - 1;
+    env.as_contract(&contract_id, || {
+        env.storage().instance().extend_ttl(40_000, 40_000);
+    });
+    env.ledger().set_sequence_number(replacement_ledger);
+    client.cancel_upgrade(&owner);
+
+    client.schedule_upgrade(&owner, &fake_hash(&env, 24));
+    let (_, replacement_expiry) = client.get_pending_upgrade().unwrap();
+    assert_eq!(
+        replacement_expiry,
+        replacement_ledger + crate::UPGRADE_TIMELOCK_LEDGERS,
+        "replacement upgrade must start the full delay"
+    );
+    assert!(replacement_expiry > first_expiry);
+}
+
 /// Executing with no pending upgrade must be rejected (NoTimelockPending, #49).
 #[test]
 #[should_panic(expected = "Error(Contract, #49)")]

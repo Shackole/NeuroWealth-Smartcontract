@@ -59,7 +59,7 @@ The Owner key is the primary administrative authority of the contract. As mandat
   - Direct user USDC deposits to owner-controlled arbitrary wallets.
   - Withdraw or burn user shares without explicit user authorization.
   - Modify individual user share balances.
-  - Bypass upgrade or agent rotation timelocks (must wait 17,280 ledgers ≈ 24 hours).
+  - Bypass upgrade or agent rotation timelocks (must wait 17,280 ledgers ≈ 24 hours). Execution fails before the advertised expiry ledger and is first allowed when `current_ledger >= effective_ledger`.
   - Perform instant WASM code replacements.
 
 #### 2. AI Agent Hot Key

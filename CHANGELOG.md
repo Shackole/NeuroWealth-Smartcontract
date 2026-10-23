@@ -62,6 +62,7 @@ Contract versions correspond to the `DataKey::Version` value stored on-chain.
 
 ### Changed
 
+- **Timelock boundary semantics (Issue #434):** Agent rotations and upgrades are executable on the recorded effective ledger (`current_ledger >= effective_ledger`); canceling clears the proposal, and a replacement starts a fresh full delay.
 - Migrated weak `!events.is_empty()` test assertions to strict payload checks (Issue #333).
 - `deploy-devnet.sh` now writes `OWNER_ADDRESS` to `devnet-contracts.env` so
   `verify-deployment.sh` can run without missing-variable errors (Issue #298).
