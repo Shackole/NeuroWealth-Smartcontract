@@ -19,6 +19,17 @@ const VAULT_CONTRACT_ID = process.env.VAULT_CONTRACT_ID || '';
 const EVENT_PAGE_LIMIT = 1000;
 
 let eventInterval: ReturnType<typeof setInterval> | null = null;
+let lastProcessedLedger = 0;
+
+export function getLastProcessedLedger(): number {
+  return lastProcessedLedger;
+}
+
+export function setLastProcessedLedger(ledger: number): void {
+  if (Number.isInteger(ledger) && ledger >= 0) {
+    lastProcessedLedger = ledger;
+  }
+}
 
 export function stopEventListener() {
   if (eventInterval) {
@@ -31,8 +42,10 @@ export function stopEventListener() {
 /**
  * Listens for on-chain deposit and withdraw events from the vault contract.
  * Detects new deposits within 5 seconds and triggers yield deployment.
+ * When `checkpointLedger` is provided (e.g., restored after a Redis/DB recovery),
+ * resumes from `checkpointLedger + 1` instead of skipping missed ledgers.
  */
-export async function startEventListener() {
+export async function startEventListener(checkpointLedger?: number) {
   if (!VAULT_CONTRACT_ID) {
     logger.warn('VAULT_CONTRACT_ID is not set. Event listener requires a contract ID to monitor.');
     return;

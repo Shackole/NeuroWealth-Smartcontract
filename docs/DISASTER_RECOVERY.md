@@ -78,6 +78,42 @@ is stale, and the `agentId` tie-break resolves races. If it is ever suspected
 (manual edits, clock skew), stop both, delete the lease key, fix clocks, and
 let one instance bootstrap before starting the second.
 
+### 6. Simultaneous Redis queue and database interruption (#527)
+
+When both the Redis transaction queue and PostgreSQL/Supabase database
+experience an interruption, `ServiceRecoveryOrchestrator`
+(`agent/src/serviceRecovery.ts`) executes a gated 4-phase recovery sequence:
+
+1. **Reconnect & network verification**: verifies Redis and PostgreSQL
+   connectivity and asserts that the Soroban RPC `networkPassphrase` matches
+   the configured environment (`"Test SDF Network ; September 2015"` or
+   `"Public Global Stellar Network ; Stellar Development Foundation"`).
+2. **Checkpoint restoration & event backfill**: restores `lastLedger` from
+   `agent_state` / `StateBackupManager`, queries missed Soroban contract
+   events in `[checkpointLedger + 1, chainLatestLedger]`, and inserts them
+   idempotently into `vault_events`.
+3. **Queued financial action deduplication**: cross-checks every pending or
+   `in_flight` job (`amountStroops` in 7-decimal USDC stroops,
+   `requiredRole` in `'user' | 'agent' | 'owner'`) against Redis processed
+   keys, PostgreSQL `queued_transactions`, and on-chain confirmed transactions
+   by deterministic `idempotencyKey`. Already-confirmed actions are marked
+   `skipped_duplicate` and never re-executed.
+4. **Chain accounting reconciliation & data-gap gate**: compares on-chain
+   `total_assets` / `total_shares` (in stroops) against indexed database
+   totals. Any unresolved data gap (`missing_ledger_events`,
+   `accounting_mismatch`, `ambiguous_inflight_tx`, `network_mismatch`, or
+   `authorization_violation`) blocks declaring recovery complete
+   (`recoveryComplete: false`, `workerResumed: false`).
+
+Run the controlled staging rehearsal at any time with:
+
+```bash
+./scripts/rehearse-service-recovery.sh
+```
+
+See [`infra/README.md`](../infra/README.md) for the full architecture boundary
+ownership matrix and recorded recovery timing log.
+
 ## Procedures
 
 **Manual state restore**: start the agent with the shared store configured;
