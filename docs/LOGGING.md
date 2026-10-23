@@ -144,6 +144,51 @@ reqLogger.info({ action: 'deposit', amount }, 'Processing deposit');
 reqLogger.error({ err }, 'Deposit failed');
 ```
 
+## API Error Responses
+
+API errors include a stable `code` and the request's `requestId` in the response
+body. The same request ID is returned in the `X-Request-ID` header and included
+in structured server logs. Database exceptions are logged server-side as `err`
+objects with the method, path, error code, and request ID; exception messages,
+SQL, and connection details are never returned to API callers.
+
+| Failure | HTTP status | Code | Public error |
+|---------|-------------|------|--------------|
+| Invalid request input | `400` | `INVALID_INPUT` | A safe validation message |
+| Authenticated user not found | `404` | `USER_NOT_FOUND` | `User not found` |
+| Database operation or connection failed | `503` | `DATABASE_UNAVAILABLE` | `Service temporarily unavailable` |
+
+### Verification
+
+From `agent/`, run `npm run build`. To check response behavior without a
+database or production credentials, build the agent and run a local Express
+test harness that replaces `pool.query` with a rejected promise containing a
+distinctive database error, then send:
+
+1. `POST /api/auth/login` with a non-empty `stellarAddress`: expect HTTP `503`,
+   `DATABASE_UNAVAILABLE`, a `requestId` matching the `X-Request-ID` header,
+   and no part of the injected database error in the response. Confirm the
+   structured server log contains that same request ID and the error details.
+2. `POST /api/auth/login` with an empty body: expect HTTP `400`, `INVALID_INPUT`,
+   and a `requestId` matching the `X-Request-ID` header.
+3. `POST /api/transactions` with valid test fields and a mocked rejected
+   `pool.connect`: expect the same safe `503` response, including when the
+   connection fails before a transaction client is acquired.
+
+The database-failure case should use a test-only mock and test data; it does not
+need a live database, network, contract deployment, or production credentials.
+
+Verification record for this change: the isolated HTTP harness passed all three
+scenarios. The injected database error appeared in a structured log entry with
+the same request ID returned by the 503 response, and was absent from that
+response. Validation returned 400 with a distinct code and matching request ID.
+The transaction connection-failure case also returned the safe 503 response
+with a matching request ID.
+The agent's normal `npm run build` is currently blocked by the existing
+TypeScript configuration referencing an uninstalled `jest` type package; a
+focused strict TypeScript check of `api.ts` passed using a temporary declaration
+for the existing undeclared `jsonwebtoken` dependency.
+
 ---
 
 ## Log-Based Alerting
