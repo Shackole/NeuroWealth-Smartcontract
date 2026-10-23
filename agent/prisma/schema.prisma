@@ -150,3 +150,32 @@ model AuditLog {
   @@index([createdAt(sort: Desc)])
   @@map("audit_logs")
 }
+
+// ─────────────────────────────────────────────
+// EVENT INGESTION CHECKPOINTS
+// Durable cursor for the Soroban event listener.
+// One row per (contract, network) stream so a
+// restart resumes from the last committed ledger
+// instead of jumping to the newest ledger.
+// The cursor is advanced only after events from
+// that ledger have been durably processed.
+// ─────────────────────────────────────────────
+model EventCheckpoint {
+  id             String   @id @default(uuid()) @db.Uuid
+  /// Soroban contract ID (C... address) being ingested
+  contractId     String   @map("contract_id")
+  /// Stellar network identity, e.g. "testnet" or "mainnet"
+  network        String
+  /// Last ledger whose events were durably processed
+  lastLedger     Int      @map("last_ledger")
+  /// Optional paging token within the ledger for finer resume
+  lastCursor     String?  @map("last_cursor")
+  /// Set when the cursor is missing/expired and recovery is required
+  recoveryNeeded Boolean  @default(false) @map("recovery_needed")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@unique([contractId, network])
+  @@index([contractId, network])
+  @@map("event_checkpoints")
+}
