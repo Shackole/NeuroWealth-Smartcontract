@@ -9,6 +9,15 @@
  * - Enqueues intent execution in Bull queue to respect Twilio 15 s timeout
  * - Logs all messages to DB (hashed phone, direction, timestamp)
  * - Sends reply via Twilio Messages API (twiml or REST client)
+ *
+ * Proxy configuration (#426):
+ * When deployed behind a reverse proxy / load balancer, the canonical URL
+ * used for Twilio signature verification must match the URL Twilio signed.
+ * Set `WEBHOOK_BASE_URL` (e.g. `https://api.example.com`) to pin the exact
+ * public origin, OR ensure Express `trust proxy` is enabled so that
+ * `X-Forwarded-Proto` / `X-Forwarded-Host` are honoured. Without one of
+ * these, `req.protocol`/`req.get('host')` reflect the internal hop and
+ * signature validation will fail with 401.
  */
 
 import { Request, Response, NextFunction } from 'express';
@@ -79,6 +88,70 @@ export function checkWebhookRateLimit(phoneHash: string): boolean {
 }
 
 // ─────────────────────────────────────────────────────────
+// Replay protection — dedupe inbound provider message IDs
+// ─────────────────────────────────────────────────────────
+const DEDUPE_TTL_MS = 24 * 60 * 60 * 1000; // 24h
+const seenMessageIds = new Map<string, number>();
+
+/**
+ * Returns true the first time a provider message ID is observed, false on
+ * any subsequent delivery within the TTL window. Twilio retries deliveries
+ * (and may deliver duplicates), so this guarantees each inbound message is
+ * processed at most once logically.
+ */
+export function isDuplicateMessage(messageId: string | undefined): boolean {
+  if (!messageId) {
+    // No provider ID available — cannot dedupe; treat as non-duplicate.
+    return false;
+  }
+
+  const now = Date.now();
+
+  // Opportunistic cleanup of expired entries.
+  for (const [id, ts] of seenMessageIds) {
+    if (now - ts > DEDUPE_TTL_MS) {
+      seenMessageIds.delete(id);
+    }
+  }
+
+  if (seenMessageIds.has(messageId)) {
+    return true;
+  }
+
+  seenMessageIds.set(messageId, now);
+  return false;
+}
+
+// ─────────────────────────────────────────────────────────
+// Canonical webhook URL (proxy-aware)
+// ─────────────────────────────────────────────────────────
+
+/**
+ * Resolve the canonical public URL Twilio signed. Prefers an explicit
+ * `WEBHOOK_BASE_URL`; otherwise reconstructs from proxy-aware headers
+ * (`X-Forwarded-Proto` / `X-Forwarded-Host`) when present, falling back to
+ * the direct request protocol/host.
+ */
+export function resolveCanonicalWebhookUrl(req: Request): string {
+  const base = process.env.WEBHOOK_BASE_URL;
+  if (base) {
+    return `${base.replace(/\/$/, '')}/api/whatsapp/webhook`;
+  }
+
+  const forwardedProto = (req.headers['x-forwarded-proto'] as string | undefined)
+    ?.split(',')[0]
+    .trim();
+  const forwardedHost = (req.headers['x-forwarded-host'] as string | undefined)
+    ?.split(',')[0]
+    .trim();
+
+  const proto = forwardedProto || req.protocol;
+  const host = forwardedHost || req.get('host');
+
+  return `${proto}://${host}/api/whatsapp/webhook`;
+}
+
+// ─────────────────────────────────────────────────────────
 // Twilio signature validation middleware
 // ─────────────────────────────────────────────────────────
 
@@ -102,10 +175,7 @@ export function twilioSignatureMiddleware(
     return;
   }
 
-  const webhookUrl =
-    process.env.WEBHOOK_BASE_URL
-      ? `${process.env.WEBHOOK_BASE_URL}/api/whatsapp/webhook`
-      : `${req.protocol}://${req.get('host')}/api/whatsapp/webhook`;
+  const webhookUrl = resolveCanonicalWebhookUrl(req);
 
   const signature = req.headers['x-twilio-signature'] as string | undefined;
 
@@ -141,6 +211,17 @@ export async function handleWhatsAppWebhook(
 ): Promise<void> {
   const MessagingResponse = twilio.twiml.MessagingResponse;
   const twiml = new MessagingResponse();
+
+  // ── Replay protection: dedupe provider message ID ─────────────────────────
+  const messageSid: string | undefined =
+    (req.body.MessageSid as string | undefined) ||
+    (req.body.SmsMessageSid as string | undefined);
+
+  if (isDuplicateMessage(messageSid)) {
+    // Acknowledge without re-processing so Twilio stops retrying.
+    res.status(200).type('text/xml').send(twiml.toString());
+    return;
+  }
 
   // ── Extract message fields ────────────────────────────────────────────────
   const fromNumber: string = (req.body.From as string) || '';
@@ -244,206 +325,4 @@ export async function handleWhatsAppWebhook(
   // ── Verified users: enqueue intent job ───────────────────────────────────
   if (session.state === UserState.VERIFIED) {
     const wallet = getWallet(phoneHash);
-    if (!wallet) {
-      // Stale session — reset
-      updateState(phoneHash, UserState.UNVERIFIED);
-      twiml.message('Session expired. Send "hi" to re-verify.');
-      const outbound = twiml.toString();
-      await logMessageToDb(phoneHash, 'outbound', outbound);
-      res.type('text/xml').send(outbound);
-      return;
-    }
-
-    // Acknowledge immediately to stay within Twilio's 15 s window
-    twiml.message('⏳ Processing your request…');
-    const ack = twiml.toString();
-    await logMessageToDb(phoneHash, 'outbound', ack);
-    res.type('text/xml').send(ack);
-
-    // Enqueue intent for async processing
-    await intentQueue.add({
-      phoneHash,
-      fromNumber,
-      messageBody,
-      mediaUrl,
-      sessionState: session.state,
-    });
-    return;
-  }
-
-  // Fallback
-  twiml.message('Something went wrong. Please send "hi" to start over.');
-  res.type('text/xml').send(twiml.toString());
-}
-
-// ─────────────────────────────────────────────────────────
-// Bull worker — processes intent jobs
-// ─────────────────────────────────────────────────────────
-
-intentQueue.process(async (job) => {
-  const { phoneHash, fromNumber, messageBody } = job.data;
-
-  let replyText: string;
-  try {
-    replyText = await processVerifiedIntent(phoneHash, messageBody);
-  } catch (err) {
-    replyText =
-      '❌ An error occurred. Please try again in a few moments.';
-    console.error('[intentQueue] job failed:', err);
-  }
-
-  // Send reply via Twilio REST API (not TwiML, since we already sent the ack)
-  await twilioClient.messages.create({
-    from: TWILIO_WHATSAPP_FROM,
-    to: fromNumber,
-    body: replyText,
-  });
-
-  await logMessageToDb(phoneHash, 'outbound', replyText);
-});
-
-// ─────────────────────────────────────────────────────────
-// Intent processor for verified users
-// ─────────────────────────────────────────────────────────
-
-export async function processVerifiedIntent(
-  phoneHash: string,
-  messageBody: string,
-): Promise<string> {
-  const lower = messageBody.toLowerCase().trim();
-
-  // Balance / portfolio
-  if (
-    lower.includes('balance') ||
-    lower.includes('portfolio') ||
-    lower.includes('how much') ||
-    lower.includes('my account')
-  ) {
-    const portfolio = await getPortfolio(phoneHash);
-    return (
-      `💰 Your NeuroWealth Portfolio\n\n` +
-      `Balance: ${portfolio.balance.toFixed(2)} USDC ($${portfolio.usdEquivalent.toFixed(2)})\n` +
-      `Earnings today: +$${portfolio.dailyEarnings.toFixed(2)}\n` +
-      `Current APY: ${portfolio.apy}%\n` +
-      `Strategy: ${portfolio.strategy}`
-    );
-  }
-
-  // Deposit
-  const depositMatch = lower.match(/deposit\s+([\d.]+)/);
-  if (depositMatch) {
-    const amount = parseFloat(depositMatch[1]);
-    const strategyMatch = lower.match(/\b(conservative|balanced|growth)\b/);
-    const strategy = strategyMatch ? strategyMatch[1] : undefined;
-    const result = await handleDeposit(phoneHash, amount, strategy);
-    return `🤖 ${result.message}`;
-  }
-
-  // Withdraw all
-  if (
-    lower.includes('withdraw all') ||
-    lower.includes('withdraw everything')
-  ) {
-    const result = await handleWithdraw(phoneHash, undefined, true);
-    return `🤖 ${result.message}`;
-  }
-
-  // Withdraw amount
-  const withdrawMatch = lower.match(/withdraw\s+([\d.]+)/);
-  if (withdrawMatch) {
-    const amount = parseFloat(withdrawMatch[1]);
-    const result = await handleWithdraw(phoneHash, amount, false);
-    return `🤖 ${result.message}`;
-  }
-
-  // Strategy switch
-  const stratMatch = lower.match(
-    /switch\s+(?:to\s+)?(conservative|balanced|growth)/,
-  );
-  if (stratMatch) {
-    const strat = stratMatch[1];
-    return `✅ Strategy updated to ${strat.toUpperCase()}. The AI agent will rebalance on the next scheduled run.`;
-  }
-
-  // Earnings
-  if (lower.includes('earn') || lower.includes('yield') || lower.includes('apy')) {
-    const portfolio = await getPortfolio(phoneHash);
-    return (
-      `📈 Earnings Summary\n\n` +
-      `Today: +$${portfolio.dailyEarnings.toFixed(2)}\n` +
-      `Current APY: ${portfolio.apy}%\n` +
-      `Strategy: ${portfolio.strategy}`
-    );
-  }
-
-  // Greeting
-  if (lower === 'hi' || lower === 'hello' || lower === 'help') {
-    return (
-      `🤖 Hi! I'm your NeuroWealth AI Agent.\n\n` +
-      `Commands:\n` +
-      `• "balance" — view portfolio\n` +
-      `• "deposit 100 USDC" — deposit funds\n` +
-      `• "withdraw 50" — withdraw USDC\n` +
-      `• "switch to growth" — change strategy\n` +
-      `• "earnings" — view yield stats`
-    );
-  }
-
-  return (
-    `I didn't quite catch that. Try:\n` +
-    `• "deposit 50 USDC"\n` +
-    `• "what's my balance"\n` +
-    `• "withdraw all"\n` +
-    `• "switch to conservative"`
-  );
-}
-
-// ─────────────────────────────────────────────────────────
-// DB logging
-// ─────────────────────────────────────────────────────────
-
-// Lazy pg Pool — only created when DATABASE_URL is configured
-let _pgPool: import('pg').Pool | null = null;
-
-async function getDbPool(): Promise<import('pg').Pool | null> {
-  if (!process.env.DATABASE_URL) return null;
-  if (_pgPool) return _pgPool;
-  try {
-    const { Pool } = await import('pg');
-    _pgPool = new Pool({ connectionString: process.env.DATABASE_URL });
-    return _pgPool;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Log a message event to the database.
- * Stores the hashed phone number (never the raw number) for privacy.
- * Silently no-ops when DATABASE_URL is not configured.
- */
-async function logMessageToDb(
-  phoneHash: string,
-  direction: 'inbound' | 'outbound',
-  body: string,
-  mediaUrl?: string,
-): Promise<void> {
-  const pool = await getDbPool();
-  if (!pool) return;
-
-  try {
-    await pool.query(
-      `INSERT INTO whatsapp_message_logs
-         (phone_hash, direction, body_preview, media_url, created_at)
-       VALUES ($1, $2, $3, $4, NOW())`,
-      [
-        phoneHash,
-        direction,
-        body.substring(0, 500), // truncate to avoid oversized rows
-        mediaUrl ?? null,
-      ],
-    );
-  } catch (err) {
-    console.error('[webhook] DB log failed:', err);
-  }
-}
+    if (!wal

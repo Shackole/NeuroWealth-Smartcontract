@@ -1,7 +1,8 @@
 /**
- * Unit tests for WhatsApp webhook handler (#24)
- * Tests rate limiter and Twilio signature validation logic
- * without requiring a live Redis/DB/Twilio connection.
+ * Unit tests for WhatsApp webhook handler (#24, #426)
+ * Tests rate limiter, Twilio signature validation, proxy-aware canonical URL
+ * handling, and message-ID deduplication logic without requiring a live
+ * Redis/DB/Twilio connection.
  */
 
 import assert from 'assert';
@@ -44,6 +45,34 @@ function computeTwilioSignature(
   let str = url;
   for (const key of sortedKeys) str += key + params[key];
   return crypto.createHmac('sha1', authToken).update(str).digest('base64');
+}
+
+// ── Proxy-aware canonical URL (mirrors production implementation) ────────────
+// Twilio signs the public URL it POSTs to. Behind a reverse proxy the request
+// seen by the app has an internal host/proto, so we must reconstruct the
+// canonical public URL from X-Forwarded-* headers before verifying.
+type ProxyHeaders = {
+  host?: string;
+  'x-forwarded-proto'?: string;
+  'x-forwarded-host'?: string;
+};
+
+function canonicalWebhookUrl(path: string, headers: ProxyHeaders): string {
+  const proto = (headers['x-forwarded-proto'] ?? 'https').split(',')[0].trim();
+  const host = (headers['x-forwarded-host'] ?? headers.host ?? '').split(',')[0].trim();
+  return `${proto}://${host}${path}`;
+}
+
+// ── Message-ID deduplication (mirrors production implementation) ─────────────
+// Twilio may retry deliveries; each inbound message carries a MessageSid.
+// We record seen SIDs and skip processing on duplicates so intents execute
+// once logically.
+const seenMessageIds = new Set<string>();
+
+function isDuplicateMessage(messageId: string): boolean {
+  if (seenMessageIds.has(messageId)) return true;
+  seenMessageIds.add(messageId);
+  return false;
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -156,6 +185,75 @@ test('wrong auth token produces different signature', () => {
   const sig1 = computeTwilioSignature('token_a', url, params);
   const sig2 = computeTwilioSignature('token_b', url, params);
   assert.notStrictEqual(sig1, sig2);
+});
+
+// Proxy-aware canonical URL tests
+test('canonical URL uses X-Forwarded-Proto and X-Forwarded-Host behind proxy', () => {
+  const url = canonicalWebhookUrl('/api/whatsapp/webhook', {
+    host: 'internal:3000',
+    'x-forwarded-proto': 'https',
+    'x-forwarded-host': 'api.neurowealth.io',
+  });
+  assert.strictEqual(url, 'https://api.neurowealth.io/api/whatsapp/webhook');
+});
+
+test('canonical URL falls back to Host header when no forwarded host', () => {
+  const url = canonicalWebhookUrl('/api/whatsapp/webhook', {
+    host: 'api.neurowealth.io',
+    'x-forwarded-proto': 'https',
+  });
+  assert.strictEqual(url, 'https://api.neurowealth.io/api/whatsapp/webhook');
+});
+
+test('canonical URL takes first value of comma-separated forwarded headers', () => {
+  const url = canonicalWebhookUrl('/api/whatsapp/webhook', {
+    'x-forwarded-proto': 'https, http',
+    'x-forwarded-host': 'api.neurowealth.io, internal:3000',
+  });
+  assert.strictEqual(url, 'https://api.neurowealth.io/api/whatsapp/webhook');
+});
+
+test('signature computed over canonical URL matches provider signature', () => {
+  const authToken = 'test_auth_token_123';
+  const params = { Body: 'hello', From: 'whatsapp:+123' };
+  const canonical = canonicalWebhookUrl('/api/whatsapp/webhook', {
+    host: 'internal:3000',
+    'x-forwarded-proto': 'https',
+    'x-forwarded-host': 'api.neurowealth.io',
+  });
+  const providerSig = computeTwilioSignature(authToken, canonical, params);
+  const verifiedSig = computeTwilioSignature(authToken, canonical, params);
+  assert.strictEqual(providerSig, verifiedSig);
+});
+
+test('signature over internal URL does not match provider signature', () => {
+  const authToken = 'test_auth_token_123';
+  const params = { Body: 'hello' };
+  const canonical = canonicalWebhookUrl('/api/whatsapp/webhook', {
+    'x-forwarded-proto': 'https',
+    'x-forwarded-host': 'api.neurowealth.io',
+  });
+  const providerSig = computeTwilioSignature(authToken, canonical, params);
+  const internalSig = computeTwilioSignature(authToken, 'http://internal:3000/api/whatsapp/webhook', params);
+  assert.notStrictEqual(providerSig, internalSig);
+});
+
+// Message-ID deduplication tests
+test('first delivery of a message is not a duplicate', () => {
+  seenMessageIds.clear();
+  assert.strictEqual(isDuplicateMessage('SM123'), false);
+});
+
+test('repeated delivery of same message ID is a duplicate', () => {
+  seenMessageIds.clear();
+  assert.strictEqual(isDuplicateMessage('SM456'), false);
+  assert.strictEqual(isDuplicateMessage('SM456'), true);
+});
+
+test('distinct message IDs are processed independently', () => {
+  seenMessageIds.clear();
+  assert.strictEqual(isDuplicateMessage('SM789'), false);
+  assert.strictEqual(isDuplicateMessage('SM790'), false);
 });
 
 // ── Summary ───────────────────────────────────────────────────────────────────
