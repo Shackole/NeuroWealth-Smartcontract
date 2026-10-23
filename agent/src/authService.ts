@@ -96,9 +96,14 @@ export async function consumeNonce(
   address: string,
 ): Promise<string | null> {
   const key = `${NONCE_PREFIX}${address}`;
-  // Atomic GET-and-DELETE via pipeline
-  const [nonce] = await redis.pipeline().get(key).del(key).exec() as [[null, string | null], [null, number]];
-  return nonce[1];
+  // A pipeline is not atomic: concurrent verifications can both read the
+  // nonce before either DEL executes. Lua makes the consume a single operation.
+  const nonce = await redis.eval(
+    "local value = redis.call('get', KEYS[1]); if value then redis.call('del', KEYS[1]); end; return value",
+    1,
+    key,
+  );
+  return typeof nonce === 'string' ? nonce : null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -230,7 +235,6 @@ export function buildChallengeMessage(address: string, nonce: string): string {
     'NeuroWealth Authentication',
     `Address: ${address}`,
     `Nonce: ${nonce}`,
-    `Issued: ${new Date().toUTCString()}`,
     'Sign this message to prove ownership of your Stellar wallet.',
   ].join('\n');
 }
