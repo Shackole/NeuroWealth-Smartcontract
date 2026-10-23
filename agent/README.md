@@ -14,6 +14,7 @@ The NeuroWealth agent is an autonomous background service that continuously moni
 - **Rebalancing Scheduler** (`src/scheduler.ts`): time-based and event-driven rebalancing with gas awareness (#651, below).
 - **Metrics & Dashboard API** (`src/metrics.ts`, `src/metricsApi.ts`): performance-metrics aggregation + HTTP endpoints for the dashboard UI (#652).
 - **State Backup & Failover** (`src/stateBackup.ts`, `src/failover.ts`): persistent agent state, lease-based hot standby (#655, `docs/DISASTER_RECOVERY.md`).
+- **Service Recovery & Chain Reconciliation** (`src/serviceRecovery.ts`): idempotent queued transaction recovery, event checkpoint backfill, stroop-level chain accounting reconciliation, and data-gap gating after Redis/PostgreSQL interruptions (#527, `infra/README.md`).
 
 ---
 

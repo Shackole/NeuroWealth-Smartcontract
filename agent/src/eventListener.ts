@@ -13,6 +13,17 @@ export const server = new SorobanRpc.Server(rpcUrl);
 const VAULT_CONTRACT_ID = process.env.VAULT_CONTRACT_ID || '';
 
 let eventInterval: ReturnType<typeof setInterval> | null = null;
+let lastProcessedLedger = 0;
+
+export function getLastProcessedLedger(): number {
+  return lastProcessedLedger;
+}
+
+export function setLastProcessedLedger(ledger: number): void {
+  if (Number.isInteger(ledger) && ledger >= 0) {
+    lastProcessedLedger = ledger;
+  }
+}
 
 export function stopEventListener() {
   if (eventInterval) {
@@ -25,8 +36,10 @@ export function stopEventListener() {
 /**
  * Listens for on-chain deposit and withdraw events from the vault contract.
  * Detects new deposits within 5 seconds and triggers yield deployment.
+ * When `checkpointLedger` is provided (e.g., restored after a Redis/DB recovery),
+ * resumes from `checkpointLedger + 1` instead of skipping missed ledgers.
  */
-export async function startEventListener() {
+export async function startEventListener(checkpointLedger?: number) {
   if (!VAULT_CONTRACT_ID) {
     logger.warn('VAULT_CONTRACT_ID is not set. Event listener requires a contract ID to monitor.');
     return;
@@ -37,8 +50,15 @@ export async function startEventListener() {
       () => server.getLatestLedger(),
       'getLatestLedger',
     );
-    let startLedger = latestLedgerResponse.sequence;
-    logger.info({ startLedger }, 'Starting event listener');
+    let startLedger =
+      typeof checkpointLedger === 'number' && checkpointLedger > 0
+        ? checkpointLedger + 1
+        : latestLedgerResponse.sequence;
+    lastProcessedLedger = Math.max(lastProcessedLedger, startLedger - 1);
+    logger.info(
+      { startLedger, checkpointLedger: checkpointLedger ?? null, chainLatestLedger: latestLedgerResponse.sequence },
+      'Starting event listener',
+    );
 
     eventInterval = setInterval(async () => {
       try {
@@ -88,6 +108,7 @@ export async function startEventListener() {
           await processEventForAlerts(alertPayload);
 
           startLedger = Math.max(startLedger, event.ledger + 1);
+          lastProcessedLedger = Math.max(lastProcessedLedger, event.ledger);
         }
       } catch (error) {
         logger.error({ error: error instanceof Error ? error.message : error }, 'Error polling Soroban events');

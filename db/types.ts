@@ -58,3 +58,29 @@ export interface AuditLogRecord {
   details?: Record<string, any>;
   created_at: string;
 }
+
+export interface VaultEventRecord {
+  event_id: string;
+  event_type: 'deposit' | 'withdraw' | 'rebalance' | 'harvest';
+  ledger_sequence: number;
+  tx_hash?: string | null;
+  idempotency_key?: string | null;
+  amount_stroops: number;
+  shares_stroops: number;
+  created_at: string;
+}
+
+export interface QueuedTransactionRecord {
+  job_id: string;
+  idempotency_key: string;
+  action: 'deposit' | 'withdraw' | 'rebalance' | 'harvest';
+  amount_stroops: number;
+  network_passphrase: string;
+  contract_id: string;
+  authorized_actor: string;
+  required_role: 'user' | 'agent' | 'owner';
+  ledger_checkpoint: number;
+  status: 'queued' | 'in_flight' | 'confirmed' | 'skipped_duplicate' | 'blocked';
+  tx_hash?: string | null;
+  updated_at: string;
+}
