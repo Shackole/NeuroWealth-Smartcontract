@@ -13,7 +13,7 @@
  *   7. Failure state with human-readable error messages
  */
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useForm, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import {
@@ -35,17 +35,16 @@ import {
   type DepositFormValues,
   STRATEGY_OPTIONS,
   type Strategy,
+  MAX_DEPOSIT_USDC,
 } from '@/lib/depositSchema';
 import {
   fetchUsdcWalletBalance,
   previewDepositToShares,
   executeDeposit,
-  humanizeError,
   explorerUrl,
   fromRawUnits,
 } from '@/lib/vaultHelpers';
-import { useDialogFocus } from '@/lib/useDialogFocus';
-import { parseUsdcAmount } from '@/lib/moneyInput';
+import { getVaultErrorPresentation, type VaultErrorPresentation } from '@/lib/vaultErrors';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -113,8 +112,6 @@ const PreviewModal: React.FC<PreviewModalProps> = ({
   onCancel,
   isSigning,
 }) => {
-  const dialogRef = useRef<HTMLDivElement>(null);
-  useDialogFocus(dialogRef, true, isSigning ? undefined : onCancel);
   const meta = STRATEGY_META[strategy];
   const Icon: LucideIcon = meta.icon;
 
@@ -124,9 +121,8 @@ const PreviewModal: React.FC<PreviewModalProps> = ({
       role="dialog"
       aria-modal="true"
       aria-labelledby="preview-modal-title"
-      tabIndex={-1}
     >
-      <div ref={dialogRef} className="w-full max-w-sm rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl animate-in fade-in zoom-in duration-150">
+      <div className="w-full max-w-sm rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl animate-in fade-in zoom-in duration-150">
         <div className="flex items-center justify-between mb-5">
           <h3 id="preview-modal-title" className="text-base font-bold text-white">
             Transaction Preview
@@ -173,8 +169,8 @@ const PreviewModal: React.FC<PreviewModalProps> = ({
             )}
           </div>
           <div className="flex justify-between items-center text-slate-300">
-            <span className="text-slate-400">Network Fee</span>
-            <span className="text-slate-400">&lt; 0.00001 XLM</span>
+            <span className="text-slate-400">Network fee (separate)</span>
+            <span className="text-slate-400">Paid in XLM; Freighter shows the final fee</span>
           </div>
         </div>
 
@@ -279,20 +275,26 @@ const SuccessState: React.FC<SuccessStateProps> = ({
 // ─── Error State ──────────────────────────────────────────────────────────────
 
 interface ErrorStateProps {
-  message: string;
-  onRetry: () => void;
+  presentation: VaultErrorPresentation;
+  onReview: () => void;
   onClose: () => void;
 }
 
-const ErrorState: React.FC<ErrorStateProps> = ({ message, onRetry, onClose }) => (
+const ErrorState: React.FC<ErrorStateProps> = ({ presentation, onReview, onClose }) => (
   <div className="text-center py-4" role="alert" aria-live="assertive">
     <div className="h-16 w-16 bg-red-500/20 text-red-400 rounded-full flex items-center justify-center mx-auto mb-4 border border-red-500/30">
       <AlertTriangle size={36} aria-hidden="true" />
     </div>
-    <h3 className="text-xl font-bold text-white mb-2">Transaction Failed</h3>
+    <h3 className="text-xl font-bold text-white mb-2">{presentation.title}</h3>
     <p className="text-sm text-slate-300 bg-slate-900/80 rounded-xl border border-slate-700 p-3 mb-6 text-left leading-relaxed">
-      {message}
+      {presentation.message} {presentation.action}
     </p>
+    {presentation.technicalDetails && (
+      <details className="mb-4 text-left text-xs text-slate-500">
+        <summary className="cursor-pointer">Error details</summary>
+        <code className="mt-2 block break-all">{presentation.technicalDetails}</code>
+      </details>
+    )}
     <div className="flex gap-3">
       <button
         onClick={onClose}
@@ -301,10 +303,10 @@ const ErrorState: React.FC<ErrorStateProps> = ({ message, onRetry, onClose }) =>
         Close
       </button>
       <button
-        onClick={onRetry}
+        onClick={onReview}
         className="flex-1 py-3 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-slate-950 font-bold transition-all"
       >
-        Try Again
+        {presentation.retryable ? 'Create a new preview' : 'Review amount'}
       </button>
     </div>
   </div>
@@ -364,12 +366,6 @@ export const DepositForm: React.FC<DepositFormProps> = ({
   userPublicKey,
   onDepositSuccess,
 }) => {
-  const dialogRef = useRef<HTMLDivElement>(null);
-  const operationGeneration = useRef(0);
-  const previewGeneration = useRef(0);
-  const lastAccount = useRef(userPublicKey);
-  const activeAccount = useRef(userPublicKey);
-  activeAccount.current = userPublicKey;
   // Form
   const {
     register,
@@ -397,35 +393,7 @@ export const DepositForm: React.FC<DepositFormProps> = ({
   const [previewLoading, setPreviewLoading] = useState<boolean>(false);
   const [signingStep, setSigningStep] = useState<number>(0);
   const [depositResult, setDepositResult] = useState<{ depositHash: string; strategyHash?: string } | null>(null);
-  const [errorMessage, setErrorMessage] = useState<string>('');
-
-  const handleClose = useCallback(() => {
-    operationGeneration.current += 1;
-    previewGeneration.current += 1;
-    reset();
-    setView('form');
-    setShowPreview(false);
-    setEstimatedShares(null);
-    setDepositResult(null);
-    setErrorMessage('');
-    setSigningStep(0);
-    onClose();
-  }, [onClose, reset]);
-  useDialogFocus(dialogRef, isOpen && !showPreview, handleClose);
-
-  useEffect(() => {
-    if (lastAccount.current === userPublicKey) return;
-    lastAccount.current = userPublicKey;
-    operationGeneration.current += 1;
-    previewGeneration.current += 1;
-    reset({ amount: '', strategy: 'Balanced' });
-    setView('form');
-    setShowPreview(false);
-    setEstimatedShares(null);
-    setDepositResult(null);
-    setErrorMessage('');
-    setUsdcBalance(0);
-  }, [userPublicKey, reset]);
+  const [errorPresentation, setErrorPresentation] = useState<VaultErrorPresentation | null>(null);
 
   // ── Load USDC balance when modal opens ───────────────────────────────────
   useEffect(() => {
@@ -451,37 +419,34 @@ export const DepositForm: React.FC<DepositFormProps> = ({
 
   // ── Fetch preview shares when amount changes ─────────────────────────────
   const fetchPreview = useCallback(
-    async (amount: string, generation: number) => {
-      const num = parseUsdcAmount(amount);
-      if (num === null || num <= 0 || !userPublicKey) {
+    async (amount: string) => {
+      const num = parseFloat(amount);
+      if (!num || num <= 0 || !userPublicKey) {
         setEstimatedShares(null);
         return;
       }
       setPreviewLoading(true);
       try {
         const shares = await previewDepositToShares(userPublicKey, num);
-        if (generation !== previewGeneration.current) return;
         setEstimatedShares(shares);
       } catch {
-        if (generation !== previewGeneration.current) return;
         setEstimatedShares(null);
       } finally {
-        if (generation === previewGeneration.current) setPreviewLoading(false);
+        setPreviewLoading(false);
       }
     },
     [userPublicKey],
   );
 
   useEffect(() => {
-    const generation = ++previewGeneration.current;
-    const timer = setTimeout(() => fetchPreview(watchedAmount, generation), 600);
+    const timer = setTimeout(() => fetchPreview(watchedAmount), 600);
     return () => clearTimeout(timer);
   }, [watchedAmount, fetchPreview]);
 
   // ── Max button ────────────────────────────────────────────────────────────
   const handleMax = () => {
-    const maxAllowed = Math.min(usdcBalance, 10_000);
-    setValue('amount', maxAllowed > 0 ? maxAllowed.toFixed(2) : '', {
+    const maxAllowed = Math.min(usdcBalance, MAX_DEPOSIT_USDC);
+    setValue('amount', maxAllowed > 0 ? maxAllowed.toFixed(7) : '', {
       shouldValidate: true,
     });
   };
@@ -493,55 +458,57 @@ export const DepositForm: React.FC<DepositFormProps> = ({
 
   // ── Execute deposit ───────────────────────────────────────────────────────
   const handleConfirmDeposit = async () => {
-    const account = userPublicKey;
-    const generation = ++operationGeneration.current;
     setShowPreview(false);
     setView('signing');
     setSigningStep(0);
 
-    const amount = parseUsdcAmount(watchedAmount);
-    if (amount === null) return;
+    const amount = parseFloat(watchedAmount);
     const strategy = watchedStrategy;
 
-    let progressInterval: ReturnType<typeof setInterval> | undefined;
     try {
       // Simulate progress steps during signing
-      progressInterval = setInterval(() => {
+      const progressInterval = setInterval(() => {
         setSigningStep((s) => Math.min(s + 1, SIGNING_STEPS.length - 2));
       }, 2500);
 
-      const result = await executeDeposit(account, amount, strategy);
+      const result = await executeDeposit(userPublicKey, amount, strategy);
 
       clearInterval(progressInterval);
-      if (generation !== operationGeneration.current || account !== activeAccount.current) return;
       setSigningStep(SIGNING_STEPS.length - 1);
 
       // Brief pause so the last step message is visible
       await new Promise((r) => setTimeout(r, 400));
-      if (generation !== operationGeneration.current || account !== activeAccount.current) return;
 
       setDepositResult(result);
       setView('success');
       onDepositSuccess?.();
     } catch (err) {
-      if (generation !== operationGeneration.current || account !== activeAccount.current) return;
-      setErrorMessage(humanizeError(err));
+      setErrorPresentation(getVaultErrorPresentation(err));
       setView('error');
-    } finally {
-      if (progressInterval) clearInterval(progressInterval);
     }
   };
 
   // ── Reset and close ───────────────────────────────────────────────────────
+  const handleClose = () => {
+    reset();
+    setView('form');
+    setShowPreview(false);
+    setEstimatedShares(null);
+    setDepositResult(null);
+    setErrorPresentation(null);
+    setSigningStep(0);
+    onClose();
+  };
+
   const handleRetry = () => {
     setView('form');
-    setErrorMessage('');
+    setErrorPresentation(null);
     setSigningStep(0);
   };
 
   if (!isOpen) return null;
 
-  const numAmount = parseUsdcAmount(watchedAmount) ?? 0;
+  const numAmount = parseFloat(watchedAmount) || 0;
   const strategyMeta = STRATEGY_META[watchedStrategy];
   const StrategyIcon = strategyMeta.icon;
 
@@ -559,8 +526,6 @@ export const DepositForm: React.FC<DepositFormProps> = ({
           role="dialog"
           aria-modal="true"
           aria-labelledby="deposit-modal-title"
-          tabIndex={-1}
-          ref={dialogRef}
         >
           {/* Close button — visible except during signing */}
           {view !== 'signing' && (
@@ -605,9 +570,9 @@ export const DepositForm: React.FC<DepositFormProps> = ({
                           type="button"
                           onClick={handleMax}
                           className="text-emerald-400 hover:text-emerald-300 underline underline-offset-2 transition-colors"
-                          aria-label={`Set maximum amount: ${usdcBalance.toFixed(2)} USDC`}
+                          aria-label={`Set maximum amount: ${usdcBalance.toFixed(7)} USDC`}
                         >
-                          {usdcBalance.toFixed(2)} USDC
+                          {usdcBalance.toFixed(7)} USDC
                         </button>
                       </>
                     )}
@@ -618,9 +583,9 @@ export const DepositForm: React.FC<DepositFormProps> = ({
                   <input
                     id="deposit-amount"
                     type="number"
-                    step="0.01"
+                    step="0.0000001"
                     min="1"
-                    max="10000"
+                    max={MAX_DEPOSIT_USDC}
                     placeholder="0.00"
                     className={`w-full bg-slate-900 border rounded-xl py-3 px-4 pr-20 text-white font-mono text-lg focus:outline-none transition-colors ${
                       errors.amount
@@ -640,6 +605,10 @@ export const DepositForm: React.FC<DepositFormProps> = ({
                     MAX
                   </button>
                 </div>
+
+                <p className="mt-1.5 text-xs text-slate-500">
+                  Up to 7 decimal places. 0.0000001 USDC is the smallest unit; amounts are not silently rounded.
+                </p>
 
                 {errors.amount && (
                   <p
@@ -714,8 +683,8 @@ export const DepositForm: React.FC<DepositFormProps> = ({
                   </span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-slate-400">Network Fee</span>
-                  <span className="text-slate-400">&lt; 0.00001 XLM</span>
+                  <span className="text-slate-400">Network fee (separate)</span>
+                  <span className="text-slate-400">Paid in XLM; Freighter shows the final fee</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-slate-400">Transactions</span>
@@ -758,8 +727,8 @@ export const DepositForm: React.FC<DepositFormProps> = ({
           {/* ── Error state ───────────────────────────────────────────────── */}
           {view === 'error' && (
             <ErrorState
-              message={errorMessage}
-              onRetry={handleRetry}
+              presentation={errorPresentation ?? getVaultErrorPresentation(null)}
+              onReview={handleRetry}
               onClose={handleClose}
             />
           )}

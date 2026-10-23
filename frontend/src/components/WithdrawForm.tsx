@@ -1,9 +1,8 @@
 'use client';
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useState } from 'react';
 import { ArrowUpRight, Loader2, CheckCircle2 } from 'lucide-react';
 import { withdrawFromVault, withdrawAllFromVault } from '@/lib/contract';
-import { parseUsdcAmount } from '@/lib/moneyInput';
 
 export interface WithdrawFormProps {
   userPublicKey: string | null;
@@ -23,24 +22,11 @@ export const WithdrawForm: React.FC<WithdrawFormProps> = ({
   const [actionType, setActionType] = useState<'withdraw' | 'withdraw_all' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [successTx, setSuccessTx] = useState<string | null>(null);
-  const operationGeneration = useRef(0);
-  const currentAccount = useRef(userPublicKey);
 
-  useEffect(() => {
-    if (currentAccount.current === userPublicKey) return;
-    currentAccount.current = userPublicKey;
-    operationGeneration.current += 1;
-    setAmount('');
-    setLoading(false);
-    setActionType(null);
-    setError(null);
-    setSuccessTx(null);
-  }, [userPublicKey]);
-
-  const parsedAmount = parseUsdcAmount(amount);
-  const numAmount = parsedAmount ?? 0;
-  const isPositive = parsedAmount !== null && numAmount > 0;
-  const isWithinBalance = isPositive && numAmount <= balance;
+  const numAmount = parseFloat(amount);
+  const hasExcessPrecision = /\.\d{8,}/.test(amount);
+  const isPositive = !isNaN(numAmount) && numAmount > 0;
+  const isWithinBalance = isPositive && numAmount <= balance && !hasExcessPrecision;
   const canWithdrawPartial = isWithinBalance && !!userPublicKey;
   const canWithdrawAll = balance > 0 && !!userPublicKey;
 
@@ -53,24 +39,18 @@ export const WithdrawForm: React.FC<WithdrawFormProps> = ({
     setLoading(true);
     setActionType('withdraw');
     setError(null);
-    const account = userPublicKey;
-    const generation = ++operationGeneration.current;
 
     try {
-      const res = await withdrawFromVault(account!, numAmount);
-      if (generation !== operationGeneration.current || account !== currentAccount.current) return;
+      const res = await withdrawFromVault(userPublicKey!, numAmount);
       if (res.success && res.txHash) {
         setSuccessTx(res.txHash);
         if (onSuccess) onSuccess(res.txHash);
       }
     } catch (err: any) {
-      if (generation !== operationGeneration.current || account !== currentAccount.current) return;
       setError(err?.message || 'Withdrawal failed');
     } finally {
-      if (generation === operationGeneration.current) {
-        setLoading(false);
-        setActionType(null);
-      }
+      setLoading(false);
+      setActionType(null);
     }
   };
 
@@ -80,24 +60,18 @@ export const WithdrawForm: React.FC<WithdrawFormProps> = ({
     setLoading(true);
     setActionType('withdraw_all');
     setError(null);
-    const account = userPublicKey;
-    const generation = ++operationGeneration.current;
 
     try {
-      const res = await withdrawAllFromVault(account!);
-      if (generation !== operationGeneration.current || account !== currentAccount.current) return;
+      const res = await withdrawAllFromVault(userPublicKey!);
       if (res.success && res.txHash) {
         setSuccessTx(res.txHash);
         if (onSuccess) onSuccess(res.txHash);
       }
     } catch (err: any) {
-      if (generation !== operationGeneration.current || account !== currentAccount.current) return;
       setError(err?.message || 'Withdraw All failed');
     } finally {
-      if (generation === operationGeneration.current) {
-        setLoading(false);
-        setActionType(null);
-      }
+      setLoading(false);
+      setActionType(null);
     }
   };
 
@@ -122,30 +96,40 @@ export const WithdrawForm: React.FC<WithdrawFormProps> = ({
       <div>
         <div className="flex justify-between text-xs text-slate-400 mb-1 font-medium">
           <label htmlFor="withdraw-amount-input">Amount (USDC)</label>
-          <span>Available: {balance.toFixed(2)} USDC</span>
+          <span>Available: {balance.toFixed(7)} USDC</span>
         </div>
         <div className="relative">
           <input
             id="withdraw-amount-input"
-            type="text"
-            inputMode="decimal"
+            type="number"
+            step="0.0000001"
+            min="0.01"
+            max={balance}
             value={amount}
             onChange={(e) => setAmount(e.target.value)}
             placeholder="0.00"
             aria-label="Withdraw Amount"
             aria-invalid={amount !== '' && !isWithinBalance}
-            aria-describedby={error ? 'withdraw-error' : undefined}
+            aria-describedby={error ? 'withdraw-error' : hasExcessPrecision ? 'withdraw-precision-error' : undefined}
             className="w-full bg-slate-900 border border-slate-700 rounded-xl py-2.5 px-3 text-white font-mono text-base focus:outline-none focus:border-indigo-500 transition-colors"
           />
           <button
             type="button"
-            onClick={() => setAmount(balance.toString())}
+            onClick={() => setAmount(balance.toFixed(7))}
             aria-label="Set maximum withdraw amount"
             className="absolute right-2.5 top-2.5 text-xs font-semibold text-indigo-400 hover:text-indigo-300 bg-indigo-500/10 px-2 py-0.5 rounded"
           >
             MAX
           </button>
         </div>
+        <p className="mt-1.5 text-xs text-slate-500">
+          Up to 7 decimal places. 0.0000001 USDC is the smallest unit; amounts are not silently rounded.
+        </p>
+        {hasExcessPrecision && (
+          <p id="withdraw-precision-error" className="mt-1 text-xs text-rose-400" role="alert">
+            Use no more than 7 decimal places; the amount was not rounded.
+          </p>
+        )}
       </div>
 
       {/* Preview Section */}
@@ -163,8 +147,8 @@ export const WithdrawForm: React.FC<WithdrawFormProps> = ({
           <span className="text-indigo-400">{estimatedSharesBurned} NV-SHARES</span>
         </div>
         <div className="flex justify-between">
-          <span className="text-slate-400">Network Fee:</span>
-          <span className="text-slate-400">&lt; 0.00001 XLM</span>
+          <span className="text-slate-400">Network fee (separate):</span>
+          <span className="text-slate-400">Paid in XLM; wallet shows the final fee</span>
         </div>
       </div>
 

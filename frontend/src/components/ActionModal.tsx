@@ -1,13 +1,10 @@
 'use client';
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect } from 'react';
 import { X, ArrowDownLeft, ArrowUpRight, Loader2, CheckCircle2, RefreshCw } from 'lucide-react';
 import { signWithFreighter } from '@/lib/freighter';
 import { fetchVaultCapState } from '@/lib/stellar';
 import { VaultCapIndicator, VaultCapData } from '@/components/VaultCapIndicator';
-import { useDialogFocus } from '@/lib/useDialogFocus';
-import { useTranslations } from 'next-intl';
-import { parseUsdcAmount } from '@/lib/moneyInput';
 
 interface ActionModalProps {
   isOpen: boolean;
@@ -32,22 +29,12 @@ export const ActionModal: React.FC<ActionModalProps> = ({
   exchangeRate,
   embedded = false,
 }) => {
-  const t = useTranslations('ActionModal');
   const [amount, setAmount] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(false);
   const [txSuccess, setTxSuccess] = useState<boolean>(false);
   const [txHash, setTxHash] = useState<string>('');
   const [capData, setCapData] = useState<VaultCapData | null>(null);
   const [capLoading, setCapLoading] = useState<boolean>(false);
-  const dialogRef = useRef<HTMLDivElement>(null);
-
-  const handleResetAndClose = useCallback(() => {
-    setAmount('');
-    setTxSuccess(false);
-    setTxHash('');
-    onClose();
-  }, [onClose]);
-  useDialogFocus(dialogRef, isOpen && !embedded, handleResetAndClose);
 
   // Refresh cap data each time the deposit modal is opened
   useEffect(() => {
@@ -61,10 +48,8 @@ export const ActionModal: React.FC<ActionModalProps> = ({
 
   if (!isOpen) return null;
 
-  const parsedAmount = parseUsdcAmount(amount);
-  const numAmount = parsedAmount ?? 0;
-  const maximumAmount = type === 'withdraw' ? balance : Math.min(userRemaining ?? 10_000, 10_000);
-  const amountOutOfRange = parsedAmount !== null && (numAmount < 1 || numAmount > maximumAmount);
+  const numAmount = parseFloat(amount) || 0;
+  const hasExcessPrecision = /\.\d{8,}/.test(amount);
   const estimatedShares = (numAmount / exchangeRate).toFixed(4);
 
   // Deposit is disabled if TVL cap is reached or user personal cap is reached
@@ -79,7 +64,7 @@ export const ActionModal: React.FC<ActionModalProps> = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!userPublicKey || numAmount <= 0 || depositBlocked) return;
+    if (!userPublicKey || numAmount <= 0 || hasExcessPrecision || depositBlocked) return;
 
     setLoading(true);
     setTxSuccess(false);
@@ -98,6 +83,13 @@ export const ActionModal: React.FC<ActionModalProps> = ({
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleResetAndClose = () => {
+    setAmount('');
+    setTxSuccess(false);
+    setTxHash('');
+    onClose();
   };
 
   const refreshCap = () => {
@@ -154,9 +146,11 @@ export const ActionModal: React.FC<ActionModalProps> = ({
               </div>
             )}
             <div>
-              <h3 className="text-lg font-bold text-white">{t(type === 'deposit' ? 'depositTitle' : 'withdrawTitle')}</h3>
+              <h3 className="text-lg font-bold text-white capitalize">{type} USDC</h3>
               <p className="text-xs text-slate-400">
-                {t(type === 'deposit' ? 'depositSubtitle' : 'withdrawSubtitle')}
+                {type === 'deposit'
+                  ? 'Mint shares in Soroban vault'
+                  : 'Burn shares & withdraw USDC'}
               </p>
             </div>
           </div>
@@ -193,22 +187,25 @@ export const ActionModal: React.FC<ActionModalProps> = ({
 
           <div className="mb-4">
             <div className="flex justify-between text-xs text-slate-400 mb-1.5 font-medium">
-              <label htmlFor="transaction-amount">{t('amountLabel')}</label>
+              <span>Amount (USDC)</span>
               <span>
                 {type === 'deposit' && userRemaining !== undefined
-                  ? `${t('capRemaining')}: ${userRemaining.toLocaleString('en-US', { maximumFractionDigits: 2 })} USDC`
-                  : `${t('available')}: ${balance.toFixed(2)} USDC`}
+                  ? `Cap remaining: ${userRemaining.toLocaleString('en-US', { maximumFractionDigits: 2 })} USDC`
+                  : `Available: ${balance.toFixed(7)} USDC`}
               </span>
             </div>
             <div className="relative">
               <input
-                id="transaction-amount"
-                type="text"
-                inputMode="decimal"
-                aria-describedby={amount && (parsedAmount === null || amountOutOfRange)
-                  ? 'transaction-amount-help transaction-amount-error'
-                  : 'transaction-amount-help'}
-                aria-invalid={amount !== '' && (parsedAmount === null || amountOutOfRange)}
+                type="number"
+                step="0.0000001"
+                min="1"
+                max={
+                  type === 'withdraw'
+                    ? balance
+                    : userRemaining !== undefined
+                    ? userRemaining
+                    : 10000
+                }
                 value={amount}
                 onChange={(e) => setAmount(e.target.value)}
                 placeholder="0.00"
@@ -221,7 +218,7 @@ export const ActionModal: React.FC<ActionModalProps> = ({
                 onClick={() =>
                   setAmount(
                     type === 'withdraw'
-                      ? balance.toString()
+                      ? balance.toFixed(7)
                       : userRemaining !== undefined
                       ? String(Math.min(userRemaining, 100))
                       : '100'
@@ -230,13 +227,15 @@ export const ActionModal: React.FC<ActionModalProps> = ({
                 disabled={depositBlocked}
                 className="absolute right-3 top-3 text-xs font-semibold text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 px-2 py-1 rounded disabled:opacity-30 disabled:cursor-not-allowed"
               >
-                {t('max')}
+                MAX
               </button>
             </div>
-            <p id="transaction-amount-help" className="mt-1 text-xs text-slate-500">{t('decimalHelp')}</p>
-            {amount !== '' && (parsedAmount === null || amountOutOfRange) && (
-              <p id="transaction-amount-error" role="alert" className="mt-1 text-xs text-rose-400">
-                {parsedAmount === null ? t('invalidAmount') : t('amountOutOfRange')}
+            <p className="mt-1.5 text-xs text-slate-500">
+              Up to 7 decimal places. 0.0000001 USDC is the smallest unit; amounts are not silently rounded.
+            </p>
+            {hasExcessPrecision && (
+              <p className="mt-1 text-xs text-red-400" role="alert">
+                Use no more than 7 decimal places; the amount was not rounded.
               </p>
             )}
           </div>
@@ -251,14 +250,14 @@ export const ActionModal: React.FC<ActionModalProps> = ({
               <span className="text-emerald-400">{estimatedShares} NV-SHARES</span>
             </div>
             <div className="flex justify-between">
-              <span className="text-slate-400">Network Fee:</span>
-              <span className="text-slate-400">&lt; 0.00001 XLM</span>
+              <span className="text-slate-400">Network fee (separate):</span>
+              <span className="text-slate-400">Paid in XLM; Freighter shows the final fee</span>
             </div>
           </div>
 
           <button
             type="submit"
-            disabled={loading || parsedAmount === null || amountOutOfRange || depositBlocked}
+            disabled={loading || numAmount <= 0 || hasExcessPrecision || depositBlocked}
             className="w-full flex items-center justify-center gap-2 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-slate-950 font-bold py-3.5 rounded-xl transition-all shadow-glow-emerald disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {loading ? (
@@ -269,7 +268,7 @@ export const ActionModal: React.FC<ActionModalProps> = ({
             ) : depositBlocked ? (
               <span>Deposits Unavailable</span>
             ) : (
-                <span>{t(type === 'deposit' ? 'confirmDeposit' : 'confirmWithdraw')}</span>
+              <span>Confirm {type === 'deposit' ? 'Deposit' : 'Withdrawal'}</span>
             )}
           </button>
         </form>
@@ -289,8 +288,6 @@ export const ActionModal: React.FC<ActionModalProps> = ({
       role="dialog"
       aria-modal="true"
       aria-label={type === 'deposit' ? 'Deposit USDC' : 'Withdraw USDC'}
-      ref={dialogRef}
-      tabIndex={-1}
     >
       <div className="glass-panel w-full max-w-md rounded-2xl p-6 relative border border-slate-700 shadow-2xl animate-in fade-in zoom-in duration-200">
         {inner}
