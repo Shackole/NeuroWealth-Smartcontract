@@ -474,7 +474,7 @@ Only a real network run proves the full cycle.
 - [ ] **C2.** Install new WASM on testnet; capture hash.
 - [ ] **C3.** `schedule_upgrade` with that hash; note `effective_ledger`.
 - [ ] **C4.** Wait 17,280 ledgers (~24 h). Do not shorten the constant.
-- [ ] **C5.** `execute_upgrade` once `current_ledger >= effective_ledger`; `UpgradedEvent` emitted.
+- [ ] **C5.** At `current_ledger == effective_ledger`, execute with owner authorization and, if configured, guardian authorization bound to the same pending hash; `UpgradedEvent` emitted.
 - [ ] **C6.** `get_version()` returns V + 1.
 - [ ] **C7.** `get_pending_upgrade` returns `null` after execution.
 - [ ] **C8.** Storage survived: `get_total_assets()`, `get_total_shares()`, `get_owner()`, `get_agent()`, sample `get_shares(user)` match pre-upgrade values.

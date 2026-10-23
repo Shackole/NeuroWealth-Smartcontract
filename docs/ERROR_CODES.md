@@ -788,9 +788,12 @@ pending.
 **Conditions**:
 - `update_agent(new_agent)` called while `PendingAgent` key already exists
 - `schedule_upgrade(wasm_hash)` called while `PendingUpgradeHash` already exists
+- `set_guardian(new_guardian)` or `remove_guardian()` called while
+  `PendingUpgradeHash` exists
 
 **Resolution**: Cancel the existing proposal with `cancel_agent_update()` or
-`cancel_upgrade()` before scheduling a new one.
+`cancel_upgrade()` before scheduling a new one or changing guardian
+configuration.
 
 ---
 

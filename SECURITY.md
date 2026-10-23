@@ -50,7 +50,8 @@ The Owner key is the primary administrative authority of the contract. As mandat
   - Configure deposit safety caps (`set_caps`, `set_tvl_cap`, `set_user_deposit_cap`, `set_deposit_limits`).
   - Set rebalance cooldowns and approval TTLs (`set_rebalance_cooldown`, `set_approval_ttl`).
   - Initiate and execute timelocked AI agent rotations (`update_agent`, `confirm_agent_update`, `cancel_agent_update`).
-  - Schedule, execute, or cancel contract WASM upgrades behind a 24-hour timelock (`schedule_upgrade`, `execute_upgrade`, `cancel_upgrade`).
+  - Schedule or cancel contract WASM upgrades; execute a pending upgrade after 17,280 ledgers only with owner authorization and, when configured at scheduling time, the guardian co-signature bound to that exact WASM hash (`schedule_upgrade`, `execute_upgrade`, `cancel_upgrade`).
+  - Set or remove the guardian only when no upgrade is pending. Removal is owner-only and applies to future proposals; cancel a pending proposal before rotating/removing the guardian.
   - Configure whitelisted external protocol pool addresses (`set_blend_pool`, `set_dex_pool`).
   - Initiate and complete ownership transfers (`transfer_ownership`, `accept_ownership`).
   - Execute emergency yield harvests during agent rotation (`emergency_harvest`).
@@ -199,6 +200,8 @@ The AI agent can move funds between protocols via `rebalance()`, but is constrai
 
 The contract owner can upgrade the contract code. To protect against malicious or accidental instant code changes, upgrade risk is mitigated via a mandatory two-step timelock mechanism:
 - **Two-Step Timelock**: Upgrades must first be scheduled via `schedule_upgrade(new_wasm_hash)`, initiating a timelock delay before `execute_upgrade()` can be called.
+- **Hash-Bound Authorization**: At execution, the owner and any configured guardian must authorize the exact pending WASM hash. A signature authorizing another hash cannot authorize this proposal.
+- **Guardian Changes During a Proposal**: `set_guardian` and `remove_guardian` fail while an upgrade is pending. To rotate or remove the guardian, the owner must first cancel that proposal; a later proposal starts a fresh 24-hour delay. With no guardian configured, future upgrades require owner authorization only.
 - **Cancellation Window**: During the timelock window, the owner or security monitoring can invoke `cancel_upgrade()` to abort a compromised or erroneous upgrade proposal.
 - **Owner Multi-Sig Recommended**: For mainnet deployment, owner authority should be held by a multi-sig account.
 

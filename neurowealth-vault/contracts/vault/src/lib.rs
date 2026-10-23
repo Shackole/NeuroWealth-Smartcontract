@@ -6781,9 +6781,9 @@ impl NeuroWealthVault {
     /// The guardian key has **no other privileges**: it cannot pause, rebalance,
     /// change configuration, or perform any owner-only action.
     ///
-    /// Only the owner can call this function (no timelock required). Guardian
-    /// key rotation requires only the owner, so it is fast and does not risk
-    /// locking out legitimate upgrades.
+    /// Only the owner can call this function. Guardian changes are rejected
+    /// while an upgrade proposal is pending so they cannot change the
+    /// co-signature required for that proposal.
     ///
     /// # Arguments
     ///
@@ -6797,9 +6797,15 @@ impl NeuroWealthVault {
     /// # Panics
     ///
     /// - [`VaultError::CallerIsNotOwner`] if the caller is not the owner.
+    /// - [`VaultError::TimelockAlreadyPending`] if an upgrade is pending.
     pub fn set_guardian(env: Env, new_guardian: Address) {
         Self::require_initialized(&env);
         Self::require_is_owner(&env);
+        Self::require(
+            &env,
+            !env.storage().instance().has(&DataKey::PendingUpgradeHash),
+            VaultError::TimelockAlreadyPending,
+        );
 
         let old_guardian: Option<Address> = env
             .storage()
@@ -6823,9 +6829,10 @@ impl NeuroWealthVault {
 
     /// Removes the guardian requirement from `execute_upgrade`.
     ///
-    /// After calling this, `execute_upgrade` reverts to single-owner operation.
-    /// This is the emergency path if the guardian key is lost and upgrades need
-    /// to be applied before a new guardian key is available.
+    /// After calling this, future `execute_upgrade` calls use owner-only
+    /// authorization. Removal is rejected while an upgrade is pending; the
+    /// owner must cancel that proposal first. Any replacement proposal starts
+    /// a fresh timelock.
     ///
     /// Only the owner can call this.
     ///
@@ -6836,9 +6843,15 @@ impl NeuroWealthVault {
     /// # Panics
     ///
     /// - [`VaultError::CallerIsNotOwner`] if the caller is not the owner.
+    /// - [`VaultError::TimelockAlreadyPending`] if an upgrade is pending.
     pub fn remove_guardian(env: Env) {
         Self::require_initialized(&env);
         Self::require_is_owner(&env);
+        Self::require(
+            &env,
+            !env.storage().instance().has(&DataKey::PendingUpgradeHash),
+            VaultError::TimelockAlreadyPending,
+        );
 
         let old_guardian: Option<Address> = env
             .storage()
@@ -7733,6 +7746,9 @@ impl NeuroWealthVault {
     /// Executes a scheduled upgrade after the timelock has elapsed (step 2 of 2). (#316)
     ///
     /// Can only be called once `env.ledger().sequence() >= UpgradeTimelockExpiry`.
+    /// The owner and configured guardian must each authorize the exact pending
+    /// WASM hash, preventing an authorization for a previous hash from
+    /// authorizing a replacement proposal.
     /// On success the pending WASM hash is activated, the contract `Version` is
     /// incremented, and the pending proposal is cleared. All storage state (user
     /// balances, configuration, owner, agent) is preserved across the upgrade.
@@ -7740,7 +7756,7 @@ impl NeuroWealthVault {
     /// # Arguments
     ///
     /// * `env` - The Soroban environment.
-    /// * `owner` - The owner address (must authorize).
+    /// * `owner` - The owner address (must authorize the pending hash).
     ///
     /// # Events
     ///
@@ -7751,36 +7767,44 @@ impl NeuroWealthVault {
     ///
     /// - If the vault is paused.
     /// - If the caller is not the stored owner.
+    /// - If the configured guardian does not authorize the pending hash.
     /// - If no pending upgrade exists (`NoTimelockPending`).
     /// - If the timelock delay has not yet elapsed (`TimelockNotExpired`).
     /// - If the pending hash does not correspond to an uploaded WASM binary.
     pub fn execute_upgrade(env: Env, owner: Address) {
         Self::require_initialized(&env);
-        owner.require_auth();
         Self::require_not_paused(&env);
 
         let stored_owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
         Self::require(&env, owner == stored_owner, VaultError::CallerIsNotOwner);
-
-        // --- Guardian co-signature requirement (#44 / #607) ---
-        // When a guardian key is configured, `execute_upgrade` requires BOTH the
-        // owner signature and the guardian signature. This raises the attack bar:
-        // an adversary must compromise two separate keys to execute a malicious
-        // upgrade. `cancel_upgrade` remains owner-only for agile incident response.
-        if let Some(guardian) = env
-            .storage()
-            .instance()
-            .get::<DataKey, Address>(&DataKey::Guardian)
-        {
-            guardian.require_auth();
-        }
-        // --- End guardian co-signature ---
 
         Self::require(
             &env,
             env.storage().instance().has(&DataKey::PendingUpgradeHash),
             VaultError::NoTimelockPending,
         );
+
+        let new_wasm_hash: BytesN<32> = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingUpgradeHash)
+            .unwrap();
+        let authorization_args = vec![
+            &env,
+            owner.clone().into_val(&env),
+            new_wasm_hash.clone().into_val(&env),
+        ];
+        owner.require_auth_for_args(authorization_args.clone());
+
+        // Guardian configuration is locked while a proposal is pending, and
+        // both signatures are scoped to this proposal's exact WASM hash.
+        if let Some(guardian) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Address>(&DataKey::Guardian)
+        {
+            guardian.require_auth_for_args(authorization_args);
+        }
 
         let expiry: u32 = env
             .storage()
@@ -7793,12 +7817,6 @@ impl NeuroWealthVault {
             env.ledger().sequence() >= expiry,
             VaultError::TimelockNotExpired,
         );
-
-        let new_wasm_hash: BytesN<32> = env
-            .storage()
-            .instance()
-            .get(&DataKey::PendingUpgradeHash)
-            .unwrap();
 
         // Clear the pending proposal before applying the upgrade so a fresh
         // proposal can be scheduled afterwards.

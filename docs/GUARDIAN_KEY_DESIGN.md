@@ -18,7 +18,7 @@ A stolen owner private key combined with an upgrade proposal represents the **hi
 
 While the 24-hour timelock window enables off-chain telemetry and alerting, if the owner key is compromised, an attacker can both schedule and execute the malicious upgrade without any independent cryptographic check. If team members are unavailable or response is delayed, funds can be compromised.
 
-To eliminate this single point of failure, NeuroWealth introduces the **Guardian Pattern**: an independent cryptographic keypair that is strictly required to co-sign `execute_upgrade`. Without the guardian's explicit authorization, no upgrade can execute, regardless of whether the owner key has scheduled it or the timelock has elapsed.
+To eliminate this single point of failure, NeuroWealth introduces the **Guardian Pattern**: an independent cryptographic keypair that must co-sign `execute_upgrade` whenever a guardian is configured. Both the owner's and guardian's authorizations are bound to the exact pending WASM hash. Guardian configuration cannot be changed while an upgrade proposal is pending.
 
 ```
                   ┌──────────────────────────────────────────────┐
@@ -49,11 +49,11 @@ The **Guardian Key** is a designated Stellar keypair (`Address`) stored within t
 
 | Function | Allowed for Guardian? | Authorization Enforcement | Notes |
 |:---|:---:|:---|:---|
-| `execute_upgrade` | **YES (Co-sign)** | `guardian.require_auth()` | Gated alongside `owner.require_auth()` |
+| `execute_upgrade` | **YES (Co-sign)** | `guardian.require_auth_for_args([owner, pending_wasm_hash])` | Bound to the exact pending hash, alongside owner authorization |
 | `schedule_upgrade` | **NO** | `Self::require_is_owner(&env)` | Guardian cannot propose upgrades |
 | `cancel_upgrade` | **NO** | `Self::require_is_owner(&env)` | Owner can cancel upgrades unilaterally |
 | `pause` / `unpause` | **NO** | `Self::require_is_owner(&env)` | Guardian cannot trigger emergency halts |
-| `set_guardian` / `remove_guardian` | **NO** | `Self::require_is_owner(&env)` | Managed exclusively by vault owner |
+| `set_guardian` / `remove_guardian` | **NO** | Owner-only; rejected while an upgrade is pending | Cancel the proposal before changing guardian configuration |
 | `set_tvl_cap`, `set_rate_limit`, etc. | **NO** | `Self::require_is_owner(&env)` | Owner parameters remain insulated |
 | `rebalance` / `harvest` | **NO** | `Self::require_is_agent(&env)` | AI Agent exclusive domain |
 | `deposit` / `withdraw` | **NO** | User-authenticated only | Guardian holds zero custody of vault assets |
@@ -66,18 +66,20 @@ The Soroban contract implementation (see `contracts/vault/src/lib.rs` and `contr
 // Storage Key
 DataKey::Guardian // Stores Option<Address> in Instance Storage
 
-// 1. Setting the Guardian (Owner-only, immediate effect)
+// 1. Setting the Guardian (Owner-only; no upgrade may be pending)
 pub fn set_guardian(env: Env, new_guardian: Address) {
     Self::require_initialized(&env);
     Self::require_is_owner(&env);
+    require_no_pending_upgrade(&env);
     env.storage().instance().set(&DataKey::Guardian, &new_guardian);
     env.events().publish((TOPIC_GUARDIAN_SET,), GuardianSetEvent { guardian: Some(new_guardian) });
 }
 
-// 2. Removing the Guardian (Owner-only emergency fallback)
+// 2. Removing the Guardian (Owner-only; cancel pending upgrade first)
 pub fn remove_guardian(env: Env) {
     Self::require_initialized(&env);
     Self::require_is_owner(&env);
+    require_no_pending_upgrade(&env);
     env.storage().instance().remove(&DataKey::Guardian);
     env.events().publish((TOPIC_GUARDIAN_SET,), GuardianSetEvent { guardian: None });
 }
@@ -85,13 +87,15 @@ pub fn remove_guardian(env: Env) {
 // 3. Execution Guard (Co-signature enforced if Guardian is configured)
 pub fn execute_upgrade(env: Env, owner: Address) {
     Self::require_initialized(&env);
-    owner.require_auth();
     Self::require_not_paused(&env);
     Self::require_is_owner_address(&env, &owner);
+    let pending_hash = get_pending_upgrade_hash(&env);
+    let auth_args = vec![&env, owner.clone().into_val(&env), pending_hash.into_val(&env)];
+    owner.require_auth_for_args(auth_args.clone());
 
-    // Enforce Guardian co-signature when configured
+    // Enforce a hash-bound guardian co-signature when configured
     if let Some(guardian) = env.storage().instance().get::<DataKey, Address>(&DataKey::Guardian) {
-        guardian.require_auth();
+        guardian.require_auth_for_args(auth_args);
     }
 
     // Timelock verification and code replacement...
@@ -99,7 +103,7 @@ pub fn execute_upgrade(env: Env, owner: Address) {
 ```
 
 ### 2.4 Backward Compatibility
-If `DataKey::Guardian` is absent (i.e. legacy installations or during bootstrap before the key ceremony), `execute_upgrade` falls back to owner-only authorization. Once `set_guardian` is invoked, two signatures become strictly required.
+If `DataKey::Guardian` is absent, upgrades require owner authorization only. The owner may set or remove the guardian only when no upgrade is pending. Removal therefore applies only to future proposals; the owner must cancel an active proposal before removing or replacing its guardian, and scheduling a replacement begins a fresh timelock.
 
 ---
 
@@ -218,6 +222,7 @@ Rotation of the guardian key may be triggered under routine maintenance or emerg
 1. **Trigger:** Annual key rotation schedule or planned custody re-assignment.
 2. **New Key Ceremony:** Execute Section 3 runbook to generate `Guardian_v2` public key (`G_NEW...`).
 3. **On-Chain Update:**
+   Ensure there is no pending upgrade. If one exists, the owner must cancel it before changing guardian configuration; any replacement upgrade starts a fresh 24-hour timelock.
    Owner calls `set_guardian`:
    ```bash
    stellar contract invoke \
@@ -242,6 +247,7 @@ Rotation of the guardian key may be triggered under routine maintenance or emerg
 If the guardian key is suspected of compromise or a custodian becomes incapacitated:
 1. **Incident Response Trigger:** Protocol Security Incident Level 1 declared under [`docs/INCIDENT_RESPONSE.md`](INCIDENT_RESPONSE.md).
 2. **Owner Action (Immediate Fallback):**
+   - First check `get_pending_upgrade`. If an upgrade is pending, the owner must cancel it before changing guardian configuration; a replacement proposal begins a fresh 24-hour timelock.
    - If a pre-generated standby guardian key is available:
      ```bash
      stellar contract invoke --id "$VAULT_CONTRACT_ID" --source "$OWNER_SECRET_KEY" -- set_guardian --new_guardian "$STANDBY_GUARDIAN_KEY"
@@ -250,7 +256,7 @@ If the guardian key is suspected of compromise or a custodian becomes incapacita
      ```bash
      stellar contract invoke --id "$VAULT_CONTRACT_ID" --source "$OWNER_SECRET_KEY" -- remove_guardian
      ```
-     *Note:* Calling `remove_guardian` reverts `execute_upgrade` to owner-only authorization, ensuring that a compromised guardian cannot hold the protocol hostage while the 24-hour upgrade timelock remains as the primary defense.
+     *Note:* `remove_guardian` is rejected while an upgrade is pending. The owner must cancel the proposal first. Removing the guardian changes authorization for future proposals only; an owner-only replacement proposal still observes the full 24-hour timelock.
 
 ---
 
@@ -361,6 +367,7 @@ stellar contract invoke \
 
 #### Test 5: Guardian Removal and Fallback Test
 ```bash
+# Ensure no upgrade is pending; cancel it first if necessary.
 # Owner calls remove_guardian
 stellar contract invoke \
   --id "$TESTNET_VAULT_ID" \

@@ -37,7 +37,7 @@ stateDiagram-v2
             [*] --> UpgradeIdle
             UpgradeIdle   --> UpgradeLocked   : schedule_upgrade(wasm_hash)\n[owner only, not paused]
             UpgradeLocked --> UpgradeUnlocked : ledger ≥ effective_ledger\n(17,280 ledgers ≈ 24 h elapsed)
-            UpgradeUnlocked --> UpgradeIdle   : execute_upgrade()\n[owner only, not paused]
+            UpgradeUnlocked --> UpgradeIdle   : execute_upgrade()\n[owner + configured guardian authorize pending hash; not paused]
             UpgradeLocked   --> UpgradeIdle   : cancel_upgrade()\n[owner only, works while paused]
             UpgradeUnlocked --> UpgradeIdle   : cancel_upgrade()\n[owner only]
         }
