@@ -11,10 +11,8 @@ name: CD — Vercel Deploy
 # On merge to main:
 #   - Deploys to the production Vercel URL.
 #
-# Prerequisites (GitHub repository secrets):
-#   VERCEL_TOKEN          — Vercel personal access token (Settings → Tokens)
-#   VERCEL_ORG_ID         — Found in Vercel project settings
-#   VERCEL_PROJECT_ID     — Found in Vercel project settings
+# Configure `preview` and protected `production` GitHub environments with
+# separate, least-privilege Vercel tokens and project IDs. PRs use preview only.
 #
 # Optional:
 #   LHCI_GITHUB_APP_TOKEN — Lighthouse CI GitHub App token for rich PR annotations
@@ -44,6 +42,9 @@ jobs:
   deploy:
     name: Build & Deploy to Vercel
     runs-on: ubuntu-latest
+    if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    environment:
+      name: ${{ github.event_name == 'pull_request' && 'preview' || 'production' }}
     outputs:
       preview_url: ${{ steps.deploy.outputs.preview_url }}
       is_production: ${{ steps.context.outputs.is_production }}
@@ -88,18 +89,20 @@ jobs:
       # Pull Vercel project settings so `vercel deploy` knows the project.
       - name: Pull Vercel project settings
         working-directory: frontend
-        run: npx vercel pull --yes --environment=preview --token=${{ secrets.VERCEL_TOKEN }}
+        run: npx vercel pull --yes --environment=preview --token="$VERCEL_TOKEN"
         env:
-          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
 
       # Build the Vercel output artifact from the already-validated Next.js build.
       - name: Build Vercel output
         working-directory: frontend
-        run: npx vercel build ${{ steps.context.outputs.is_production == 'true' && '--prod' || '' }} --token=${{ secrets.VERCEL_TOKEN }}
+        run: npx vercel build ${{ steps.context.outputs.is_production == 'true' && '--prod' || '' }} --token="$VERCEL_TOKEN"
         env:
-          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
 
       # Deploy the pre-built artifact — avoids a second full build on Vercel.
       - name: Deploy to Vercel
@@ -108,12 +111,13 @@ jobs:
         run: |
           DEPLOY_URL=$(npx vercel deploy --prebuilt \
             ${{ steps.context.outputs.is_production == 'true' && '--prod' || '' }} \
-            --token=${{ secrets.VERCEL_TOKEN }})
+            --token="$VERCEL_TOKEN")
           echo "preview_url=$DEPLOY_URL" >> "$GITHUB_OUTPUT"
           echo "Deployed to: $DEPLOY_URL"
         env:
-          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
 
   # ───────────────────────────────────────────────────────────────────────────
   # Post preview URL as a PR comment
