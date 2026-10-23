@@ -24,6 +24,71 @@ fn fake_hash(env: &Env, fill: u8) -> BytesN<32> {
     BytesN::from_array(env, &[fill; 32])
 }
 
+/// A pending approval is bound to exactly one hash. Cancellation invalidates
+/// that proposal, and a replacement receives a distinct current proposal.
+#[test]
+fn test_pending_hash_cannot_be_replaced_and_cancel_clears_old_proposal() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, _agent, owner, _usdc_token) = setup_vault_with_token(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+    let first_hash = fake_hash(&env, 0x11);
+    let replacement_hash = fake_hash(&env, 0x22);
+
+    client.schedule_upgrade(&owner, &first_hash);
+    let (_, first_expiry) = client.get_pending_upgrade().unwrap();
+    let replacement = client.try_schedule_upgrade(&owner, &replacement_hash);
+    assert!(replacement.is_err(), "pending proposal must not be replaced");
+    assert_eq!(
+        client.get_pending_upgrade(),
+        Some((first_hash.clone(), first_expiry)),
+        "failed replacement must leave the approved hash and expiry unchanged"
+    );
+
+    client.cancel_upgrade(&owner);
+    assert!(client.get_pending_upgrade().is_none());
+    assert_eq!(
+        client.try_execute_upgrade(&owner),
+        Err(Ok(soroban_sdk::Error::from_contract_error(49))),
+        "a canceled hash cannot be executed"
+    );
+
+    client.schedule_upgrade(&owner, &replacement_hash);
+    let (scheduled_hash, scheduled_expiry) = client.get_pending_upgrade().unwrap();
+    assert_eq!(scheduled_hash, replacement_hash);
+    assert_ne!(scheduled_hash, first_hash);
+    assert!(scheduled_expiry >= first_expiry);
+}
+
+/// Expiry is inclusive: execution stays locked at expiry-1 and the gate opens
+/// on exactly the recorded expiry ledger (before the dummy WASM host swap).
+#[test]
+fn test_upgrade_expiry_boundary_is_inclusive() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, _agent, owner, _usdc_token) = setup_vault_with_token(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+    client.schedule_upgrade(&owner, &fake_hash(&env, 0x33));
+    let (_, expiry) = client.get_pending_upgrade().unwrap();
+
+    env.ledger().set_sequence_number(expiry - 1);
+    assert_eq!(
+        client.try_execute_upgrade(&owner),
+        Err(Ok(soroban_sdk::Error::from_contract_error(47))),
+        "the timelock must still reject execution at expiry-1"
+    );
+
+    env.ledger().set_sequence_number(expiry);
+    let at_expiry = client.try_execute_upgrade(&owner);
+    assert!(
+        at_expiry.is_err(),
+        "an uninstalled dummy hash reaches the WASM host step at the expiry boundary"
+    );
+    // The rejected host swap rolls back contract state, leaving the reviewed
+    // proposal available for diagnosis rather than silently consuming it.
+    assert_eq!(client.get_pending_upgrade().unwrap().1, expiry);
+}
+
 // ── schedule flow ─────────────────────────────────────────────────────────────
 
 /// A successful schedule stores the pending hash and records an expiry ledger.

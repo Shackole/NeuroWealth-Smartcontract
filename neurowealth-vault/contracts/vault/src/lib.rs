@@ -608,6 +608,15 @@ pub enum DataKey {
     /// `update_standby_agent` and perform an instant switchover via
     /// `switch_to_standby_agent`. Appended to preserve serialized layout.
     StandbyAgent,
+
+    /// Guardian address for co-signing `execute_upgrade` (#44 / #607).
+    ///
+    /// When set, `execute_upgrade` requires **both** the owner signature and the
+    /// guardian signature. The guardian key provides defense-in-depth against a
+    /// compromised owner key: an attacker must steal both keys to execute a
+    /// malicious upgrade. Set by the owner via `set_guardian`; removed via
+    /// `remove_guardian`. Appended to preserve serialized discriminants.
+    Guardian,
 }
 
 /// Owner-configured allowance for one rate-limit category.
@@ -1835,6 +1844,65 @@ pub struct RateLimitExceededEvent {
     pub calls: u32,
 }
 
+/// Emitted after `batch_touch_ttl` completes processing the full user batch (#48).
+///
+/// # Topics
+/// - `SymbolShort("batch_ttl")` (`TOPIC_BATCH_TTL_TOUCHED`)
+#[contracttype]
+pub struct BatchTtlTouchedEvent {
+    /// Total number of users in the batch.
+    pub count: u32,
+    /// Number of users whose `Shares` entry was extended (had an existing entry).
+    pub users_extended: u32,
+}
+
+// ============================================================================
+// Batch deposit types (#42)
+// ============================================================================
+
+/// A single entry in a `batch_deposit` call.
+///
+/// The agent supplies one `BatchDepositItem` per user whose deposit should
+/// be processed in this batch transaction.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BatchDepositItem {
+    /// The user whose funds are being deposited.
+    pub user: Address,
+    /// Amount of USDC to deposit for this user (7 decimal places).
+    pub amount: i128,
+}
+
+/// Emitted once after `batch_deposit` finishes processing all entries.
+///
+/// # Topics
+/// - `0`: `SymbolShort("batch_dep2")` (`TOPIC_BATCH_DEPOSITED`)
+/// - `1`: `Address` — the agent who submitted the batch (indexed topic)
+#[contracttype]
+pub struct BatchDepositedEvent {
+    /// Number of entries that were successfully processed.
+    pub count: u32,
+    /// Total USDC amount deposited across all successful entries.
+    pub total_amount: i128,
+    /// Number of entries that were skipped due to validation failures.
+    pub skipped: u32,
+}
+
+/// Emitted when the guardian key is set or cleared via `set_guardian` /
+/// `remove_guardian` (#44 / #607).
+///
+/// # Topics
+/// - `SymbolShort("guard_set")` (`TOPIC_GUARDIAN_SET`)
+#[contracttype]
+pub struct GuardianSetEvent {
+    /// Previous guardian address, or `None` if no guardian was set.
+    pub old_guardian: Option<Address>,
+    /// New guardian address, or `None` if the guardian was removed.
+    pub new_guardian: Option<Address>,
+    /// Owner address that made the change.
+    pub owner: Address,
+}
+
 // ============================================================================
 // BLEND POOL CLIENT INTERFACE
 // ============================================================================
@@ -1971,6 +2039,8 @@ use topics::{
     TOPIC_TVL_CAP_UPDATED, TOPIC_UNPAUSED, TOPIC_UPGRADED,
     TOPIC_UPGRADE_CANCELLED, TOPIC_UPGRADE_SCHEDULED, TOPIC_USER_CAP_UPDATED,
     TOPIC_USER_STRATEGY_UPDATED, TOPIC_WITHDRAW, TOPIC_YIELD_ATTRIBUTED,
+    TOPIC_BATCH_TTL_TOUCHED, TOPIC_GUARDIAN_SET,
+    TOPIC_BATCH_DEPOSITED,
     TOPIC_USER_STRATEGY_UPDATED, TOPIC_WITHDRAW,
     TOPIC_BLEND_POOL_CONFIGURED, TOPIC_BLEND_SUPPLY, TOPIC_BLEND_WITHDRAW, TOPIC_CAPS_UPDATED,
     TOPIC_DEPOSIT, TOPIC_DEPOSIT_LIMITS_UPDATED, TOPIC_DEX_POOL_CONFIGURED, TOPIC_DEX_SUPPLY,
@@ -2565,194 +2635,211 @@ impl NeuroWealthVault {
         );
     }
 
-    /// Deposits multiple amounts in a single transaction. Each entry specifies a
-    /// token address and amount. Currently only the vault's USDC token is
-    /// accepted; other tokens will be supported when multi-asset functionality
-    /// is enabled (Phase 3).
+    /// Processes deposits for multiple users in a single Soroban transaction.
     ///
-    /// The entire batch is processed atomically — if any transfer fails, the
-    /// whole transaction reverts. Shares are minted once based on the aggregate
-    /// deposit amount, reducing transaction costs for multi-token deposits.
+    /// Called by the AI agent on behalf of multiple users. Each entry is
+    /// validated independently — an invalid entry is skipped and counted as
+    /// `skipped` rather than aborting the entire batch (partial success).
     ///
     /// # Arguments
     ///
     /// * `env` - The Soroban environment.
-    /// * `user` - The user address depositing funds (must authorize).
-    /// * `entries` - A vector of `(token_address, amount)` pairs.
+    /// * `agent` - The AI agent address (must be the vault's authorized agent).
+    /// * `entries` - A vector of `BatchDepositItem { user, amount }` pairs.
     ///
     /// # Events
     ///
-    /// Emits one `DepositEvent` per entry.
-    ///
-    /// # Panics
-    ///
-    /// - If any entry's token is not the vault's USDC token (until multi-asset).
-    /// - If any entry's amount fails validation.
-    /// - If the aggregate deposit exceeds the TVL or user cap.
-    /// - If the batch exceeds the configured entry limit.
-    /// - If the user's deposit or batch rate-limit bucket is exhausted.
-    /// - If shares to mint rounds down to zero.
-    pub fn batch_deposit(env: Env, user: Address, entries: Vec<(Address, i128)>) {
-        Self::require_initialized(&env);
-        user.require_auth();
-        Self::require_not_paused(&env);
-
-        let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
-        let total_entries = entries.len();
-        Self::require_batch_size(&env, total_entries);
-        // A batch is one deposit operation for the per-user deposit bucket and
-        // one operation for the separate batch bucket. This closes the bypass
-        // where a caller could avoid the single-deposit limit by batching.
-        Self::enforce_user_rate_limit(&env, &user, RATE_LIMIT_DEPOSIT);
-        Self::enforce_user_rate_limit(&env, &user, RATE_LIMIT_BATCH_DEPOSIT);
-
-        // First pass: validate every entry before any transfer (fail-fast).
-        let mut total_amount: i128 = 0;
-        for i in 0..total_entries {
-            let (token, amount) = entries.get(i).unwrap();
-            // Until multi-asset is enabled, require all entries to use USDC.
-            if token != usdc_token {
-                panic!(
-                    "batch_deposit: token {:?} is not supported; only USDC is accepted",
-                    token
-                );
-            }
-            Self::require_positive_amount(&env, amount);
-            total_amount = total_amount
-                .checked_add(amount)
-                .expect("batch_deposit: total amount overflow");
-        }
-
-        // Validate aggregate against vault limits.
-        if total_entries > 0 {
-            Self::require_minimum_deposit(&env, total_amount);
-            Self::require_maximum_deposit(&env, total_amount);
-            Self::require_within_deposit_cap(&env, &user, total_amount);
-            Self::require_within_tvl_cap(&env, total_amount);
-        }
-
-        // Second pass: execute transfers.
-        let token_client = token::Client::new(&env, &usdc_token);
-        for i in 0..total_entries {
-            let (_token, amount) = entries.get(i).unwrap();
-            token_client.transfer(&user, &env.current_contract_address(), &amount);
-        }
-
-        // Update total deposits and mint shares once for the aggregate.
-        let total: i128 = env
-            .storage()
-            .instance()
-            .get(&DataKey::TotalDeposits)
-            .unwrap_or(0_i128);
-        env.storage().instance().set(
-            &DataKey::TotalDeposits,
-            &(total
-                .checked_add(total_amount)
-                .expect("batch_deposit: total deposits overflow")),
-        );
-
-        let shares_to_mint = Self::convert_to_shares_internal(&env, total_amount);
-        Self::require(
-            &env,
-            shares_to_mint > 0,
-            VaultError::SharesToMintMustBePositive,
-        );
-
-        let current_shares: i128 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Shares(user.clone()))
-            .unwrap_or(0_i128);
-        env.storage().persistent().set(
-            &DataKey::Shares(user.clone()),
-            &(current_shares
-                .checked_add(shares_to_mint)
-                .expect("batch_deposit: shares overflow")),
-        );
-
-        if current_shares == 0
-            && !env
-                .storage()
-                .persistent()
-                .has(&DataKey::UserStrategy(user.clone()))
-        {
-            let default_strategy = Symbol::new(&env, "balanced");
-            env.storage()
-                .persistent()
-                .set(&DataKey::UserStrategy(user.clone()), &default_strategy);
-            env.events().publish(
-                (TOPIC_USER_STRATEGY_UPDATED, user.clone()),
-                UserStrategyUpdatedEvent {
-                    user: user.clone(),
-                    old_strategy: Symbol::new(&env, ""),
-                    new_strategy: default_strategy,
-                },
-            );
-        }
-
-        let total_shares: i128 = env
-            .storage()
-            .instance()
-            .get(&DataKey::TotalShares)
-            .unwrap_or(0_i128);
-        env.storage().instance().set(
-            &DataKey::TotalShares,
-            &(total_shares
-                .checked_add(shares_to_mint)
-                .expect("batch_deposit: total shares overflow")),
-        );
-
-        for i in 0..total_entries {
-            let (_token, amount) = entries.get(i).unwrap();
-            env.events().publish(
-                (TOPIC_DEPOSIT, user.clone()),
-                DepositEvent {
-                    user: user.clone(),
-                    amount,
-                    shares: shares_to_mint,
-                },
-            );
-        }
-    }
-
-    // ==========================================================================
-    // CORE LIFECYCLE - WITHDRAW
-    // ==========================================================================
-
-    /// Withdraws USDC from the vault for a user.
-    ///
-    /// The user must authorize this transaction with their signature.
-    /// The vault transfers USDC from its balance to the user.
-    ///
-    /// If funds are deployed in Blend, this function will pull liquidity back
-    /// first to ensure funds are available for withdrawal.
-    ///
-    /// # Arguments
-    ///
-    /// * `env` - The Soroban environment.
-    /// * `user` - The user address withdrawing funds (must authorize).
-    /// * `amount` - Amount of USDC to withdraw (7 decimal places).
-    ///
-    /// # Returns
-    ///
-    /// None.
-    ///
-    /// # Events
-    ///
-    /// Emits:
-    /// - `WithdrawEvent`
-    ///
-    /// # Errors
-    ///
-    /// None.
+    /// Emits one `DepositEvent` per successfully processed entry, plus a single
+    /// `BatchDepositedEvent` summarising the whole call.
     ///
     /// # Panics
     ///
     /// - If the vault is paused.
-    /// - If amount is not positive.
-    /// - If user has insufficient balance or shares.
-    /// - If the vault has insufficient liquidity and cannot retrieve enough from Blend.
-    /// - If the USDC transfer fails.
+    /// - If the caller is not the vault agent.
+    /// - If the batch exceeds `MaxBatchSize`.
+    /// - If the agent's batch rate-limit bucket is exhausted.
+    /// - If the total valid amount would exceed the TVL cap.
+    pub fn batch_deposit(env: Env, agent: Address, entries: Vec<BatchDepositItem>) {
+        Self::require_initialized(&env);
+        agent.require_auth();
+        Self::require_not_paused(&env);
+        Self::require_is_agent(&env);
+
+        let total_entries = entries.len();
+        Self::require_batch_size(&env, total_entries);
+
+        // Rate-limit the whole batch call using the batch-deposit bucket.
+        Self::enforce_user_rate_limit(&env, &agent, RATE_LIMIT_BATCH_DEPOSIT);
+
+        let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
+        let token_client = token::Client::new(&env, &usdc_token);
+
+        // ── CHECKS phase ────────────────────────────────────────────────────
+        // Pre-validate every entry independently to compute the aggregate valid
+        // amount for the TVL cap guard. Invalid entries are counted as skipped.
+        let mut total_valid_amount: i128 = 0;
+        let mut valid_count: u32 = 0;
+        let mut skip_count: u32 = 0;
+
+        for i in 0..total_entries {
+            let item = entries.get(i).unwrap();
+            let min_dep = Self::get_min_deposit_internal(&env);
+            let max_dep = Self::get_max_deposit_internal(&env);
+            let cap: i128 = env
+                .storage()
+                .instance()
+                .get(&DataKey::UserDepositCap)
+                .unwrap_or(0_i128);
+
+            let ok = item.amount > 0
+                && item.amount >= min_dep
+                && item.amount <= max_dep
+                && {
+                    if cap > 0 {
+                        let user_shares = Self::read_shares(&env, &item.user);
+                        let user_assets = Self::convert_to_assets_internal(&env, user_shares);
+                        user_assets.saturating_add(item.amount) <= cap
+                    } else {
+                        true
+                    }
+                };
+
+            if ok {
+                total_valid_amount = total_valid_amount
+                    .checked_add(item.amount)
+                    .expect("batch_deposit: amount overflow");
+                valid_count += 1;
+            } else {
+                skip_count += 1;
+            }
+        }
+
+        // Guard the aggregate valid amount against the TVL cap.
+        if total_valid_amount > 0 {
+            Self::require_within_tvl_cap(&env, total_valid_amount);
+        }
+
+        // ── EFFECTS + INTERACTIONS phase ─────────────────────────────────────
+        // Process each valid entry: transfer tokens, mint shares, update state.
+        for i in 0..total_entries {
+            let item = entries.get(i).unwrap();
+            let min_dep = Self::get_min_deposit_internal(&env);
+            let max_dep = Self::get_max_deposit_internal(&env);
+            if item.amount <= 0 || item.amount < min_dep || item.amount > max_dep {
+                continue;
+            }
+            let cap: i128 = env
+                .storage()
+                .instance()
+                .get(&DataKey::UserDepositCap)
+                .unwrap_or(0_i128);
+            if cap > 0 {
+                let user_shares = Self::read_shares(&env, &item.user);
+                let user_assets = Self::convert_to_assets_internal(&env, user_shares);
+                if user_assets.saturating_add(item.amount) > cap {
+                    continue;
+                }
+            }
+
+            // Transfer USDC from agent to vault.
+            token_client.transfer(&agent, &env.current_contract_address(), &item.amount);
+
+            // Mint shares for the individual user.
+            let shares_to_mint = Self::convert_to_shares_internal(&env, item.amount);
+            if shares_to_mint == 0 {
+                // Return the transfer — zero-share mints are not allowed.
+                token_client.transfer(&env.current_contract_address(), &agent, &item.amount);
+                continue;
+            }
+
+            // Update per-user shares.
+            let current_shares = Self::read_shares(&env, &item.user);
+            env.storage().persistent().set(
+                &DataKey::Shares(item.user.clone()),
+                &(current_shares
+                    .checked_add(shares_to_mint)
+                    .expect("batch_deposit: user shares overflow")),
+            );
+
+            // Register user in the active-share index on first deposit.
+            if current_shares == 0 {
+                Self::add_to_user_index(&env, &item.user);
+                if !env
+                    .storage()
+                    .persistent()
+                    .has(&DataKey::UserStrategy(item.user.clone()))
+                {
+                    let default_strategy = Symbol::new(&env, "balanced");
+                    env.storage().persistent().set(
+                        &DataKey::UserStrategy(item.user.clone()),
+                        &default_strategy,
+                    );
+                    env.events().publish(
+                        (TOPIC_USER_STRATEGY_UPDATED, item.user.clone()),
+                        UserStrategyUpdatedEvent {
+                            user: item.user.clone(),
+                            old_strategy: Symbol::new(&env, ""),
+                            new_strategy: default_strategy,
+                        },
+                    );
+                }
+            }
+
+            // Update vault-wide totals (TotalDeposits, TotalShares, TotalAssets).
+            let td: i128 = env
+                .storage()
+                .instance()
+                .get(&DataKey::TotalDeposits)
+                .unwrap_or(0_i128);
+            env.storage().instance().set(
+                &DataKey::TotalDeposits,
+                &(td.checked_add(item.amount).expect("batch_deposit: deposits overflow")),
+            );
+
+            let ts: i128 = env
+                .storage()
+                .instance()
+                .get(&DataKey::TotalShares)
+                .unwrap_or(0_i128);
+            env.storage().instance().set(
+                &DataKey::TotalShares,
+                &(ts.checked_add(shares_to_mint).expect("batch_deposit: shares overflow")),
+            );
+
+            let ta = Self::get_total_assets_internal(&env);
+            env.storage().instance().set(
+                &DataKey::TotalAssets,
+                &(ta.checked_add(item.amount).expect("batch_deposit: assets overflow")),
+            );
+
+            // Record deposit ledger for flash-loan protection.
+            env.storage().persistent().set(
+                &DataKey::LastDepositLedger(item.user.clone()),
+                &env.ledger().sequence(),
+            );
+
+            // Per-entry DepositEvent (indexed by user address).
+            env.events().publish(
+                (TOPIC_DEPOSIT, item.user.clone()),
+                DepositEvent {
+                    user: item.user.clone(),
+                    amount: item.amount,
+                    shares: shares_to_mint,
+                },
+            );
+        }
+
+        // Aggregate BatchDepositedEvent (indexed by agent address).
+        env.events().publish(
+            (TOPIC_BATCH_DEPOSITED, agent.clone()),
+            BatchDepositedEvent {
+                count: valid_count,
+                total_amount: total_valid_amount,
+                skipped: skip_count,
+            },
+        );
+    }
+
     /// - If the user's withdrawal rate-limit bucket is exhausted.
     pub fn withdraw(env: Env, user: Address, amount: i128) {
         Self::require_initialized(&env);
@@ -6611,6 +6698,115 @@ impl NeuroWealthVault {
             },
         );
     }
+
+    // ==========================================================================
+    // GUARDIAN KEY — SECOND SIGNATURE FOR EXECUTE_UPGRADE (#44 / #607)
+    // ==========================================================================
+
+    /// Sets the guardian address that must co-sign `execute_upgrade` (#44).
+    ///
+    /// The guardian key is an additional defence-in-depth measure for the
+    /// upgrade flow: once set, `execute_upgrade` requires **both** the owner
+    /// signature and the guardian signature. An adversary who steals only the
+    /// owner key cannot execute a malicious upgrade without also stealing the
+    /// guardian key.
+    ///
+    /// The guardian key has **no other privileges**: it cannot pause, rebalance,
+    /// change configuration, or perform any owner-only action.
+    ///
+    /// Only the owner can call this function (no timelock required). Guardian
+    /// key rotation requires only the owner, so it is fast and does not risk
+    /// locking out legitimate upgrades.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `new_guardian` - The new guardian address.
+    ///
+    /// # Events
+    ///
+    /// Emits `GuardianSetEvent`.
+    ///
+    /// # Panics
+    ///
+    /// - [`VaultError::CallerIsNotOwner`] if the caller is not the owner.
+    pub fn set_guardian(env: Env, new_guardian: Address) {
+        Self::require_initialized(&env);
+        Self::require_is_owner(&env);
+
+        let old_guardian: Option<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::Guardian);
+
+        env.storage()
+            .instance()
+            .set(&DataKey::Guardian, &new_guardian);
+
+        let owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
+        env.events().publish(
+            (TOPIC_GUARDIAN_SET,),
+            GuardianSetEvent {
+                old_guardian,
+                new_guardian: Some(new_guardian),
+                owner,
+            },
+        );
+    }
+
+    /// Removes the guardian requirement from `execute_upgrade`.
+    ///
+    /// After calling this, `execute_upgrade` reverts to single-owner operation.
+    /// This is the emergency path if the guardian key is lost and upgrades need
+    /// to be applied before a new guardian key is available.
+    ///
+    /// Only the owner can call this.
+    ///
+    /// # Events
+    ///
+    /// Emits `GuardianSetEvent` with `new_guardian: None`.
+    ///
+    /// # Panics
+    ///
+    /// - [`VaultError::CallerIsNotOwner`] if the caller is not the owner.
+    pub fn remove_guardian(env: Env) {
+        Self::require_initialized(&env);
+        Self::require_is_owner(&env);
+
+        let old_guardian: Option<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::Guardian);
+
+        env.storage().instance().remove(&DataKey::Guardian);
+
+        let owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
+        env.events().publish(
+            (TOPIC_GUARDIAN_SET,),
+            GuardianSetEvent {
+                old_guardian,
+                new_guardian: None,
+                owner,
+            },
+        );
+    }
+
+    /// Returns the current guardian address, if one is configured.
+    ///
+    /// Returns `None` when no guardian is set (single-owner upgrade path).
+    ///
+    /// # Events
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// - [`VaultError::NotInitialized`] if the vault has not been initialized.
+    pub fn get_guardian(env: Env) -> Option<Address> {
+        Self::require_initialized(&env);
+        env.storage().instance().get(&DataKey::Guardian)
+    }
+
 // ==========================================================================
     // MULTI-ASSET SUPPORT (#646) — ADMINISTRATION
     // ==========================================================================
@@ -7467,6 +7663,20 @@ impl NeuroWealthVault {
         let stored_owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
         Self::require(&env, owner == stored_owner, VaultError::CallerIsNotOwner);
 
+        // --- Guardian co-signature requirement (#44 / #607) ---
+        // When a guardian key is configured, `execute_upgrade` requires BOTH the
+        // owner signature and the guardian signature. This raises the attack bar:
+        // an adversary must compromise two separate keys to execute a malicious
+        // upgrade. `cancel_upgrade` remains owner-only for agile incident response.
+        if let Some(guardian) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Address>(&DataKey::Guardian)
+        {
+            guardian.require_auth();
+        }
+        // --- End guardian co-signature ---
+
         Self::require(
             &env,
             env.storage().instance().has(&DataKey::PendingUpgradeHash),
@@ -7727,8 +7937,11 @@ impl NeuroWealthVault {
         }
     }
 
-    /// Extends the persistent TTL for a user's `Shares` entry when it exists.
-    fn extend_user_shares_ttl(env: &Env, user: &Address) {
+    /// Extends TTL for existing per-user persistent state without creating
+    /// entries. Multi-asset shares are keyed by every currently supported
+    /// asset; preferences, locks, and accounting metadata are refreshed too.
+    fn extend_user_state_ttl(env: &Env, user: &Address) -> bool {
+        let mut found = false;
         let shares_key = DataKey::Shares(user.clone());
         if env.storage().persistent().has(&shares_key) {
             env.storage().persistent().extend_ttl(
@@ -7736,7 +7949,42 @@ impl NeuroWealthVault {
                 USER_SHARES_TTL_THRESHOLD,
                 USER_SHARES_TTL_EXTEND_TO,
             );
+            found = true;
         }
+
+        for asset in Self::read_supported_assets(env) {
+            let asset_shares_key = MultiAssetKey::Shares(user.clone(), asset);
+            if env.storage().persistent().has(&asset_shares_key) {
+                env.storage().persistent().extend_ttl(
+                    &asset_shares_key,
+                    USER_SHARES_TTL_THRESHOLD,
+                    USER_SHARES_TTL_EXTEND_TO,
+                );
+                found = true;
+            }
+        }
+
+        // Migration target/pause flags use instance storage, so they do not
+        // belong in this per-user persistent TTL maintenance path.
+        let user_keys = [
+            DataKey::UserStrategy(user.clone()),
+            DataKey::LockedShares(user.clone()),
+            DataKey::LockExpiry(user.clone()),
+            DataKey::LastDepositLedger(user.clone()),
+            DataKey::DepositSnapshot(user.clone()),
+        ];
+        for key in user_keys {
+            if env.storage().persistent().has(&key) {
+                env.storage().persistent().extend_ttl(
+                    &key,
+                    USER_SHARES_TTL_THRESHOLD,
+                    USER_SHARES_TTL_EXTEND_TO,
+                );
+                found = true;
+            }
+        }
+
+        found
     }
 
     /// Reduces `TotalDeposits` by `amount`, flooring at zero.
@@ -8037,9 +8285,11 @@ impl NeuroWealthVault {
     ///
     /// # Storage
     ///
-    /// Extends the TTL of [`DataKey::Shares`] in persistent storage when the
-    /// entry exists. Never creates an entry, so calling this for an address
-    /// that has never deposited is a cheap no-op returning `false`.
+    /// Extends TTL for existing legacy and multi-asset share entries, strategy
+    /// preference, lock metadata, and user accounting snapshots. It never
+    /// creates an entry; it returns `false` only when no supported per-user
+    /// persistent record exists. Migration configuration is instance storage
+    /// and is not part of this per-user maintenance call.
     ///
     /// # Examples
     ///
@@ -8048,7 +8298,7 @@ impl NeuroWealthVault {
     /// // hold no shares.
     /// for user in tracked_users {
     ///     if !vault_client.touch_user_ttl(&user) {
-    ///         // No Shares entry - drop the address from the keeper set.
+    ///         // No per-user persistent entry - drop the address from the keeper set.
     ///     }
     /// }
     /// ```
@@ -8057,15 +8307,72 @@ impl NeuroWealthVault {
         // Count maintenance attempts even when the requested entry is absent;
         // otherwise an attacker could use missing-user probes as a cheap DoS.
         Self::enforce_user_rate_limit(&env, &user, RATE_LIMIT_TOUCH_TTL);
-        if !env
-            .storage()
-            .persistent()
-            .has(&DataKey::Shares(user.clone()))
-        {
-            return false;
+        Self::extend_user_state_ttl(&env, &user)
+    }
+
+    /// Extends supported per-user persistent record TTLs for a batch of users
+    /// in a single transaction.
+    ///
+    /// Reduces keeper-job overhead by batching up to `max_batch_size` TTL
+    /// maintenance calls into one transaction. Each user is processed
+    /// independently — a missing entry returns `false` for that slot but does
+    /// not abort the batch. The same `UserTTL` rate-limit bucket as
+    /// `touch_user_ttl` is consumed for every user in the batch, so the
+    /// combined per-user allowance applies.
+    ///
+    /// No authentication is required: anyone can extend TTL for any user.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `users` - Addresses to touch, in the desired order. Must not exceed
+    ///   the configured `max_batch_size`.
+    ///
+    /// # Returns
+    ///
+    /// A `Vec<bool>` in the same order as `users`: `true` when at least one
+    /// supported per-user entry existed and was refreshed, `false` otherwise.
+    ///
+    /// # Events
+    ///
+    /// Emits:
+    /// - `BatchTtlTouchedEvent` with the total batch size and extension count.
+    ///
+    /// # Panics
+    ///
+    /// - [`VaultError::NotInitialized`] if the vault has not been initialized.
+    /// - [`VaultError::BatchSizeExceeded`] if `users.len() > max_batch_size`.
+    /// - [`VaultError::RateLimitExceeded`] if any user's TTL bucket is exhausted.
+    pub fn batch_touch_ttl(env: Env, users: Vec<Address>) -> Vec<bool> {
+        Self::require_initialized(&env);
+        let total = users.len();
+        Self::require_batch_size(&env, total);
+
+        let mut results: Vec<bool> = Vec::new(&env);
+        let mut users_extended: u32 = 0;
+
+        for i in 0..total {
+            let user = users.get(i).unwrap();
+            // Enforce per-user rate limit (same bucket as single touch_user_ttl).
+            // Count every probe, even for missing entries, to prevent DoS via probing.
+            Self::enforce_user_rate_limit(&env, &user, RATE_LIMIT_TOUCH_TTL);
+            if Self::extend_user_state_ttl(&env, &user) {
+                results.push_back(true);
+                users_extended = users_extended.saturating_add(1);
+            } else {
+                results.push_back(false);
+            }
         }
-        Self::extend_user_shares_ttl(&env, &user);
-        true
+
+        env.events().publish(
+            (TOPIC_BATCH_TTL_TOUCHED,),
+            BatchTtlTouchedEvent {
+                count: total,
+                users_extended,
+            },
+        );
+
+        results
     }
 
     /// Returns both the principal balance and share balance for a user.
@@ -9566,29 +9873,6 @@ impl NeuroWealthVault {
     /// Internal helper: convert assets (USDC) to shares using current totals.
     /// Uses floor division - safe for deposits (user gets fewer shares, vault benefits).
     ///
-    /// # Rounding rule — FLOOR (vault-protective)
-    ///
-    /// `shares = floor(assets × total_shares / total_assets)`
-    ///
-    /// Rounding down means the user mints *at most* their proportional share.
-    /// Any fractional remainder accrues to the pool, never to the depositor.
-    /// This is the ERC-4626 convention for the deposit direction.
-    ///
-    /// # Bootstrap case
-    ///
-    /// When `total_shares == 0` **or** `total_assets == 0` the vault has no
-    /// existing position to price against.  A 1-to-1 mapping (`shares = assets`)
-    /// is used so that the first depositor sets the initial exchange rate without
-    /// paying a rounding penalty.
-    ///
-    /// # Overflow handling
-    ///
-    /// The intermediate `assets * total_shares` is computed with
-    /// `checked_mul`.  Overflow panics via `expect`, which maps to a
-    /// Soroban transaction revert under `#![no_std]`.  In practice the TVL
-    /// cap (`DEFAULT_TVL_CAP`) keeps both operands well within i128 range;
-    /// the check is defence-in-depth for pathological inputs.
-    ///
     /// # Inflation-attack note
     /// Pricing reads the stored `TotalAssets` (see [`get_total_assets_internal`](crate::NeuroWealthVault::get_total_assets_internal)),
     /// NOT the vault's live token balance. Direct "donations" (token transfers to
@@ -9598,11 +9882,6 @@ impl NeuroWealthVault {
     /// vaults) are unnecessary as a result. The `deposit` entrypoint additionally
     /// rejects zero-share mints and enforces a minimum deposit; see [`deposit`](crate::NeuroWealthVault::deposit)
     /// for the full mitigation rationale.
-    ///
-    /// # See also
-    ///
-    /// `docs/ROUNDING_TABLE.md` — complete rounding-policy reference for every
-    /// entrypoint.
     #[inline]
     fn convert_to_shares_internal(env: &Env, assets: i128) -> i128 {
         if assets == 0 {
@@ -9627,47 +9906,6 @@ impl NeuroWealthVault {
     /// Internal helper: convert assets (USDC) to shares using current totals.
     /// Uses ceiling division - safe for withdrawals (user burns more shares, vault benefits).
     /// Prevents dust attacks where floor division could result in 0 shares burned.
-    ///
-    /// # Rounding rule — CEILING (vault-protective)
-    ///
-    /// `shares = ceil(assets × total_shares / total_assets)`
-    ///
-    /// Ceiling division ensures that the user always burns *at least* their
-    /// proportional share of shares, rounded up by at most 1.  This prevents
-    /// "free withdrawal" dust attacks where a tiny asset amount would produce
-    /// 0 shares burned under floor division.
-    ///
-    /// # Ceiling formula
-    ///
-    /// ```text
-    /// ceil(a / b) = (a + b - 1) / b   for b >= 1
-    /// ```
-    ///
-    /// Applied here as:
-    ///
-    /// ```text
-    /// ceil(assets × total_shares / total_assets)
-    ///   = (assets × total_shares + total_assets - 1) / total_assets
-    /// ```
-    ///
-    /// # Bootstrap case
-    ///
-    /// When `total_shares == 0` or `total_assets == 0`, returns `assets`
-    /// directly (1:1, same as the floor path).  The ceiling of an integer is
-    /// that integer itself.
-    ///
-    /// # Overflow handling
-    ///
-    /// Three checked operations are chained: `checked_mul`, `checked_sub`,
-    /// and `checked_add`.  Any overflow panics and reverts the transaction.
-    /// The `checked_sub(1)` on `total_assets` cannot underflow in this branch
-    /// because `total_assets >= 1` is guaranteed by the `total_assets == 0`
-    /// early-return above.
-    ///
-    /// # See also
-    ///
-    /// `docs/ROUNDING_TABLE.md` — complete rounding-policy reference for every
-    /// entrypoint.
     #[inline]
     fn convert_to_shares_internal_ceil(env: &Env, assets: i128) -> i128 {
         if assets == 0 {
@@ -9703,29 +9941,6 @@ impl NeuroWealthVault {
     }
 
     /// Internal helper: convert shares to assets (USDC) using current totals.
-    ///
-    /// # Rounding rule — FLOOR (vault-protective)
-    ///
-    /// `assets = floor(shares × total_assets / total_shares)`
-    ///
-    /// Rounding down means users receive *at most* their proportional entitlement.
-    /// Any fractional remainder accrues to the pool.  This is the ERC-4626
-    /// convention for all share-to-asset conversions (redemption direction).
-    ///
-    /// # Bootstrap / empty-vault case
-    ///
-    /// Returns `0` when `total_shares == 0` or `total_assets == 0` because
-    /// there is no defined exchange rate.
-    ///
-    /// # Overflow handling
-    ///
-    /// The intermediate `shares * total_assets` product uses `checked_mul`,
-    /// which panics on overflow and reverts the transaction.
-    ///
-    /// # See also
-    ///
-    /// `docs/ROUNDING_TABLE.md` — complete rounding-policy reference for every
-    /// entrypoint.
     #[inline]
     fn convert_to_assets_internal(env: &Env, shares: i128) -> i128 {
         if shares == 0 {
@@ -10348,19 +10563,6 @@ impl NeuroWealthVault {
     ///
     /// Called after every supply/withdraw leg so the cheap local getters never
     /// drift from the pools' own accounting.
-    ///
-    /// # Asset conservation
-    ///
-    /// This function is the enforcement point that keeps `DeployedToBlend` and
-    /// `DeployedToDex` in sync with on-chain reality after each rebalance.
-    /// By overwriting the local trackers with live cross-contract reads, any
-    /// slippage or partial-fill from an external protocol call is automatically
-    /// reflected in the vault's accounting — preventing phantom deployment
-    /// state from accumulating.
-    ///
-    /// # See also
-    ///
-    /// `docs/ASSET_CONSERVATION.md` — full invariant definition and proof.
     fn sync_deployed_split(env: &Env) -> (i128, i128) {
         let blend = Self::get_protocol_balance(env, &symbol_short!("blend"));
         let dex = Self::get_protocol_balance(env, &symbol_short!("dex"));
@@ -10393,32 +10595,6 @@ impl NeuroWealthVault {
 
     /// Splits `total` across the two venues by basis points, giving any
     /// rounding remainder to Blend so the parts never exceed `total`.
-    ///
-    /// # Asset conservation invariant
-    ///
-    /// Both legs use **floor** division, so:
-    ///
-    /// ```text
-    /// blend_target = floor(total × blend_bps / 10_000)
-    /// dex_target   = floor(total × dex_bps   / 10_000)
-    /// idle         = total − blend_target − dex_target  ≥ 0
-    /// ```
-    ///
-    /// The idle remainder is at most `2` stroops (one per leg).  This ensures
-    /// `blend_target + dex_target ≤ total` always holds, so the vault can never
-    /// attempt to supply more than its deployable balance.
-    ///
-    /// # Overflow handling
-    ///
-    /// `total × bps` uses `checked_mul`; overflow panics and reverts the
-    /// transaction before any state is written.  In practice `total` is bounded
-    /// by the TVL cap (≤ 100 M USDC × 10^7 = 10^15 stroops) and `bps ≤ 10_000`,
-    /// so the product fits comfortably in i128.
-    ///
-    /// # See also
-    ///
-    /// `docs/ASSET_CONSERVATION.md` — full proof of the accounting invariant
-    /// across all allocation modes.
     fn split_by_bps(total: i128, blend_bps: u32, dex_bps: u32) -> (i128, i128) {
         if total <= 0 {
             return (0, 0);
