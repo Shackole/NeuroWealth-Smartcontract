@@ -160,16 +160,21 @@ concurrent `terraform apply` runs from corrupting remote state.
 | PR touching `infra/**` | Format check → Validate → Plan → Post plan as PR comment |
 | Push to `main` touching `infra/**` | Plan → Apply (requires manual approval via `terraform-production` environment) |
 
-### Required secrets
+### GitHub Actions configuration
 
-| Secret | Description |
-|--------|-------------|
-| `AWS_ACCESS_KEY_ID` | AWS IAM credentials |
-| `AWS_SECRET_ACCESS_KEY` | AWS IAM credentials |
-| `AWS_REGION` | AWS region (e.g. `us-east-1`) |
-| `RAILWAY_TOKEN` | Railway API token |
-| `TF_STATE_BUCKET` | S3 bucket name for remote state |
-| `TF_LOCK_TABLE` | DynamoDB table name for state locking |
+| Setting | Type | Description |
+|---------|------|-------------|
+| `AWS_TERRAFORM_PLAN_ROLE_ARN` | Variable in `terraform-plan` environment | Read-only AWS OIDC role for same-repository PR plans. |
+| `AWS_TERRAFORM_APPLY_ROLE_ARN` | Variable in `terraform-production` environment | AWS OIDC role for protected production applies. |
+| `AWS_REGION` | Repository/environment variable | AWS region (for example `us-east-1`). |
+| `RAILWAY_TOKEN` | Environment secret | Project-scoped Railway token; use separate values for plan and production apply. |
+| `TF_STATE_BUCKET` | Environment variable | S3 bucket name for remote state. |
+| `TF_LOCK_TABLE` | Environment variable | DynamoDB table name for state locking. |
+
+Configure the `terraform-production` environment with required reviewers and
+restrict it to protected `main`. AWS access uses OIDC role assumption, not
+long-lived access-key secrets. See [`docs/CLOUD_CREDENTIALS.md`](../docs/CLOUD_CREDENTIALS.md)
+for trust-policy and rotation requirements.
 
 ---
 
