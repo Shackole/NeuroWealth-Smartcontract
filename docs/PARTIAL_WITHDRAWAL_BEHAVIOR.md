@@ -1,8 +1,8 @@
 # Partial Withdrawal Behaviour (Issue #55)
 
 This document describes the exact, tested behaviour of `withdraw()` and
-`withdraw_all()` when the vault must assemble funds from multiple sources to
-satisfy a withdrawal request.  All claims here are backed by integration tests
+`withdraw_all()` when the vault must assemble funds from idle USDC, Blend, and
+DEX positions to satisfy a withdrawal request. All claims here are backed by integration tests
 in `neurowealth-vault/contracts/vault/src/tests/test_partial_withdrawal.rs`.
 
 ---
@@ -14,15 +14,33 @@ The withdrawal state-machine follows a strict priority order:
 1. **Idle funds first** — USDC sitting in the vault contract is consumed before
    any protocol is called.
 2. **Protocol recall second** — if the idle balance is insufficient, the vault
-   recalls exactly the shortfall from the active protocol (`blend` or `dex`).
+   recalls the shortfall from the active protocol (`blend`, `dex`, or both
+   protocols in multi-protocol mode).
 3. **Partial fill** — if the protocol returns less than requested (e.g. due to
    liquidity constraints), the vault transfers whatever it can actually
    assemble and burns only the proportional number of shares.  The user keeps
    the remainder as shares for a future withdrawal attempt.
 
-There is no withdrawal queue, no reservation mechanism, and no automatic
-follow-up.  The user's `Shares` balance is the sole record of any unfulfilled
-portion.
+There is no withdrawal queue, reserved USDC amount, or automatic follow-up.
+Every withdrawal is synchronous. If liquidity allows only a partial payment,
+the unfulfilled claim remains in the user's `Shares` balance; it is not a
+separate fixed-amount obligation.
+
+## Strategy Transitions and Outstanding Claims
+
+`rebalance()` and `rebalance_multi()` move assets between idle USDC and the
+configured protocol positions. They do not reserve funds for a withdrawal or
+change user shares. In multi-protocol mode, a user withdrawal recalls liquidity
+from both venues proportionally; a later allocation change therefore does not
+settle or discard any user's remaining shares.
+
+Once a withdrawal transfers assets, the corresponding shares and aggregate
+accounting are reduced in the same transaction before the token transfer. A
+second withdrawal must be backed by the user's remaining shares, so an already
+settled amount cannot be paid a second time. Callers should treat a partial
+withdrawal as a completed payment of the emitted `WithdrawEvent.amount`, with
+the remaining share balance—not a pending queue item—as the user's remaining
+claim.
 
 ---
 

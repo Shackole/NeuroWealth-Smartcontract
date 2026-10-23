@@ -68,6 +68,7 @@ Contract versions correspond to the `DataKey::Version` value stored on-chain.
 - Documented the `TotalDeposits` vs `TotalAssets` design decision in `lib.rs`,
   `ARCHITECTURE.md`, and `test_total_assets_cap.rs` (Issue #299).
 - CHANGELOG.md tied to contract `Version` with PR template reminder (Issue #335).
+- **Withdrawal claims across allocation changes (Issue #440):** Documented and covered the synchronous partial-withdrawal model: remaining claims stay in user shares across Blend/DEX reallocations, and a fully settled position cannot be paid twice.
 
 ### Security
 

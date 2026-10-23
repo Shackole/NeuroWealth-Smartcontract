@@ -4507,6 +4507,10 @@ impl NeuroWealthVault {
     /// integer division, or from a shortfall on an exit leg) simply stays idle
     /// and is corrected on the next rebalance.
     ///
+    /// The vault has no queued-withdrawal reservation state: an unredeemed user
+    /// claim remains represented by shares. Reallocation changes only where
+    /// assets are deployed and must not change `TotalShares` or `TotalAssets`.
+    ///
     /// # Arguments
     ///
     /// * `env` - The Soroban environment.

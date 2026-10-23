@@ -161,6 +161,11 @@ The vault automatically manages liquidity between idle USDC (held in the contrac
 2. **Protocol Withdrawals**: If idle USDC is insufficient, the vault automatically attempts to withdraw the required amount from the active protocol (e.g., Blend).
 3. **Partial Withdrawals**: If the protocol has insufficient liquidity (e.g., high utilization), the user receives all available USDC and **retains their remaining shares** in the vault. This ensures users are not forced into unfavorable liquidations during protocol-wide liquidity crunches.
 
+The contract has no asynchronous withdrawal queue or reserved-withdrawal balance.
+Remaining shares are the user's claim after a partial payment. Strategy
+reallocation changes asset location without consuming those shares or aggregate
+asset accounting, and each later withdrawal is share-limited and user-authorized.
+
 ### Withdrawal Priority
 
 Users can withdraw their USDC at any time without:
