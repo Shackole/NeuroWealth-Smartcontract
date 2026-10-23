@@ -31,14 +31,15 @@ export const useWalletStore = create<WalletState>()(
   persist(
     (set) => ({
       publicKey: null,
-      network: 'unknown',
+      // This is the network used to build and sign transactions in this app.
+      network: EXPECTED_NETWORK,
       xlmBalance: null,
       isConnecting: false,
       isFreighterInstalled: false,
       networkMismatch: false,
       error: null,
 
-      setPublicKey: (key) => set({ publicKey: key }),
+      setPublicKey: (key) => set({ publicKey: key, network: key ? EXPECTED_NETWORK : 'unknown' }),
       setNetwork: (network) =>
         set({
           network,

@@ -23,6 +23,28 @@ MAX_AGE_HOURS="${MAX_BACKUP_AGE_HOURS:-25}"
 log()   { echo "[$(date -u +'%Y-%m-%dT%H:%M:%SZ')] $*"; }
 error() { echo "[$(date -u +'%Y-%m-%dT%H:%M:%SZ')] ERROR: $*" >&2; }
 
+trigger_pagerduty_alert() {
+  local message="$1"
+  log "Triggering PagerDuty alert: ${message}"
+  curl --silent --show-error --fail \
+    --request POST \
+    --header "Content-Type: application/json" \
+    --data "{
+      \"routing_key\": \"${PAGERDUTY_ROUTING_KEY}\",
+      \"event_action\": \"trigger\",
+      \"payload\": {
+        \"summary\": \"[NeuroWealth] Database backup health alert: ${message}\",
+        \"severity\": \"critical\",
+        \"source\": \"neurowealth-backup-monitor\",
+        \"custom_details\": {
+          \"bucket\": \"${BACKUP_S3_BUCKET}\",
+          \"check_time\": \"$(date -u +'%Y-%m-%dT%H:%M:%SZ')\"
+        }
+      }
+    }" \
+    "https://events.pagerduty.com/v2/enqueue" || error "Failed to send PagerDuty alert"
+}
+
 : "${BACKUP_S3_BUCKET:?BACKUP_S3_BUCKET is required}"
 : "${PAGERDUTY_ROUTING_KEY:?PAGERDUTY_ROUTING_KEY is required}"
 
@@ -74,28 +96,3 @@ fi
 
 log "Backup health check PASSED. Last backup: ${LAST_BACKUP_AT} (${AGE_HOURS}h ago)"
 exit 0
-
-# ---------------------------------------------------------------------------
-# PagerDuty alert function
-# ---------------------------------------------------------------------------
-trigger_pagerduty_alert() {
-  local message="$1"
-  log "Triggering PagerDuty alert: ${message}"
-  curl --silent --show-error --fail \
-    --request POST \
-    --header "Content-Type: application/json" \
-    --data "{
-      \"routing_key\": \"${PAGERDUTY_ROUTING_KEY}\",
-      \"event_action\": \"trigger\",
-      \"payload\": {
-        \"summary\": \"[NeuroWealth] Database backup health alert: ${message}\",
-        \"severity\": \"critical\",
-        \"source\": \"neurowealth-backup-monitor\",
-        \"custom_details\": {
-          \"bucket\": \"${BACKUP_S3_BUCKET}\",
-          \"check_time\": \"$(date -u +'%Y-%m-%dT%H:%M:%SZ')\"
-        }
-      }
-    }" \
-    "https://events.pagerduty.com/v2/enqueue" || error "Failed to send PagerDuty alert"
-}

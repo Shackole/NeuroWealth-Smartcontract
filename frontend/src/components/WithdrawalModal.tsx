@@ -180,7 +180,7 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
                   onChange={handleAmountChange}
                   placeholder="0.00"
                   disabled={isPaused}
-                  className="w-full bg-slate-900 border border-slate-700 rounded-xl py-3 px-4 text-white font-mono text-lg focus:outline-none focus:border-indigo-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="w-full bg-slate-900 border border-slate-700 rounded-xl py-3 px-4 text-white font-mono text-lg focus:outline-none focus:border-indigo-500 focus-visible:ring-2 focus-visible:ring-focus-dark focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                   aria-label="Withdrawal amount in USDC"
                 />
                 <button

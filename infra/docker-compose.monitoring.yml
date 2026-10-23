@@ -28,7 +28,14 @@ networks:
 
 volumes:
   prometheus_data: {}
+  alertmanager_data: {}
   grafana_data: {}
+
+x-bounded-logging: &bounded-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
 
 services:
 
@@ -36,6 +43,15 @@ services:
   prometheus:
     image: prom/prometheus:v2.51.0
     <<: *restart-policy
+    logging: *bounded-logging
+    cpus: "1.0"
+    mem_limit: 512m
+    pids_limit: 256
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
     networks: [monitoring]
     ports:
       - "9090:9090"
@@ -69,14 +85,25 @@ services:
   alertmanager:
     image: prom/alertmanager:v0.27.0
     <<: *restart-policy
+    logging: *bounded-logging
+    cpus: "0.5"
+    mem_limit: 128m
+    pids_limit: 128
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 128M
     networks: [monitoring]
     ports:
       - "9093:9093"
     volumes:
       - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
     command:
       - "--config.file=/etc/alertmanager/alertmanager.yml"
       - "--storage.path=/alertmanager"
+      - "--data.retention=120h"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:9093/-/healthy"]
       interval: 30s
@@ -87,6 +114,15 @@ services:
   grafana:
     image: grafana/grafana:10.4.2
     <<: *restart-policy
+    logging: *bounded-logging
+    cpus: "0.5"
+    mem_limit: 256m
+    pids_limit: 256
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
     networks: [monitoring]
     ports:
       - "3030:3000"

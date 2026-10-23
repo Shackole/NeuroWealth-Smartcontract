@@ -15,6 +15,14 @@
 
 use soroban_sdk::{ symbol_short, Symbol };
 
+/// Event schema version for topic/payload compatibility checks.
+///
+/// This constant is intentionally a single version token for the current event
+/// layout. Any future change that would break decoding for existing consumers
+/// must either preserve the old payload layout under the same topic or bump this
+/// identifier and document the compatibility rule in `EVENTS.md`.
+pub const EVENT_SCHEMA_VERSION: &str = "v1";
+
 /// Topic for `VaultInitializedEvent`, published once by `initialize`.
 pub const TOPIC_INIT: Symbol = symbol_short!("init");
 /// Topic 0 for `DepositEvent`; topic 1 is the depositing user's `Address`.

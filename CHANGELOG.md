@@ -62,15 +62,18 @@ Contract versions correspond to the `DataKey::Version` value stored on-chain.
 
 ### Changed
 
+- **Timelock boundary semantics (Issue #434):** Agent rotations and upgrades are executable on the recorded effective ledger (`current_ledger >= effective_ledger`); canceling clears the proposal, and a replacement starts a fresh full delay.
 - Migrated weak `!events.is_empty()` test assertions to strict payload checks (Issue #333).
 - `deploy-devnet.sh` now writes `OWNER_ADDRESS` to `devnet-contracts.env` so
   `verify-deployment.sh` can run without missing-variable errors (Issue #298).
 - Documented the `TotalDeposits` vs `TotalAssets` design decision in `lib.rs`,
   `ARCHITECTURE.md`, and `test_total_assets_cap.rs` (Issue #299).
 - CHANGELOG.md tied to contract `Version` with PR template reminder (Issue #335).
+- **Withdrawal claims across allocation changes (Issue #440):** Documented and covered the synchronous partial-withdrawal model: remaining claims stay in user shares across Blend/DEX reallocations, and a fully settled position cannot be paid twice.
 
 ### Security
 
+- **Hash-bound guardian authorization (Issue #435):** Upgrade execution authorizations include the pending WASM hash. Guardian changes are rejected while an upgrade is pending; removal is owner-only after cancellation and affects future proposals only.
 - `initialize` now rejects the zero address for `deployer`, `owner`, `agent`, and `usdc_token`
   with dedicated `VaultError` codes 62–65 (Issue #434).
 - `set_deposit_limits` now rejects a `max` above `MAX_DEPOSIT_CEILING` (100,000,000,000 raw
@@ -89,6 +92,7 @@ Contract versions correspond to the `DataKey::Version` value stored on-chain.
 - `set_approval_ttl` now emits `ApprovalTtlUpdatedEvent` (`ttl_upd`) (Issue #437).
 - Dedicated `TvlCapUpdatedEvent` / `UserDepositCapUpdatedEvent` replace `LimitsUpdatedEvent`
   for cap-only updates; indexer migration note in `EVENTS.md` (Issue #328).
+- **Protocol allowance cleanup (Issue #436):** Bound both approval TTL setters, approve no more than the vault's available USDC, clear residual allowances after supply/withdrawal/emergency exit, and revoke authority from replaced pools.
 
 ---
 

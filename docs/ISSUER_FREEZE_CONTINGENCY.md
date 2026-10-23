@@ -49,6 +49,20 @@ rotation) always work regardless of which address is frozen**, because they
 never touch the token contract — this is the property the response plan
 below relies on.
 
+### Failed exits and share accounting
+
+If a withdrawal reaches the USDC transfer and the issuer rejects that transfer
+because the recipient or vault is deauthorized, the Soroban invocation fails
+atomically. The preceding share burns, total-share/asset updates, and event
+emissions are rolled back with the failed transaction; the user retains the
+same recorded shares and the vault's recorded accounting remains unchanged.
+There is no contract-side way to bypass the issuer's transfer authorization.
+The owner can still pause and perform governance recovery, but cannot force a
+frozen transfer to succeed. The regression scenario is documented by
+`test_frozen_recipient_failed_exit_preserves_accounting_and_shares` in the
+vault test suite; it uses a test token that simulates issuer deauthorization
+and does not exercise a live issuer freeze.
+
 ## Response options
 
 ### 1. Pause immediately (always available)

@@ -32,8 +32,17 @@ Supabase project. It is deployed from the `staging` branch.
    | `VERCEL_TOKEN` | Vercel deployment token |
    | `VERCEL_ORG_ID` | Vercel team/account ID |
    | `VERCEL_STAGING_PROJECT_ID` | Staging Vercel project ID |
-   | `RAILWAY_TOKEN` | Railway staging deployment token |
+   | `RAILWAY_TOKEN_STAGING` | Railway token scoped to the staging agent service |
    | `STAGING_DATABASE_URL` | Connection URL for the staging Supabase database only |
+
+   Add these non-secret variables to the `staging` environment as well. They
+   are the independent destination allowlist checked before the reset script
+   opens the database connection:
+
+   | Variable | Example |
+   |---|---|
+   | `STAGING_DATABASE_HOST` | `db.<staging-project-ref>.supabase.co` |
+   | `STAGING_DATABASE_NAME` | `postgres` |
 
    Add these GitHub Environment variables:
 
@@ -81,14 +90,19 @@ set +a
 ## Database reset
 
 `.github/workflows/staging-db-reset.yml` runs every Sunday at 04:00 UTC and
-can be started manually. It verifies `APP_ENV=staging`, rejects URLs that look
-like production, truncates staging tables, and applies `supabase/seed.sql`.
-The reset is destructive to staging data and never runs against production.
+can be started manually. It requires `APP_ENV=staging`, validates that the
+PostgreSQL URL host and database exactly match the independently configured
+staging host/name, rejects production-like identities, and checks the
+connected database name before truncating tables and applying
+`supabase/seed.sql`. Use a staging-scoped database credential; missing or
+mismatched identity configuration fails closed before destructive SQL.
 
 To run it locally:
 
 ```bash
 APP_ENV=staging STAGING_DATABASE_URL='postgresql://...staging...' \
+  STAGING_DATABASE_HOST='db.<staging-project-ref>.supabase.co' \
+  STAGING_DATABASE_NAME=postgres \
   ./scripts/reset-staging-db.sh
 ```
 

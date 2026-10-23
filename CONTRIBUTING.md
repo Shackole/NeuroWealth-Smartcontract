@@ -10,6 +10,7 @@ This guide covers environment setup, coding conventions, testing, and the PR rev
 - [Good First Issues](#good-first-issues)
 - [Reporting Issues](#reporting-issues)
 - [Development Environment Setup](#development-environment-setup)
+  - [Clean-checkout local walkthrough](#clean-checkout-local-walkthrough)
   - [Prerequisites](#prerequisites)
   - [Smart Contract Setup](#smart-contract-setup)
   - [Backend / Agent Setup](#backend--agent-setup)
@@ -87,6 +88,12 @@ advisory system. We triage security reports within 48 hours.
 
 ## Development Environment Setup
 
+### Clean-checkout local walkthrough
+
+For an ordered fresh-clone setup covering package installs, local database and
+Redis services, ports, contract build, and teardown, follow
+[`docs/LOCAL_DEVELOPMENT.md`](docs/LOCAL_DEVELOPMENT.md).
+
 ### Prerequisites
 
 Install all tools listed here **before** running any build or test command.
@@ -161,12 +168,16 @@ stellar contract build
 
 ```bash
 # From the repo root
-cd agent        # (planned directory — not yet in repo)
-npm install
-cp .env.example .env
-# Edit .env with your Stellar key, Claude/OpenAI key, and database URL
-npm run dev
+cp agent/.env.local.template agent/.env.local
+cd agent
+npm ci
+npm run start:dev
 ```
+
+The agent directory and service are present. Database-backed local use also
+requires PostgreSQL and Redis; the complete clean-checkout instructions are in
+[`docs/LOCAL_DEVELOPMENT.md`](docs/LOCAL_DEVELOPMENT.md). Do not put production
+keys in a local development file.
 
 ---
 
@@ -174,13 +185,16 @@ npm run dev
 
 ```bash
 # From the repo root
-cd frontend     # (planned directory — see README.md Planned Components)
-npm install
-cp .env.local.example .env.local
-# Edit .env.local with your RPC URL and contract ID
+cd frontend
+npm ci
 npm run dev
 # Open http://localhost:3000
 ```
+
+The frontend directory is present. Set public testnet RPC/network/contract
+values only when overriding its safe development defaults. See
+[`docs/ENVIRONMENT_VARIABLES.md`](docs/ENVIRONMENT_VARIABLES.md) for the
+public-versus-secret distinction.
 
 ---
 
@@ -200,7 +214,15 @@ neurowealth-vault/target/wasm32-unknown-unknown/release/neurowealth_vault.wasm
 
 ## Running Tests
 
-Always run the full test suite before opening a PR.
+For the exact working directory, command, prerequisites, and CI/local status of
+each suite, use the [Test Suite Matrix](docs/TEST_SUITE_MATRIX.md). The
+commands below are common entry points; `npm test` at the repository root only
+runs `test/*.test.ts`.
+
+Run the relevant local suites for the changed components, and review the
+workflow checks that apply to the changed paths. The current repository does
+not have a single command that runs every package suite; use the matrix rather
+than treating the root `npm test` as an aggregate.
 
 ### Smart Contract Tests
 
@@ -332,13 +354,10 @@ cargo +nightly fuzz run deposit_withdraw_sequence \
 
 ### Backend and Frontend Tests
 
-```bash
-# From the repo root
-npm test
-```
-
-This runs the TypeScript off-chain security tests (`test/`) and any
-`packages/vault-ui` axe-core / notification unit tests.
+Backend, WhatsApp, frontend Playwright, and package tests are separate suites
+with their own manifests. The root `npm test` does not run them; see the
+[Test Suite Matrix](docs/TEST_SUITE_MATRIX.md) for commands and which suites CI
+currently covers.
 
 ---
 
@@ -377,6 +396,9 @@ Our CI pipeline (`.github/workflows/ci.yml`) runs on every push and pull request
 | Kani proofs | `cargo kani -p share-math` (see [`docs/FORMAL_VERIFICATION.md`](docs/FORMAL_VERIFICATION.md)) |
 | Vault UI tests | `packages/vault-ui` `npm test` (axe-core WCAG 2.1 AA + notification unit tests) |
 | Public-function auth gate | `scripts/check-pub-fn-auth.sh` — every new state-changing function must have a `SECURITY.md` row |
+
+### Release SBOM Generation
+The SBOM workflow (`.github/workflows/sbom-release.yml`) generates Software Bill of Materials (SBOM) for Rust crates and Node.js services when a GitHub release is published. The SBOMs are attached as assets to the release.
 
 ### Adding a new state-changing function
 

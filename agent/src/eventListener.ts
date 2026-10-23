@@ -4,6 +4,11 @@ import { processEventForAlerts } from './alertEngine';
 import logger from './logger';
 import { withRetry } from './retry';
 import { rpcCall, getRpcServer } from './rpcClient';
+import {
+  observeEventLedger,
+  recordEventCheckpoint,
+  recordEventProcessingFailure,
+} from './operationalMetrics';
 
 export { pool };
 
@@ -11,6 +16,7 @@ export { pool };
 export const server = getRpcServer();
 
 const VAULT_CONTRACT_ID = process.env.VAULT_CONTRACT_ID || '';
+const EVENT_PAGE_LIMIT = 1000;
 
 let eventInterval: ReturnType<typeof setInterval> | null = null;
 
@@ -38,58 +44,77 @@ export async function startEventListener() {
       'getLatestLedger',
     );
     let startLedger = latestLedgerResponse.sequence;
+    observeEventLedger(startLedger);
+    recordEventCheckpoint(startLedger, startLedger);
     logger.info({ startLedger }, 'Starting event listener');
 
     eventInterval = setInterval(async () => {
       try {
-        const response = await withRetry(
+        const filters = [{ type: 'contract' as const, contractIds: [VAULT_CONTRACT_ID] }];
+        const firstPage = await withRetry(
           () => rpcCall((s) => s.getEvents({
             startLedger,
-            filters: [
-              {
-                type: 'contract',
-                contractIds: [VAULT_CONTRACT_ID],
-              }
-            ],
-            limit: 100,
+            filters,
+            pagination: { limit: EVENT_PAGE_LIMIT },
           })),
           'getEvents',
         );
+        let latestLedger = firstPage.latestLedger;
+        observeEventLedger(latestLedger);
+        let page = firstPage;
 
-        for (const event of response.events) {
-          const topics = event.topic.map(t => t.toString());
-          let eventType = '';
+        while (true) {
+          for (const event of page.events) {
+            const topics = event.topic.map(t => t.toString());
+            let eventType = '';
 
-          if (topics.some(t => t.includes('deposit'))) {
-            eventType = 'deposit';
-          } else if (topics.some(t => t.includes('withdraw'))) {
-            eventType = 'withdraw';
-          }
-
-          if (!eventType) continue;
-
-          logger.info({ eventType, ledger: event.ledger }, 'Detected event');
-
-          await logEventToDb(eventType, event.id, event.ledger);
-
-          if (eventType === 'deposit') {
-            logger.info('New deposit detected, evaluating yield');
-            const userStrategy = 'balanced';
-            const currentProtocol = 'none';
-
-            const decision = await evaluateYield(userStrategy, currentProtocol, 0);
-
-            if (decision.shouldRebalance) {
-              logger.info({ targetProtocol: decision.targetProtocol }, 'Rebalance needed');
+            if (topics.some(t => t.includes('deposit'))) {
+              eventType = 'deposit';
+            } else if (topics.some(t => t.includes('withdraw'))) {
+              eventType = 'withdraw';
             }
+
+            if (!eventType) continue;
+
+            logger.info({ eventType, ledger: event.ledger }, 'Detected event');
+
+            await logEventToDb(eventType, event.id, event.ledger);
+
+            if (eventType === 'deposit') {
+              logger.info('New deposit detected, evaluating yield');
+              const userStrategy = 'balanced';
+              const currentProtocol = 'none';
+
+              const decision = await evaluateYield(userStrategy, currentProtocol, 0);
+
+              if (decision.shouldRebalance) {
+                logger.info({ targetProtocol: decision.targetProtocol }, 'Rebalance needed');
+              }
+            }
+
+            const alertPayload = { type: eventType, amount: 150000 };
+            await processEventForAlerts(alertPayload);
           }
 
-          const alertPayload = { type: eventType, amount: 150000 };
-          await processEventForAlerts(alertPayload);
-
-          startLedger = Math.max(startLedger, event.ledger + 1);
+          if (page.events.length < EVENT_PAGE_LIMIT) break;
+          const cursor = page.events[page.events.length - 1]?.cursor;
+          if (!cursor) throw new Error('Full RPC event page returned no continuation cursor');
+          page = await withRetry(
+            () => rpcCall((s) => s.getEvents({
+              filters,
+              pagination: { cursor, limit: EVENT_PAGE_LIMIT },
+            })),
+            'getEvents page',
+          );
+          latestLedger = Math.max(latestLedger, page.latestLedger);
+          observeEventLedger(latestLedger);
         }
+        // The successful getEvents response covers the scanned range even when
+        // the vault emitted no matching events in that range.
+        startLedger = Math.max(startLedger, latestLedger + 1);
+        recordEventCheckpoint(latestLedger, latestLedger);
       } catch (error) {
+        recordEventProcessingFailure();
         logger.error({ error: error instanceof Error ? error.message : error }, 'Error polling Soroban events');
       }
     }, 5000);

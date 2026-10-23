@@ -7,6 +7,7 @@
 export interface ContractResponse<T = any> {
   success: boolean;
   txHash?: string;
+  status?: 'submitted' | 'confirmed';
   data?: T;
   error?: string;
 }
@@ -26,7 +27,7 @@ export async function depositToVault(user: string, amount: number): Promise<Cont
   return await res.json();
 }
 
-export async function withdrawFromVault(user: string, amount: number): Promise<ContractResponse<{ amount: number }>> {
+export async function withdrawFromVault(user: string, amount: number): Promise<ContractResponse<{ amount?: number; sharesBurned?: number }>> {
   if (amount <= 0) {
     throw new Error('Withdrawal amount must be greater than zero');
   }
@@ -41,7 +42,7 @@ export async function withdrawFromVault(user: string, amount: number): Promise<C
   return await res.json();
 }
 
-export async function withdrawAllFromVault(user: string): Promise<ContractResponse<{ amountWithdrawn: number }>> {
+export async function withdrawAllFromVault(user: string): Promise<ContractResponse<{ amountWithdrawn?: number; sharesBurned?: number }>> {
   const res = await fetch('/api/contract/withdraw_all', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

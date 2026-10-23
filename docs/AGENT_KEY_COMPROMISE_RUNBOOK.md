@@ -94,8 +94,8 @@ stellar contract invoke \
   -- update_agent \
   --new_agent <LEGITIMATE_AGENT_ADDRESS>
 
-# Step 2: Confirm after timelock expires [owner]
-# Timelock duration: AGENT_TIMELOCK_LEDGERS (8,640 ledgers ≈ 12 hours)
+# Step 2: Confirm after the timelock expires [owner]
+# Timelock duration: 17,280 ledgers (about 24 hours at 5 seconds per ledger)
 stellar contract invoke \
   --id $VAULT_CONTRACT_ID \
   --source <OWNER_SECRET_KEY> \
@@ -104,7 +104,7 @@ stellar contract invoke \
 ```
 
 **Timelock Constants**:
-- `AGENT_TIMELOCK_LEDGERS`: 8,640 ledgers (~12 hours on mainnet)
+- `AGENT_TIMELOCK_LEDGERS`: 17,280 ledgers (~24 hours at 5 seconds per ledger)
 - This delay provides a window for monitoring and community notification
 
 ### 2c — Cancel Malicious Pending Agent Update
@@ -180,21 +180,52 @@ stellar contract invoke --id $VAULT_CONTRACT_ID --network mainnet -- get_pending
 
 Expected result: Should return `null` (no pending update).
 
-### 4c — Test Rebalance Functionality
+### 4c — Restart the signer worker with the new key
+
+The contract changes the authorized primary address only when
+`confirm_agent_update()` succeeds. Prepare the replacement key and deployment
+secret-store entry before the proposal, but do not put a secret key in a
+command, ticket, or repository. After confirmation, update the worker's secret
+reference to the replacement key and perform a rolling restart using the
+deployment platform's normal procedure. If the application reads its signer
+only at startup, restarting is required; keep the old worker stopped so it
+cannot submit transactions with stale credentials. Wait for the worker health
+check, then submit only an approved, low-risk operational action and verify its
+transaction and signer address on-chain. During the timelock the old primary
+remains active; the proposed primary has no authority yet.
+
+### 4d — Verify Rebalance Functionality
 
 On testnet or with small amounts, verify the new agent can successfully rebalance:
 
 ```bash
-# Small test rebalance via new agent
+# Small, reviewed verification rebalance on the intended network
 stellar contract invoke \
   --id $VAULT_CONTRACT_ID \
   --source <NEW_AGENT_SECRET_KEY> \
-  --network mainnet \
+  --network <NETWORK> \
   -- rebalance \
   --strategy blend \
   --amount 1000 \
   --min_out 0
 ```
+
+Do not use an unreviewed mainnet transaction as a smoke test. Prefer testnet;
+on production, use the deployment's approved canary procedure and limits.
+
+### Standby key behavior
+
+`update_standby_agent(new_standby)` is an owner-authorized immediate update,
+not part of the primary agent's 24-hour timelock. The standby address is
+allowed to call the same agent-only operations alongside the primary; it is a
+hot standby, not a read-only observer. The contract does not automatically
+fail over to the standby or start its worker; operators must keep it available
+and explicitly switch workloads when needed. Prepare and verify the standby
+worker and key before enabling it, store its secret separately, and monitor both
+signers. Set the standby to the zero address to clear it. Do not treat the
+standby setter as a substitute for rotating a compromised primary: separately
+propose and confirm the primary change, then restart the primary worker as
+above.
 
 ---
 
@@ -311,7 +342,7 @@ Publish a detailed post-mortem including:
 
 | Operation | Timelock Duration | Mainnet Wall Time |
 |-----------|------------------|-------------------|
-| Agent update (`update_agent` → `confirm_agent_update`) | 8,640 ledgers | ~12 hours |
+| Agent update (`update_agent` → `confirm_agent_update`) | 17,280 ledgers | ~24 hours |
 | Contract upgrade (`schedule_upgrade` → `execute_upgrade`) | 17,280 ledgers | ~24 hours |
 
 **Note**: These are mainnet constants. Testnet may have different timing due to ledger production rate.

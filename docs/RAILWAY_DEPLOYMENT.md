@@ -19,16 +19,27 @@ using the `agent/Dockerfile`.
 
 ## Required secrets
 
-Configure these in **GitHub → Settings → Secrets and variables → Actions**:
+Configure deployment credentials as environment secrets in **GitHub → Settings
+→ Environments**. Do not create a repository-wide Railway token fallback:
 
 | Secret | Description |
 |--------|-------------|
-| `RAILWAY_TOKEN` | API token from Railway dashboard (Account Settings → Tokens) |
-| `RAILWAY_SERVICE_ID_STAGING` | Service ID of the staging agent service (Railway dashboard → Settings → Service ID) |
-| `RAILWAY_SERVICE_ID_PRODUCTION` | Service ID of the production agent service |
-| `RAILWAY_PROJECT_URL_STAGING` | Public URL of the staging service (e.g. `https://neurowealth-agent-staging.up.railway.app`) |
-| `RAILWAY_PROJECT_URL_PRODUCTION` | Public URL of the production service |
-| `DEPLOY_SLACK_WEBHOOK_URL` | Slack incoming webhook URL for deploy notifications |
+| Environment | Secret | Scope |
+|-------------|--------|-------|
+| `staging` | `RAILWAY_TOKEN_STAGING` | Token that can deploy only to the staging service/project |
+| `production` | `RAILWAY_TOKEN_PRODUCTION` | Token that can deploy only to the production service/project |
+| `staging` | `RAILWAY_SERVICE_ID_STAGING` | Staging agent service ID |
+| `production` | `RAILWAY_SERVICE_ID_PRODUCTION` | Production agent service ID |
+| `staging` | `RAILWAY_PROJECT_URL_STAGING` | Staging URL (for example `https://neurowealth-agent-staging.up.railway.app`) |
+| `production` | `RAILWAY_PROJECT_URL_PRODUCTION` | Production URL |
+| both | `DEPLOY_SLACK_WEBHOOK_URL` | Slack incoming webhook URL; configure separately in each environment |
+
+Configure the `production` GitHub environment with required reviewers and a
+deployment branch rule that allows only `main`. Configure the `staging`
+environment to allow only `staging`. The workflow deploys only on pushes to
+those branches; pull requests do not receive Railway credentials or trigger a
+deployment. Use distinct Railway tokens with service-scoped access, even when
+the GitHub environment rules are enabled.
 
 ---
 
@@ -108,6 +119,13 @@ RAILWAY_TOKEN=$YOUR_TOKEN railway up \
 ---
 
 ## Health check
+
+After deployment, the workflow runs bounded, read-only checks against
+`/health/ready` and `/health`. It requires the database and Stellar RPC checks
+to report `ok`, validates Redis status when configured, and verifies that the
+reported rebalance queue depth is a non-negative integer. It performs no
+transactions or other financial actions. Failures include the workflow's
+target commit SHA and are summarized with the run URL.
 
 The `/health/ready` endpoint (implemented in `agent/src/health.ts`) returns:
 

@@ -7937,8 +7937,11 @@ impl NeuroWealthVault {
         }
     }
 
-    /// Extends the persistent TTL for a user's `Shares` entry when it exists.
-    fn extend_user_shares_ttl(env: &Env, user: &Address) {
+    /// Extends TTL for existing per-user persistent state without creating
+    /// entries. Multi-asset shares are keyed by every currently supported
+    /// asset; preferences, locks, and accounting metadata are refreshed too.
+    fn extend_user_state_ttl(env: &Env, user: &Address) -> bool {
+        let mut found = false;
         let shares_key = DataKey::Shares(user.clone());
         if env.storage().persistent().has(&shares_key) {
             env.storage().persistent().extend_ttl(
@@ -7946,7 +7949,42 @@ impl NeuroWealthVault {
                 USER_SHARES_TTL_THRESHOLD,
                 USER_SHARES_TTL_EXTEND_TO,
             );
+            found = true;
         }
+
+        for asset in Self::read_supported_assets(env) {
+            let asset_shares_key = MultiAssetKey::Shares(user.clone(), asset);
+            if env.storage().persistent().has(&asset_shares_key) {
+                env.storage().persistent().extend_ttl(
+                    &asset_shares_key,
+                    USER_SHARES_TTL_THRESHOLD,
+                    USER_SHARES_TTL_EXTEND_TO,
+                );
+                found = true;
+            }
+        }
+
+        // Migration target/pause flags use instance storage, so they do not
+        // belong in this per-user persistent TTL maintenance path.
+        let user_keys = [
+            DataKey::UserStrategy(user.clone()),
+            DataKey::LockedShares(user.clone()),
+            DataKey::LockExpiry(user.clone()),
+            DataKey::LastDepositLedger(user.clone()),
+            DataKey::DepositSnapshot(user.clone()),
+        ];
+        for key in user_keys {
+            if env.storage().persistent().has(&key) {
+                env.storage().persistent().extend_ttl(
+                    &key,
+                    USER_SHARES_TTL_THRESHOLD,
+                    USER_SHARES_TTL_EXTEND_TO,
+                );
+                found = true;
+            }
+        }
+
+        found
     }
 
     /// Reduces `TotalDeposits` by `amount`, flooring at zero.
@@ -8247,9 +8285,11 @@ impl NeuroWealthVault {
     ///
     /// # Storage
     ///
-    /// Extends the TTL of [`DataKey::Shares`] in persistent storage when the
-    /// entry exists. Never creates an entry, so calling this for an address
-    /// that has never deposited is a cheap no-op returning `false`.
+    /// Extends TTL for existing legacy and multi-asset share entries, strategy
+    /// preference, lock metadata, and user accounting snapshots. It never
+    /// creates an entry; it returns `false` only when no supported per-user
+    /// persistent record exists. Migration configuration is instance storage
+    /// and is not part of this per-user maintenance call.
     ///
     /// # Examples
     ///
@@ -8258,7 +8298,7 @@ impl NeuroWealthVault {
     /// // hold no shares.
     /// for user in tracked_users {
     ///     if !vault_client.touch_user_ttl(&user) {
-    ///         // No Shares entry - drop the address from the keeper set.
+    ///         // No per-user persistent entry - drop the address from the keeper set.
     ///     }
     /// }
     /// ```
@@ -8267,18 +8307,11 @@ impl NeuroWealthVault {
         // Count maintenance attempts even when the requested entry is absent;
         // otherwise an attacker could use missing-user probes as a cheap DoS.
         Self::enforce_user_rate_limit(&env, &user, RATE_LIMIT_TOUCH_TTL);
-        if !env
-            .storage()
-            .persistent()
-            .has(&DataKey::Shares(user.clone()))
-        {
-            return false;
-        }
-        Self::extend_user_shares_ttl(&env, &user);
-        true
+        Self::extend_user_state_ttl(&env, &user)
     }
 
-    /// Extends the `Shares` entry TTL for a batch of users in a single transaction.
+    /// Extends supported per-user persistent record TTLs for a batch of users
+    /// in a single transaction.
     ///
     /// Reduces keeper-job overhead by batching up to `max_batch_size` TTL
     /// maintenance calls into one transaction. Each user is processed
@@ -8297,8 +8330,8 @@ impl NeuroWealthVault {
     ///
     /// # Returns
     ///
-    /// A `Vec<bool>` in the same order as `users`: `true` when the entry
-    /// existed and was extended, `false` when no `Shares` entry was found.
+    /// A `Vec<bool>` in the same order as `users`: `true` when at least one
+    /// supported per-user entry existed and was refreshed, `false` otherwise.
     ///
     /// # Events
     ///
@@ -8323,12 +8356,7 @@ impl NeuroWealthVault {
             // Enforce per-user rate limit (same bucket as single touch_user_ttl).
             // Count every probe, even for missing entries, to prevent DoS via probing.
             Self::enforce_user_rate_limit(&env, &user, RATE_LIMIT_TOUCH_TTL);
-            if env
-                .storage()
-                .persistent()
-                .has(&DataKey::Shares(user.clone()))
-            {
-                Self::extend_user_shares_ttl(&env, &user);
+            if Self::extend_user_state_ttl(&env, &user) {
                 results.push_back(true);
                 users_extended = users_extended.saturating_add(1);
             } else {

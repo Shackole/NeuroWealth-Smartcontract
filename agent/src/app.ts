@@ -3,10 +3,11 @@ import { apiRouter } from './api';
 import { ipRateLimiter, userRateLimiter } from './rateLimiter';
 import healthRouter from './health';
 import { requestContextMiddleware } from './requestContext';
+import { configureHttpSecurity } from './httpSecurity';
 
 export function createApp(options?: { enableRateLimit?: boolean }): Express {
   const app = express();
-  app.use(express.json());
+  configureHttpSecurity(app);
 
   // Attach requestId to every request via AsyncLocalStorage (Issue #121)
   app.use(requestContextMiddleware);

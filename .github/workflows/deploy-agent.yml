@@ -8,8 +8,9 @@ name: Deploy Agent to Railway
 #                                 (requires manual approval via the `production`
 #                                  GitHub Actions environment)
 #
-# Required repository secrets (Settings → Secrets → Actions):
-#   RAILWAY_TOKEN                  API token from Railway dashboard
+# Required environment secrets (Settings → Environments → staging/production):
+#   RAILWAY_TOKEN_STAGING          Staging-only API token
+#   RAILWAY_TOKEN_PRODUCTION       Production-only API token
 #   RAILWAY_SERVICE_ID_STAGING     Service ID of the staging agent service
 #   RAILWAY_SERVICE_ID_PRODUCTION  Service ID of the production agent service
 #   RAILWAY_PROJECT_URL_PRODUCTION URL of the production deployment (for health check)
@@ -33,6 +34,12 @@ on:
 permissions:
   contents: read
 
+# Serialize deployments per target branch. An active rollout/migration is never
+# cancelled by a newer commit; GitHub retains the newest pending run visibly.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   # ---------------------------------------------------------------------------
   # Staging deployment — runs on push to the `staging` branch
@@ -47,7 +54,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Install Railway CLI
         run: npm install -g @railway/cli@latest
@@ -55,7 +62,7 @@ jobs:
       - name: Deploy to staging
         id: deploy
         env:
-          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN_STAGING }}
         run: |
           echo "Deploying to Railway staging service: ${{ secrets.RAILWAY_SERVICE_ID_STAGING }}"
           railway up \
@@ -67,27 +74,13 @@ jobs:
 
       - name: Verify health check (staging)
         id: healthcheck
+        env:
+          DEPLOYMENT_BASE_URL: ${{ secrets.RAILWAY_PROJECT_URL_STAGING }}
+          EXPECTED_REVISION: ${{ github.sha }}
+          MAX_RETRIES: '10'
+          RETRY_DELAY: '15'
         run: |
-          MAX_RETRIES=10
-          RETRY_DELAY=15
-          HEALTH_URL="${{ secrets.RAILWAY_PROJECT_URL_STAGING }}/health/ready"
-
-          echo "Polling ${HEALTH_URL} ..."
-          for i in $(seq 1 $MAX_RETRIES); do
-            HTTP_CODE=$(curl --silent --output /dev/null --write-out "%{http_code}" \
-              --connect-timeout 5 --max-time 10 "$HEALTH_URL" || echo "000")
-            echo "Attempt ${i}/${MAX_RETRIES}: HTTP ${HTTP_CODE}"
-            if [ "$HTTP_CODE" = "200" ]; then
-              echo "Health check passed."
-              echo "healthy=true" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-            sleep "$RETRY_DELAY"
-          done
-
-          echo "Health check failed after ${MAX_RETRIES} attempts."
-          echo "healthy=false" >> "$GITHUB_OUTPUT"
-          exit 1
+          ./scripts/smoke-check-agent-deployment.sh
 
       - name: Write deploy summary
         if: always()
@@ -155,7 +148,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Install Railway CLI
         run: npm install -g @railway/cli@latest
@@ -172,7 +165,7 @@ jobs:
       - name: Deploy to production
         id: deploy
         env:
-          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN_PRODUCTION }}
         run: |
           echo "Deploying to Railway production service: ${{ secrets.RAILWAY_SERVICE_ID_PRODUCTION }}"
           railway up \
@@ -185,27 +178,13 @@ jobs:
 
       - name: Verify health check (production)
         id: healthcheck
+        env:
+          DEPLOYMENT_BASE_URL: ${{ secrets.RAILWAY_PROJECT_URL_PRODUCTION }}
+          EXPECTED_REVISION: ${{ github.sha }}
+          MAX_RETRIES: '12'
+          RETRY_DELAY: '15'
         run: |
-          MAX_RETRIES=12
-          RETRY_DELAY=15
-          HEALTH_URL="${{ secrets.RAILWAY_PROJECT_URL_PRODUCTION }}/health/ready"
-
-          echo "Polling ${HEALTH_URL} ..."
-          for i in $(seq 1 $MAX_RETRIES); do
-            HTTP_CODE=$(curl --silent --output /dev/null --write-out "%{http_code}" \
-              --connect-timeout 5 --max-time 10 "$HEALTH_URL" || echo "000")
-            echo "Attempt ${i}/${MAX_RETRIES}: HTTP ${HTTP_CODE}"
-            if [ "$HTTP_CODE" = "200" ]; then
-              echo "Health check passed."
-              echo "healthy=true" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-            sleep "$RETRY_DELAY"
-          done
-
-          echo "Health check failed after ${MAX_RETRIES} attempts."
-          echo "healthy=false" >> "$GITHUB_OUTPUT"
-          exit 1
+          ./scripts/smoke-check-agent-deployment.sh
 
       - name: Write deploy summary + rollback instructions
         if: always()

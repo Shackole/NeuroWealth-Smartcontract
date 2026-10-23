@@ -14,8 +14,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 export interface VaultStatusState {
+  availability: 'available' | 'unavailable';
+  mode: 'normal' | 'pause' | 'emergency' | 'recovery' | 'unknown';
   /** Whether the vault contract is currently paused */
   paused: boolean;
+  depositsAllowed: boolean | null;
+  withdrawalsAllowed: boolean | null;
   /** Reason text provided by the backend, or null */
   reason: string | null;
   /** ISO-8601 expected resumption datetime, or null */
@@ -28,7 +32,11 @@ const POLL_INTERVAL_MS = 30_000;
 
 export function useVaultStatus(): VaultStatusState {
   const [state, setState] = useState<VaultStatusState>({
+    availability: 'unavailable',
+    mode: 'unknown',
     paused: false,
+    depositsAllowed: null,
+    withdrawalsAllowed: null,
     reason: null,
     expectedResume: null,
     loaded: false,
@@ -41,12 +49,20 @@ export function useVaultStatus(): VaultStatusState {
       const res = await fetch('/api/vault/status');
       if (!res.ok) return;
       const data = await res.json() as {
+        availability?: 'available' | 'unavailable';
+        mode?: 'normal' | 'pause' | 'emergency' | 'recovery' | 'unknown';
         paused: boolean;
+        deposits_allowed?: boolean | null;
+        withdrawals_allowed?: boolean | null;
         reason: string | null;
         expected_resume: string | null;
       };
       setState({
+        availability: data.availability ?? 'available',
+        mode: data.mode ?? (data.paused ? 'pause' : 'normal'),
         paused: data.paused ?? false,
+        depositsAllowed: data.deposits_allowed ?? (data.paused ? false : data.mode === 'normal' ? true : null),
+        withdrawalsAllowed: data.withdrawals_allowed ?? (data.paused ? false : data.mode === 'normal' ? true : null),
         reason: data.reason ?? null,
         expectedResume: data.expected_resume ?? null,
         loaded: true,

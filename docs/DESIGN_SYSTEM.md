@@ -150,6 +150,40 @@ Follows Tailwind's default **4 px base grid**. All spacing values are multiples 
 | Modal              | `p-6` (24 px)  |
 | Section (desktop)  | `py-12` (48px) |
 
+## Dashboard token adoption and exceptions
+
+`frontend/src/lib/design-tokens.ts` is the reference for dashboard color, type,
+spacing, focus, and feedback values. `frontend/tailwind.config.js` exposes the
+semantic focus and error colors as utilities so the dashboard can apply the same
+values without copying hex codes into components.
+
+| Flow or component | Token use |
+|-------------------|-----------|
+| Portfolio balance and primary actions (`BalanceCard`) | `p-6`, `gap-3`, 16/24 px type, dark-surface focus ring |
+| Deposit amount and validation (`DepositForm`) | 12/16 px input padding, mono amount type, dark error text and focus ring |
+| Withdrawal review (`WithdrawalModal`) | 12/16 px input padding, mono amount type, dark-surface focus ring |
+| Dashboard cards and sections | 4 px spacing grid; card padding uses `p-4` or `p-6`, sections use 32/48/64 px |
+
+### Focus and error contrast
+
+Use `semanticColors.focus.light` (`#047857`) on light surfaces and
+`semanticColors.focus.dark` (`#34d399`) on dark surfaces. Both are visible as a
+2 px focus ring with a 2 px offset; keep a visible outline when a component has
+its own border or shadow. Use `semanticColors.feedback.errorText.light`
+(`#b91c1c`) on white surfaces and `semanticColors.feedback.errorText.dark`
+(`#fca5a5`) on the dashboard dark surface
+(`semanticColors.surfaceDark.page`, `#080b11`). Error messages must also have
+`role="alert"` or a field-associated description and must not rely on color
+alone; retain the icon and text label.
+
+### Exceptions
+
+Use arbitrary values only when a token cannot express a real layout or data
+visualization need. Add a short comment next to the value naming the reason and
+the affected screen, and check contrast and keyboard focus on both light and
+dark surfaces. Do not introduce arbitrary values for spacing, type, focus, or
+validation color when an existing token fits.
+
 ---
 
 ## Component Inventory

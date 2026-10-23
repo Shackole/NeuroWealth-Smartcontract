@@ -41,10 +41,10 @@ Environment=LOG_LEVEL=info
 # Replace with 'node dist/index.js' once a build step is in place.
 ExecStart=/usr/bin/node -r ts-node/register src/index.ts
 
-# Graceful restart: send SIGTERM to trigger the app's shutdown handler,
-# which flushes Bull queues and closes the DB pool.
+# Graceful restart: send SIGTERM to stop new work, drain active tasks, and
+# close the database and registered Redis connections.
 KillSignal=SIGTERM
-# Allow up to 30 s for graceful shutdown before SIGKILL.
+# The agent defaults to a 25 s shutdown deadline, leaving 5 s headroom.
 TimeoutStopSec=30
 
 # Logging — append stdout and stderr to the log file.

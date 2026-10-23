@@ -310,7 +310,7 @@ function DepositStep({
       <div className="bg-slate-900/60 rounded-xl border border-slate-800 p-3 text-xs space-y-2">
         {[
           ['Withdrawal', 'Anytime, no lock-ups'],
-          ['Network fee', '< 0.00001 XLM'],
+          ['Network fee (paid separately)', 'Freighter shows the final fee in XLM'],
           ['Custody', 'Non-custodial Soroban vault'],
         ].map(([k, v]) => (
           <div key={k} className="flex justify-between">

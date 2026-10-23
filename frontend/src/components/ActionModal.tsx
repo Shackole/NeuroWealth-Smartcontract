@@ -5,6 +5,8 @@ import { X, ArrowDownLeft, ArrowUpRight, Loader2, CheckCircle2, RefreshCw } from
 import { signWithFreighter } from '@/lib/freighter';
 import { fetchVaultCapState } from '@/lib/stellar';
 import { VaultCapIndicator, VaultCapData } from '@/components/VaultCapIndicator';
+import { TransactionIdentity } from '@/components/TransactionIdentity';
+import { useWalletStore } from '@/lib/walletStore';
 
 interface ActionModalProps {
   isOpen: boolean;
@@ -29,12 +31,19 @@ export const ActionModal: React.FC<ActionModalProps> = ({
   exchangeRate,
   embedded = false,
 }) => {
+  const currentWalletKey = useWalletStore((state) => state.publicKey);
   const [amount, setAmount] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(false);
   const [txSuccess, setTxSuccess] = useState<boolean>(false);
   const [txHash, setTxHash] = useState<string>('');
   const [capData, setCapData] = useState<VaultCapData | null>(null);
   const [capLoading, setCapLoading] = useState<boolean>(false);
+
+  useEffect(() => {
+    setAmount('');
+    setTxSuccess(false);
+    setTxHash('');
+  }, [userPublicKey]);
 
   // Refresh cap data each time the deposit modal is opened
   useEffect(() => {
@@ -63,7 +72,7 @@ export const ActionModal: React.FC<ActionModalProps> = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!userPublicKey || numAmount <= 0 || depositBlocked) return;
+    if (!userPublicKey || (currentWalletKey && currentWalletKey !== userPublicKey) || numAmount <= 0 || depositBlocked) return;
 
     setLoading(true);
     setTxSuccess(false);
@@ -109,6 +118,13 @@ export const ActionModal: React.FC<ActionModalProps> = ({
         >
           <X size={20} />
         </button>
+      )}
+
+      {userPublicKey && !txSuccess && (
+        <div className="mb-4">
+          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Transaction review identity</p>
+          <TransactionIdentity publicKey={userPublicKey} />
+        </div>
       )}
 
       {txSuccess ? (

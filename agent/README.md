@@ -84,12 +84,50 @@ The NeuroWealth agent is an autonomous background service that continuously moni
 
 ---
 
+## Startup and routing map
+
+The production command in `package.json` is `npm run start:prod`, which runs
+`src/index.ts`. The production Docker image uses the same `npx ts-node
+src/index.ts` entrypoint. `docker-compose.yml` is a separate development
+configuration: it runs `prisma migrate deploy` and `ts-node-dev
+src/index.ts`.
+
+`src/index.ts` constructs its own Express app. It mounts JSON parsing, IP and
+user rate limiting, the health router, and the strategy-distribution router.
+It then starts the event polling loop, an hourly yield decision loop, and the
+issuer-freeze monitor. On `SIGTERM`/`SIGINT` it stops those loops and closes the
+database pool. The only application data route mounted there is
+`GET /api/agent/strategy-distribution`; health routes are `GET /health`,
+`/health/ready`, and `/health/live`. See [`API.md`](API.md) for the route table.
+
+There are parallel source modules that are not wired into this entrypoint:
+
+- `src/app.ts` is an alternate Express app factory. It mounts health and the
+  older `src/api.ts` router under `/api`.
+- `src/apiRouter.ts` is another, newer route implementation. It already uses
+  `/api/...` paths and is not mounted; mounting it under `/api` would duplicate
+  the prefix.
+- `src/authRouter.ts` implements SIWS challenge, verify, and refresh routes,
+  but neither app entrypoint mounts it. `src/api.ts` instead uses the older
+  `src/auth.ts` JWT middleware.
+- `src/metricsApi.ts` exports `startMetricsServer`; `src/index.ts` does not call
+  it. Metrics routes are therefore not part of the production HTTP process
+  unless another launcher starts that server.
+- `src/queueRouter.ts` and additional workers/utilities are not mounted from
+  `index.ts`; check imports before treating them as live HTTP endpoints or
+  background jobs.
+
+The event listener polls Soroban RPC every five seconds and begins at the
+latest ledger after process startup. It does not restore a durable event
+checkpoint or paginate. See [`../EVENTS.md`](../EVENTS.md) for decoding and
+backfill limits.
+
 ## Key Modules
 
 - **Yield Comparison Engine** (`src/yieldComparison.ts`): Aggregates real-time and historical (7d/30d/90d) APYs, calculating risk-adjusted return ratios (Sharpe-like metric) and enforcing the 0.5% minimum improvement threshold.
 - **Risk Scoring Engine** (`src/riskScoring.ts`): Multi-dimensional risk evaluation (smart contract, liquidity, oracle, governance, centralization risks) to determine protocol eligibility and risk thresholds.
 - **Intent Parser** (`src/intentParser.ts`): Natural language parsing for WhatsApp & chat commands.
-- **Event Listener** (`src/eventListener.ts`): Real-time contract event ingestion.
+- **Event Listener** (`src/eventListener.ts`): Five-second Soroban RPC polling for contract events; it is best-effort and does not restore missed events after downtime.
 - **Protocol Adapters** (`src/protocolAdapters.ts`): Uniform venue adapters (`supply`, `withdraw`, `get_apy`, `get_balance`) with a registry enforcing the owner-managed protocol whitelist and the risk-scoring gate (#656). Phase 2 venues: Phoenix orderbook DEX, Aquarius AMM — see `docs/PROTOCOL_ADAPTER_INTERFACE.md`.
 - **Rebalancing Scheduler** (`src/scheduler.ts`): time-based and event-driven rebalancing with gas awareness (#651, below).
 - **Metrics & Dashboard API** (`src/metrics.ts`, `src/metricsApi.ts`): performance-metrics aggregation + HTTP endpoints for the dashboard UI (#652).

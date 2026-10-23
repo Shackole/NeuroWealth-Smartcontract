@@ -11,6 +11,8 @@ export interface AssetBreakdownData {
   total: number;
   /** Raw bigint values (7-decimal Stellar units) */
   raw: { idle: bigint; deployed: bigint };
+  updatedAt: string | null;
+  source: string;
 }
 
 const DECIMAL_PLACES = 7;
@@ -19,7 +21,7 @@ const SCALE = 10 ** DECIMAL_PLACES;
 async function fetcher(url: string): Promise<AssetBreakdownData> {
   const res = await fetch(url, { cache: 'no-store' });
   if (!res.ok) throw new Error(`Asset breakdown fetch failed: ${res.status}`);
-  const json = await res.json() as { idle: string; deployed: string };
+  const json = await res.json() as { idle: string; deployed: string; updatedAt?: string };
   const idle = BigInt(json.idle);
   const deployed = BigInt(json.deployed);
   return {
@@ -27,6 +29,8 @@ async function fetcher(url: string): Promise<AssetBreakdownData> {
     deployed: Number(deployed) / SCALE,
     total: (Number(idle) + Number(deployed)) / SCALE,
     raw: { idle, deployed },
+    updatedAt: json.updatedAt ?? null,
+    source: res.headers.get('X-Breakdown-Source') ?? 'Soroban vault RPC',
   };
 }
 
@@ -64,6 +68,9 @@ export function useAssetBreakdown(options: UseAssetBreakdownOptions = {}) {
     deployed: data?.deployed ?? 0,
     total: data?.total ?? 0,
     raw: data?.raw ?? { idle: 0n, deployed: 0n },
+    updatedAt: data?.updatedAt ?? null,
+    source: data?.source ?? 'Soroban vault RPC',
+    hasData: Boolean(data),
     isLoading,
     isValidating,
     error: error ?? null,

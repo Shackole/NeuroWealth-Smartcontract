@@ -3,9 +3,9 @@
 # Place this file alongside the Prometheus binary or reference it via
 #   prometheus --config.file=infra/prometheus.yml
 #
-# Environment variables (substitute real values in production):
-#   AGENT_HOST        - hostname/IP of the Node.js agent service
-#   AGENT_PORT        - port the agent exposes /metrics (default 3000)
+# The Compose stack targets the host agent at host.docker.internal:3001.
+# Replace this static target with service discovery or the reachable production
+# agent address when deploying outside local Compose.
 #   ALERTMANAGER_HOST - hostname/IP of Alertmanager
 #   ALERTMANAGER_PORT - Alertmanager port (default 9093)
 #
@@ -49,7 +49,7 @@ scrape_configs:
     scheme: http
     static_configs:
       - targets:
-          - "${AGENT_HOST:-localhost}:${AGENT_PORT:-3000}"
+          - "host.docker.internal:3001"
         labels:
           service: "agent"
           component: "ai_agent"

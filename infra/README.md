@@ -160,16 +160,21 @@ concurrent `terraform apply` runs from corrupting remote state.
 | PR touching `infra/**` | Format check → Validate → Plan → Post plan as PR comment |
 | Push to `main` touching `infra/**` | Plan → Apply (requires manual approval via `terraform-production` environment) |
 
-### Required secrets
+### GitHub Actions configuration
 
-| Secret | Description |
-|--------|-------------|
-| `AWS_ACCESS_KEY_ID` | AWS IAM credentials |
-| `AWS_SECRET_ACCESS_KEY` | AWS IAM credentials |
-| `AWS_REGION` | AWS region (e.g. `us-east-1`) |
-| `RAILWAY_TOKEN` | Railway API token |
-| `TF_STATE_BUCKET` | S3 bucket name for remote state |
-| `TF_LOCK_TABLE` | DynamoDB table name for state locking |
+| Setting | Type | Description |
+|---------|------|-------------|
+| `AWS_TERRAFORM_PLAN_ROLE_ARN` | Variable in `terraform-plan` environment | Read-only AWS OIDC role for same-repository PR plans. |
+| `AWS_TERRAFORM_APPLY_ROLE_ARN` | Variable in `terraform-production` environment | AWS OIDC role for protected production applies. |
+| `AWS_REGION` | Repository/environment variable | AWS region (for example `us-east-1`). |
+| `RAILWAY_TOKEN` | Environment secret | Project-scoped Railway token; use separate values for plan and production apply. |
+| `TF_STATE_BUCKET` | Environment variable | S3 bucket name for remote state. |
+| `TF_LOCK_TABLE` | Environment variable | DynamoDB table name for state locking. |
+
+Configure the `terraform-production` environment with required reviewers and
+restrict it to protected `main`. AWS access uses OIDC role assumption, not
+long-lived access-key secrets. See [`docs/CLOUD_CREDENTIALS.md`](../docs/CLOUD_CREDENTIALS.md)
+for trust-policy and rotation requirements.
 
 ---
 
@@ -184,3 +189,24 @@ Remote state is stored in S3 with DynamoDB locking:
 
 State contains sensitive values (KMS key IDs, Railway service IDs). Never
 commit `.tfstate` files or share state access broadly.
+
+## Monitoring stack limits and recovery
+
+`docker-compose.monitoring.yml` bounds Prometheus to 1 CPU / 512 MiB,
+Alertmanager to 0.5 CPU / 128 MiB, and Grafana to 0.5 CPU / 256 MiB. Process
+limits and JSON log rotation also cap local host consumption. Prometheus,
+Alertmanager, and Grafana use named volumes for their state; `docker compose
+down` preserves the volumes, while `docker compose down -v` deletes them.
+
+All three services restart with `unless-stopped` and have health checks. Review
+their current status with `docker compose -f infra/docker-compose.monitoring.yml
+ps`; inspect a specific service with
+`docker inspect --format '{{.State.Health.Status}}' <container>`. An `unhealthy`
+service blocks dependent Grafana startup where configured and must be treated
+as an alert until its cause is corrected. Prometheus scrape targets and
+Alertmanager delivery health are also visible in their respective UIs.
+
+For an isolated staging recovery drill, use
+[`docs/STAGING_RECOVERY_EXERCISE.md`](../docs/STAGING_RECOVERY_EXERCISE.md).
+Do not declare the event-replay portion complete while the runbook's durable
+checkpoint gate is blocked.

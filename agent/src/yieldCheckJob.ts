@@ -22,6 +22,9 @@ import { Pool } from 'pg';
 import logger from './logger';
 import { YieldComparisonEngine, ProtocolYieldData } from './yieldComparison';
 
+// A 1,000% APY is the upper sanity bound for automated allocation inputs.
+const MAX_APY_DECIMAL = 10;
+
 // ── Configuration ─────────────────────────────────────────────────────────────
 
 export interface YieldCheckConfig {
@@ -39,6 +42,10 @@ export interface YieldCheckConfig {
   rpcUrl: string;
   /** Stellar network passphrase. */
   networkPassphrase: string;
+  /** Reject provider observations older than this; defaults to 15 minutes. */
+  maxApyAgeMs?: number;
+  /** Upper bound for RPC, protocol, and analytics dependencies; defaults to 10 seconds. */
+  dependencyTimeoutMs?: number;
 }
 
 export const DEFAULT_YIELD_CHECK_CONFIG: YieldCheckConfig = {
@@ -105,11 +112,15 @@ export type RebalanceSubmitter = (
   minOut: number,
 ) => Promise<{ txHash: string }>;
 
+export type RebalanceReconciler = (protocol: string) => Promise<{ txHash: string } | null>;
+
 export interface YieldCheckHooks {
   apyFetchers: Record<string, ApyFetcher>;
   getCurrentProtocol: CurrentProtocolFetcher;
   checkCooldown: CooldownChecker;
   submitRebalance: RebalanceSubmitter;
+  /** Check chain state after an ambiguous submission before anyone retries it. */
+  reconcileRebalance?: RebalanceReconciler;
   /** Injectable clock for deterministic tests. */
   now?: () => number;
 }
@@ -237,11 +248,13 @@ export class YieldCheckJob {
 
     // Persist regardless of outcome
     try {
-      await storeResult(this.pool, result);
+      await withTimeout(storeResult(this.pool, result), 'database result persistence', this.dependencyTimeoutMs());
     } catch (err) {
+      const persistError = `result_persist_failed: ${err instanceof Error ? err.message : String(err)}`;
+      result.error = result.error ? `${result.error}; ${persistError}` : persistError;
       logger.warn(
-        { jobId, error: err instanceof Error ? err.message : err },
-        'Failed to persist yield check result',
+        { jobId, error: persistError },
+        'Failed to persist yield check result; failure included in returned outcome',
       );
     }
 
@@ -282,8 +295,17 @@ export class YieldCheckJob {
 
   private async execute(jobId: string, checkedAt: number): Promise<YieldCheckResult> {
     // 1. Fetch current protocol and deployed amount
-    const { protocolId: currentProtocol, deployedAmountStroops } =
-      await this.hooks.getCurrentProtocol();
+    const { protocolId: currentProtocol, deployedAmountStroops } = await withTimeout(
+      this.hooks.getCurrentProtocol(), 'current vault state', this.dependencyTimeoutMs(),
+    );
+
+    if (!currentProtocol || !Number.isSafeInteger(deployedAmountStroops) || deployedAmountStroops <= 0) {
+      return {
+        jobId, checkedAt, currentProtocol: currentProtocol || 'unknown', currentApy: 0,
+        bestProtocol: currentProtocol || 'unknown', bestApy: 0, rebalanceTriggered: false,
+        skipReason: 'invalid_current_vault_position',
+      };
+    }
 
     logger.info(
       { jobId, currentProtocol, deployedAmountStroops },
@@ -291,8 +313,20 @@ export class YieldCheckJob {
     );
 
     // 2. Check rebalance cooldown before doing expensive APY fetches
-    const cooldown = await this.hooks.checkCooldown();
+    const cooldown = await withTimeout(this.hooks.checkCooldown(), 'rebalance cooldown state', this.dependencyTimeoutMs());
     const { cooldownLedgers, lastRebalanceLedger, currentLedger } = cooldown;
+
+    if (
+      !Number.isSafeInteger(cooldownLedgers) || cooldownLedgers < 0 ||
+      !Number.isSafeInteger(lastRebalanceLedger) || lastRebalanceLedger < 0 ||
+      !Number.isSafeInteger(currentLedger) || currentLedger < lastRebalanceLedger
+    ) {
+      return {
+        jobId, checkedAt, currentProtocol, currentApy: 0, bestProtocol: currentProtocol,
+        bestApy: 0, rebalanceTriggered: false, skipReason: 'invalid_cooldown_state',
+        deployedAmount: deployedAmountStroops,
+      };
+    }
 
     const ledgersSinceRebalance = currentLedger - lastRebalanceLedger;
     if (cooldownLedgers > 0 && ledgersSinceRebalance < cooldownLedgers) {
@@ -339,9 +373,25 @@ export class YieldCheckJob {
 
     // 4. Determine current APY and best available opportunity
     const currentSnapshot = yieldSnapshots.find((s) => s.protocolId === currentProtocol);
-    const currentApy = currentSnapshot?.currentApy ?? 0;
+    if (!currentSnapshot) {
+      return {
+        jobId, checkedAt, currentProtocol, currentApy: 0, bestProtocol: currentProtocol,
+        bestApy: 0, rebalanceTriggered: false, skipReason: 'current_protocol_apy_unavailable',
+        deployedAmount: deployedAmountStroops,
+      };
+    }
+    const currentApy = currentSnapshot.currentApy;
 
-    const ranked = this.engine.rankOpportunities(yieldSnapshots);
+    const ranked = this.engine.rankOpportunities(yieldSnapshots).filter(
+      (opportunity) => Number.isFinite(opportunity.netApy) && Number.isFinite(opportunity.riskAdjustedScore),
+    );
+    if (ranked.length === 0) {
+      return {
+        jobId, checkedAt, currentProtocol, currentApy, bestProtocol: currentProtocol,
+        bestApy: currentApy, rebalanceTriggered: false, skipReason: 'no_usable_ranked_protocol_data',
+        deployedAmount: deployedAmountStroops,
+      };
+    }
     const best = ranked[0];
     const bestApy = best?.netApy ?? 0;
     const bestProtocol = best?.protocolId ?? currentProtocol;
@@ -388,6 +438,13 @@ export class YieldCheckJob {
     const minOut = Math.floor(
       deployedAmountStroops * (1 - this.config.slippageBps / 10_000),
     );
+    if (!Number.isSafeInteger(minOut) || minOut <= 0 || this.config.slippageBps < 0 || this.config.slippageBps >= 10_000) {
+      return {
+        jobId, checkedAt, currentProtocol, currentApy, bestProtocol, bestApy,
+        rebalanceTriggered: false, skipReason: 'invalid_rebalance_bounds',
+        deployedAmount: deployedAmountStroops,
+      };
+    }
 
     logger.info(
       {
@@ -403,11 +460,11 @@ export class YieldCheckJob {
 
     // 7. Submit rebalance transaction
     try {
-      const { txHash } = await this.hooks.submitRebalance(
+      const { txHash } = await withTimeout(this.hooks.submitRebalance(
         bestProtocol,
         bestApy,
         minOut,
-      );
+      ), 'rebalance submission', this.dependencyTimeoutMs());
 
       logger.info(
         {
@@ -437,6 +494,32 @@ export class YieldCheckJob {
       };
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
+      if (isUncertainSubmissionError(error) && this.hooks.reconcileRebalance) {
+        try {
+          const reconciled = await withTimeout(
+            this.hooks.reconcileRebalance(bestProtocol), 'uncertain transaction reconciliation', this.dependencyTimeoutMs(),
+          );
+          if (reconciled?.txHash) {
+            return {
+              jobId, checkedAt, currentProtocol, currentApy, bestProtocol, bestApy,
+              rebalanceTriggered: true, txHash: reconciled.txHash, minOut,
+              deployedAmount: deployedAmountStroops, skipReason: 'submission_reconciled_after_uncertain_response',
+            };
+          }
+        } catch (reconcileError) {
+          return {
+            jobId, checkedAt, currentProtocol, currentApy, bestProtocol, bestApy,
+            rebalanceTriggered: false, skipReason: 'submission_outcome_uncertain',
+            error: `${error}; reconciliation_failed: ${reconcileError instanceof Error ? reconcileError.message : String(reconcileError)}`,
+            minOut, deployedAmount: deployedAmountStroops,
+          };
+        }
+        return {
+          jobId, checkedAt, currentProtocol, currentApy, bestProtocol, bestApy,
+          rebalanceTriggered: false, skipReason: 'submission_outcome_uncertain',
+          error, minOut, deployedAmount: deployedAmountStroops,
+        };
+      }
       logger.error({ jobId, error, targetProtocol: bestProtocol }, 'Rebalance submission failed');
 
       return {
@@ -466,7 +549,11 @@ export class YieldCheckJob {
     await Promise.allSettled(
       protocolIds.map(async (id) => {
         try {
-          const data = await this.hooks.apyFetchers[id](id);
+          const data = await withTimeout(this.hooks.apyFetchers[id](id), `APY fetch for ${id}`, this.dependencyTimeoutMs());
+          if (!this.isUsableApy(data, id)) {
+            logger.warn({ jobId, protocolId: id }, 'Invalid or stale APY observation — skipping protocol');
+            return;
+          }
           results.push(data);
           logger.debug(
             { jobId, protocolId: id, apy: (data.currentApy * 100).toFixed(2) + '%' },
@@ -488,15 +575,47 @@ export class YieldCheckJob {
     const fetcher = this.hooks.apyFetchers[protocolId];
     if (!fetcher) return null;
     try {
-      return await fetcher(protocolId);
+      const data = await withTimeout(fetcher(protocolId), `APY fetch for ${protocolId}`, this.dependencyTimeoutMs());
+      return this.isUsableApy(data, protocolId) ? data : null;
     } catch {
       return null;
     }
   }
 
+  private isUsableApy(data: ProtocolYieldData, expectedProtocolId: string): boolean {
+    if (
+      !data || data.protocolId !== expectedProtocolId ||
+      !Number.isFinite(data.currentApy) || data.currentApy < 0 || data.currentApy > MAX_APY_DECIMAL ||
+      !Number.isFinite(data.historicalApy7d) || data.historicalApy7d < 0 || data.historicalApy7d > MAX_APY_DECIMAL ||
+      !Number.isFinite(data.historicalApy30d) || data.historicalApy30d < 0 || data.historicalApy30d > MAX_APY_DECIMAL ||
+      !Number.isFinite(data.tvlUsdc) || data.tvlUsdc < 0 ||
+      !Number.isFinite(data.volatility) || data.volatility < 0 || (data.volatility > 0 && data.volatility < 1e-12) ||
+      !Number.isFinite(data.riskScore) || data.riskScore < 1 || data.riskScore > 100
+    ) return false;
+    if (data.fetchedAt === undefined) return true;
+    const age = this.now() - data.fetchedAt;
+    return Number.isFinite(data.fetchedAt) && age >= -60_000 && age <= (this.config.maxApyAgeMs ?? 15 * 60_000);
+  }
+
   private now(): number {
     return this.hooks.now ? this.hooks.now() : Date.now();
   }
+
+  private dependencyTimeoutMs(): number {
+    const value = this.config.dependencyTimeoutMs ?? 10_000;
+    return Number.isSafeInteger(value) && value > 0 ? value : 10_000;
+  }
+}
+
+function isUncertainSubmissionError(error: string): boolean {
+  return /timeout|timed out|socket|connection reset|network|unknown outcome|uncertain/i.test(error);
+}
+
+function withTimeout<T>(promise: Promise<T>, dependency: string, timeoutMs: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${dependency} timed out after ${timeoutMs}ms`)), timeoutMs);
+    promise.then(resolve, reject).finally(() => clearTimeout(timer));
+  });
 }
 
 // ── Production factory ─────────────────────────────────────────────────────────
@@ -512,6 +631,7 @@ export function createProductionYieldCheckJob(pool: Pool): YieldCheckJob {
   // Dynamic import to avoid breaking unit tests that don't have @stellar/stellar-sdk
   // configured with real network credentials.
   const config = { ...DEFAULT_YIELD_CHECK_CONFIG };
+  let pendingRebalanceHash: string | null = null;
 
   const hooks: YieldCheckHooks = {
     /**
@@ -536,6 +656,7 @@ export function createProductionYieldCheckJob(pool: Pool): YieldCheckJob {
           tvlUsdc: 5_000_000,
           volatility: 0.01,
           riskScore: 25,
+          fetchedAt: Date.now(),
         };
       },
       dex: async (_id: string): Promise<ProtocolYieldData> => {
@@ -551,6 +672,7 @@ export function createProductionYieldCheckJob(pool: Pool): YieldCheckJob {
           tvlUsdc: 2_000_000,
           volatility: 0.04,
           riskScore: 55,
+          fetchedAt: Date.now(),
         };
       },
     },
@@ -591,6 +713,19 @@ export function createProductionYieldCheckJob(pool: Pool): YieldCheckJob {
       const keypair = StellarSdk.Keypair.fromSecret(config.agentSecret);
       const server = new StellarSdk.SorobanRpc.Server(config.rpcUrl);
 
+      // A previous send may have timed out after the network accepted it.
+      // Resolve that hash before building or submitting another rebalance.
+      if (pendingRebalanceHash) {
+        const prior = await server.getTransaction(pendingRebalanceHash);
+        if (prior.status === 'SUCCESS') {
+          const priorHash = pendingRebalanceHash;
+          pendingRebalanceHash = null;
+          return { txHash: priorHash };
+        }
+        if (prior.status === 'FAILED') pendingRebalanceHash = null;
+        else throw new Error(`Previous rebalance outcome remains uncertain: ${pendingRebalanceHash}`);
+      }
+
       logger.info(
         { protocol, expectedApy, minOut, agent: keypair.publicKey().slice(0, 8) + '...' },
         'Submitting rebalance transaction',
@@ -617,21 +752,26 @@ export function createProductionYieldCheckJob(pool: Pool): YieldCheckJob {
 
       const prepared = await server.prepareTransaction(transaction);
       prepared.sign(keypair);
+      pendingRebalanceHash = prepared.hash().toString('hex');
 
       const response = await server.sendTransaction(prepared);
 
       if (response.status === 'ERROR') {
+        pendingRebalanceHash = null;
         throw new Error(`Rebalance transaction rejected: ${JSON.stringify(response.errorResult)}`);
       }
 
       // Poll for confirmation (up to 30s)
       let txHash = response.hash;
+      pendingRebalanceHash = txHash || pendingRebalanceHash;
+      let confirmed = false;
       for (let i = 0; i < 30; i++) {
         await new Promise((r) => setTimeout(r, 1000));
         try {
           const tx = await server.getTransaction(txHash);
-          if (tx.status === 'SUCCESS') break;
+          if (tx.status === 'SUCCESS') { confirmed = true; pendingRebalanceHash = null; break; }
           if (tx.status === 'FAILED') {
+            pendingRebalanceHash = null;
             throw new Error(`Rebalance transaction failed on-chain: ${txHash}`);
           }
         } catch (e) {
@@ -639,7 +779,22 @@ export function createProductionYieldCheckJob(pool: Pool): YieldCheckJob {
         }
       }
 
+      if (!confirmed) throw new Error(`Transaction confirmation timed out; outcome uncertain: ${txHash}`);
+
       return { txHash };
+    },
+    reconcileRebalance: async () => {
+      if (!pendingRebalanceHash) return null;
+      const StellarSdk = await import('@stellar/stellar-sdk');
+      const server = new StellarSdk.SorobanRpc.Server(config.rpcUrl);
+      const pendingHash = pendingRebalanceHash;
+      const transaction = await server.getTransaction(pendingHash);
+      if (transaction.status === 'SUCCESS') {
+        pendingRebalanceHash = null;
+        return { txHash: pendingHash };
+      }
+      if (transaction.status === 'FAILED') pendingRebalanceHash = null;
+      return null;
     },
   };
 

@@ -293,6 +293,118 @@ vault, transfer ownership to safe keys via `transfer_ownership` /
 
 ## 7. Upgrade Checklist
 
+### Devnet upgrade rehearsal (repeatable procedure for issue #459)
+
+Run this rehearsal only against a disposable Stellar **devnet** vault with
+devnet identities and no production credentials. It is an operator procedure,
+not a claim that a rehearsal has already passed. Set these values explicitly;
+never rely on a CLI default network:
+
+```bash
+export NETWORK="Test SDF Network ; September 2015"
+export RPC_URL="https://soroban-testnet.stellar.org"
+export VAULT_CONTRACT_ID="<devnet-contract-id>"
+export OWNER_ID="<devnet-owner-identity>"
+export GUARDIAN_ID="<devnet-guardian-identity>"
+export SNAPSHOT="./artifacts/pre-upgrade-devnet.json"
+```
+
+Read-only calls must carry the same explicit network and RPC settings; for
+example, the owner-role read is:
+
+```bash
+stellar contract invoke --id "$VAULT_CONTRACT_ID" --source "$OWNER_ID" \
+  --network "$NETWORK" --rpc-url "$RPC_URL" --send=no -- get_owner
+stellar contract invoke --id "$VAULT_CONTRACT_ID" --source "$OWNER_ID" \
+  --network "$NETWORK" --rpc-url "$RPC_URL" --send=no -- get_guardian
+stellar contract invoke --id "$VAULT_CONTRACT_ID" --source "$OWNER_ID" \
+  --network "$NETWORK" --rpc-url "$RPC_URL" --send=no -- get_total_assets
+stellar contract invoke --id "$VAULT_CONTRACT_ID" --source "$OWNER_ID" \
+  --network "$NETWORK" --rpc-url "$RPC_URL" --send=no -- get_total_shares
+```
+
+The following mutation command shows the **owner** scheduling role. Use the
+repository's approved signer workflow and devnet owner identity:
+
+```bash
+stellar contract invoke --id "$VAULT_CONTRACT_ID" --source "$OWNER_ID" \
+  --network "$NETWORK" --rpc-url "$RPC_URL" -- \
+  schedule_upgrade --owner "$OWNER_ADDRESS" --new_wasm_hash "$NEW_WASM_HASH"
+```
+
+For execution, the **owner and configured guardian are both required signers**
+when `get_guardian()` is set. Route the `execute_upgrade` authorization through
+the configured multi-signer transaction workflow so both custodians approve
+the same devnet transaction; a command signed only by `OWNER_ID` must not be
+treated as a successful rehearsal. Keep guardian credentials out of shell
+arguments and logs.
+
+1. **Record a protected pre-upgrade snapshot.** Capture the network passphrase,
+   ledger sequence, contract ID, `get_version`, `get_owner`, `get_guardian`,
+   `get_current_protocol`, `get_tvl_cap`, `is_paused`, `get_total_assets`, and
+   `get_total_shares`. Page through `get_users_with_shares(start, limit)` until
+   the page is empty; record every user's shares and `get_balance(user)`.
+   Also record any per-asset totals and deployed/idle balances used by the
+   deployment. Keep the snapshot in access-controlled audit storage. This is
+   a read-only view snapshot, not a full export of Soroban contract storage;
+   chain state remains authoritative.
+2. **Build and verify the candidate.** From the reviewed commit, build the
+   vault WASM using the repository's pinned Rust toolchain and release build
+   instructions. Record commit, toolchain, artifact path, and SHA-256. Upload
+   the WASM to the explicit devnet, record the returned WASM hash, and verify
+   it matches the artifact that was reviewed. Do not use a mainnet RPC, source,
+   contract, or signer in this rehearsal.
+3. **Check compatibility before scheduling.** Review every changed `DataKey`
+   discriminant and stored value representation. Compare the snapshot's
+   account set and balances with the candidate's expected accounting model.
+   Document a migration entrypoint and rollback limitations if storage shape
+   changes; do not treat unchanged contract ID as proof of compatibility.
+4. **Schedule with the owner.** Confirm `get_owner()` and `get_guardian()` match
+   the designated devnet identities and the contract is not paused. The owner
+   signs `schedule_upgrade(owner, new_wasm_hash)`. Record the emitted hash,
+   effective ledger, transaction hash, and network. `schedule_upgrade` is
+   owner-authorized; the configured guardian is required to co-sign execution.
+5. **Exercise the timelock and cancellation path.** Confirm
+   `get_pending_upgrade()` returns the scheduled hash/expiry. Verify execution
+   is not attempted before the expiry ledger. In a separate rehearsal run,
+   have the owner cancel a disposable proposal and verify the pending state is
+   cleared. For the execution run, wait until current ledger is at least the
+   recorded expiry (17,280 ledgers after scheduling); review proposal events
+   during the delay and cancel if hash, signer, or intent is unexpected.
+6. **Execute with both roles.** At/after expiry and while the contract is not
+   paused, invoke `execute_upgrade(owner)` with owner and configured guardian
+   authorization. Confirm the upgrade event, new WASM hash/version, cleared
+   pending state, and unchanged contract ID. If storage migration is required,
+   invoke only the reviewed migration entrypoint before allowing application
+   traffic.
+7. **Reconcile post-upgrade accounting.** Repeat the pre-upgrade getters and
+   page through the full holder list. Compare all user shares and derived
+   balances, total shares/assets, owner, guardian, protocol, cap, pause state,
+   and per-asset accounting. Explain every difference against upgrade events
+   and the approved migration. Check read-only calls across all relevant
+   getters and reconcile the ledger/event history. Do not perform sample user
+   deposits or withdrawals unless a separately approved disposable devnet
+   rehearsal plan authorizes them.
+8. **Record result and recovery boundary.** Attach command transcript, network
+   and ledger ranges, pre/post snapshots, WASM hash, proposal/upgrade
+   transaction hashes, signer roles, comparison results, elapsed time, and
+   deviations. Before execution, `cancel_upgrade` is the recovery path. After
+   execution, there is no automatic rollback: recovery requires a separately
+   reviewed and timelocked forward upgrade, or a planned user migration to a
+   new vault. State snapshots aid reconciliation but cannot restore contract
+   storage on-ledger.
+
+#### Rehearsal record
+
+```text
+Status: NOT RUN in this repository session
+Environment: none (no devnet rehearsal executed)
+Reason: no devnet rehearsal was requested/performed; no tests or chain mutations were run
+Evidence required for PASS: pre/post holder snapshots, matching WASM hash,
+  owner + guardian execution evidence, timelock/cancellation evidence, and
+  reconciled totals and every holder balance
+```
+
 Use this practical checklist for every upgrade.
 
 ### Before Upgrade

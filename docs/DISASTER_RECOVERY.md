@@ -1,5 +1,8 @@
 # Disaster Recovery & Failover Runbook (#655)
 
+For the staging Redis/database interruption drill and evidence record, see
+[`STAGING_RECOVERY_EXERCISE.md`](STAGING_RECOVERY_EXERCISE.md).
+
 Maximum acceptable downtime (**RTO**): **5 minutes**.
 Recovery point objective (**RPO**): last agent state backup (default: every
 heartbeat, ≤ 15 s stale).
@@ -23,6 +26,13 @@ Two cooperating modules in `agent/src/`:
   via the deterministic tie-break (lowest `agentId` wins the lease).
 
 Worst-case detection + promotion ≈ 60 s TTL + poll interval (7.5 s) ≪ 5 min.
+
+**Deployment limitation:** the repository defines these state backup and
+failover modules, but `agent/src` does not currently instantiate
+`StateBackupManager` or wire it into the service lifecycle. The RPO and restore
+behavior below are design targets until a deployed build has explicit wiring
+and an observed backup. PostgreSQL backups do not by themselves prove that
+agent state is recoverable.
 
 ## Health monitoring
 

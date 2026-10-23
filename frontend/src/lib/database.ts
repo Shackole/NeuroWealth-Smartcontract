@@ -7,21 +7,9 @@ export interface EarningsSummary {
 export interface ChartDataPoint {
   /** Explicit date or period label (e.g. '2026-07-21 UTC') */
   date: string;
-  /** Portfolio value in USDC (null/undefined when series is unavailable) */
-  value: number | null;
-  /** Accrued yield/earnings in USDC (null/undefined when series is unavailable) */
-  yield?: number | null;
-  /** Annual Percentage Yield in percent, e.g. 8.4 for 8.40% APY (null/undefined when unavailable) */
-  apy?: number | null;
-}
-
-export interface EarningsDataPoint {
-  /** ISO-8601 UTC timestamp */
-  timestamp: string;
-  /** Cumulative earnings in USDC */
-  balance: number;
-  /** Annual Percentage Yield (%) at this point, if available */
-  apy?: number | null;
+  value: number;
+  yield: number;
+  apyBps?: number | null;
 }
 
 export interface TransactionRecord {
@@ -29,10 +17,9 @@ export interface TransactionRecord {
   type: 'deposit' | 'withdrawal' | 'rebalance' | 'withdraw';
   amount: number;
   asset?: string;
-  protocol?: string;
+  address?: string;
   strategy?: string;
-  txHash?: string;
-  tx_hash?: string;
+  txHash: string;
   timestamp: string;
   status: 'confirmed' | 'pending' | 'failed';
 }

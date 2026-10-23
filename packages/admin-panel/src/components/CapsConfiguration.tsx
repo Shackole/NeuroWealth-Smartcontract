@@ -6,6 +6,14 @@ import { useStore } from "@/lib/store";
 import { getSorobanServer } from "@/lib/stellar";
 import { TrendingUp, DollarSign } from "lucide-react";
 import * as StellarSdk from "@stellar/stellar-sdk";
+import { ActionReview, type ActionReviewChange } from "./ActionReview";
+
+type CapReview = {
+  kind: "tvl" | "user" | "limits";
+  title: string;
+  changes: ActionReviewChange[];
+  values: string[];
+};
 
 interface CapsConfigurationProps {
   client: VaultClient;
@@ -28,6 +36,7 @@ export function CapsConfiguration({ client, signer }: CapsConfigurationProps) {
   const [error, setError] = useState<string | null>(null);
   const [txHash, setTxHash] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"tvl" | "user" | "limits">("tvl");
+  const [review, setReview] = useState<CapReview | null>(null);
 
   useEffect(() => {
     fetchCaps();
@@ -57,13 +66,13 @@ export function CapsConfiguration({ client, signer }: CapsConfigurationProps) {
     }
   };
 
-  const handleSetTvlCap = async () => {
+  const handleSetTvlCap = async (reviewedValue: string) => {
     setLoading(true);
     setError(null);
     setTxHash(null);
 
     try {
-      const capInBaseUnits = BigInt(newTvlCap) * BigInt(10 ** DECIMAL_PLACES);
+      const capInBaseUnits = BigInt(reviewedValue) * BigInt(10 ** DECIMAL_PLACES);
       const result = await client.set_tvl_cap(
         signer,
         signer.publicKey(),
@@ -90,13 +99,13 @@ export function CapsConfiguration({ client, signer }: CapsConfigurationProps) {
     }
   };
 
-  const handleSetUserCap = async () => {
+  const handleSetUserCap = async (reviewedValue: string) => {
     setLoading(true);
     setError(null);
     setTxHash(null);
 
     try {
-      const capInBaseUnits = BigInt(newUserCap) * BigInt(10 ** DECIMAL_PLACES);
+      const capInBaseUnits = BigInt(reviewedValue) * BigInt(10 ** DECIMAL_PLACES);
       const result = await client.set_user_deposit_cap(
         signer,
         signer.publicKey(),
@@ -123,16 +132,16 @@ export function CapsConfiguration({ client, signer }: CapsConfigurationProps) {
     }
   };
 
-  const handleSetLimits = async () => {
+  const handleSetLimits = async (reviewedMin: string, reviewedMax: string) => {
     setLoading(true);
     setError(null);
     setTxHash(null);
 
     try {
       const minInBaseUnits =
-        BigInt(newMinDeposit) * BigInt(10 ** DECIMAL_PLACES);
+        BigInt(reviewedMin) * BigInt(10 ** DECIMAL_PLACES);
       const maxInBaseUnits =
-        BigInt(newMaxDeposit) * BigInt(10 ** DECIMAL_PLACES);
+        BigInt(reviewedMax) * BigInt(10 ** DECIMAL_PLACES);
 
       const result = await client.set_deposit_limits(
         signer,
@@ -209,7 +218,12 @@ export function CapsConfiguration({ client, signer }: CapsConfigurationProps) {
                 placeholder="Enter amount in USDC"
               />
               <button
-                onClick={handleSetTvlCap}
+                onClick={() => setReview({
+                  kind: "tvl",
+                  title: "TVL cap",
+                  values: [newTvlCap],
+                  changes: [{ label: "TVL cap (USDC)", current: (tvlCap / BigInt(10 ** DECIMAL_PLACES)).toString(), proposed: newTvlCap }],
+                })}
                 disabled={loading}
                 className="button-primary px-6 py-2 disabled:opacity-50"
               >
@@ -244,7 +258,12 @@ export function CapsConfiguration({ client, signer }: CapsConfigurationProps) {
                 placeholder="Enter amount in USDC"
               />
               <button
-                onClick={handleSetUserCap}
+                onClick={() => setReview({
+                  kind: "user",
+                  title: "Per-user deposit cap",
+                  values: [newUserCap],
+                  changes: [{ label: "Per-user deposit cap (USDC)", current: (userDepositCap / BigInt(10 ** DECIMAL_PLACES)).toString(), proposed: newUserCap }],
+                })}
                 disabled={loading}
                 className="button-primary px-6 py-2 disabled:opacity-50"
               >
@@ -298,7 +317,15 @@ export function CapsConfiguration({ client, signer }: CapsConfigurationProps) {
           </div>
 
           <button
-            onClick={handleSetLimits}
+            onClick={() => setReview({
+              kind: "limits",
+              title: "Transaction deposit limits",
+              values: [newMinDeposit, newMaxDeposit],
+              changes: [
+                { label: "Minimum deposit (USDC)", current: (minDeposit / BigInt(10 ** DECIMAL_PLACES)).toString(), proposed: newMinDeposit },
+                { label: "Maximum deposit (USDC)", current: (maxDeposit / BigInt(10 ** DECIMAL_PLACES)).toString(), proposed: newMaxDeposit },
+              ],
+            })}
             disabled={loading}
             className="button-primary w-full py-3 disabled:opacity-50"
           >
@@ -311,6 +338,26 @@ export function CapsConfiguration({ client, signer }: CapsConfigurationProps) {
         <div className="mt-4 p-3 bg-emerald-900/20 border border-emerald-700 rounded text-sm text-emerald-300">
           <p className="font-mono break-all">Tx: {txHash}</p>
         </div>
+      )}
+
+      {review && (
+        <ActionReview
+          title={review.title}
+          network={String(network)}
+          signer={signer.publicKey()}
+          requiredAuthority="Contract owner"
+          timelock="No additional timelock is used for this cap update."
+          changes={review.changes}
+          loading={loading}
+          onCancel={() => setReview(null)}
+          onConfirm={() => {
+            const proposal = review;
+            setReview(null);
+            if (proposal.kind === "tvl") void handleSetTvlCap(proposal.values[0]);
+            if (proposal.kind === "user") void handleSetUserCap(proposal.values[0]);
+            if (proposal.kind === "limits") void handleSetLimits(proposal.values[0], proposal.values[1]);
+          }}
+        />
       )}
 
       {error && (

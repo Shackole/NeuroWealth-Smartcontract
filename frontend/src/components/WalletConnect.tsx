@@ -3,6 +3,7 @@
 import React from 'react';
 import { Wallet, LogOut } from 'lucide-react';
 import { shortenAddress } from '@/lib/stellar';
+import { useWalletStore } from '@/lib/walletStore';
 
 interface WalletConnectProps {
   publicKey: string | null;
@@ -17,9 +18,10 @@ export const WalletConnect: React.FC<WalletConnectProps> = ({
   onDisconnect,
   isConnecting
 }) => {
+  const network = useWalletStore((state) => state.network);
   if (publicKey) {
     return (
-      <div className="flex items-center gap-3 bg-slate-900/80 border border-emerald-500/30 rounded-full px-4 py-1.5 shadow-glow-emerald backdrop-blur-md">
+      <div className="flex items-center gap-3 bg-slate-900/80 border border-emerald-500/30 rounded-full px-4 py-1.5 shadow-glow-emerald backdrop-blur-md" aria-label={`Connected wallet on ${network} network`}>
         <div className="flex items-center gap-2">
           <span className="relative flex h-2.5 w-2.5" aria-hidden="true">
             <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
@@ -29,6 +31,13 @@ export const WalletConnect: React.FC<WalletConnectProps> = ({
             {shortenAddress(publicKey)}
           </span>
         </div>
+        <details className="relative text-xs text-slate-300">
+          <summary className="cursor-pointer underline underline-offset-2">Account details</summary>
+          <div className="absolute right-0 top-6 z-50 w-72 rounded-lg border border-slate-700 bg-slate-950 p-3 shadow-xl">
+            <p className="mb-1 font-semibold">{network === 'unknown' ? 'Network not confirmed' : network}</p>
+            <p className="break-all font-mono text-slate-400">{publicKey}</p>
+          </div>
+        </details>
         <button
           onClick={onDisconnect}
           aria-label="Disconnect wallet"

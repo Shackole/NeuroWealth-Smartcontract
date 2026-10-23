@@ -7,12 +7,12 @@ terraform {
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = "~> 5.0"
+      version = "= 5.100.0"
     }
 
     railway = {
       source  = "railwayapp/railway"
-      version = "~> 0.4"
+      version = "= 0.4.0"
     }
   }
 }

@@ -12,7 +12,7 @@ procedure, and quarterly drill process for the NeuroWealth Supabase PostgreSQL d
 | Dimension | Configuration |
 |-----------|---------------|
 | Backup tool | `pg_dump -Fc -Z9` (compressed custom format) |
-| Encryption | AES-256-CBC via `openssl enc` |
+| Encryption | AES-256-CBC via `openssl enc`, plus verified S3 SSE-S3/SSE-KMS |
 | Storage | Amazon S3 with versioning + lifecycle rules |
 | Schedule | Daily at 02:00 UTC (GitHub Actions) |
 | Retention | 7 daily · 4 weekly · 3 monthly |
@@ -31,7 +31,7 @@ procedure, and quarterly drill process for the NeuroWealth Supabase PostgreSQL d
 | `DATABASE_URL` | Full Postgres connection string (e.g. `postgresql://user:pass@host:5432/db`) |
 | `BACKUP_S3_BUCKET` | S3 bucket name (no `s3://` prefix) |
 | `BACKUP_ENCRYPTION_KEY` | AES-256 passphrase. Generate once with `openssl rand -hex 32`. Store in a secrets manager. |
-| `PAGERDUTY_ROUTING_KEY` | PagerDuty Events API v2 integration key for backup health alerts |
+| `PAGERDUTY_ROUTING_KEY` | PagerDuty Events API v2 integration key for stale/missing and workflow-failure alerts |
 | `AWS_ACCESS_KEY_ID` | AWS credentials (or configure an IAM role on the runner) |
 | `AWS_SECRET_ACCESS_KEY` | AWS credentials |
 | `AWS_DEFAULT_REGION` | AWS region (default: `us-east-1`) |
@@ -50,7 +50,7 @@ Enable the following on the backup S3 bucket:
 
 1. **Versioning** — protects against accidental deletion of backup files.
 2. **Server-side encryption** — `SSE-S3` or `SSE-KMS` (defence-in-depth alongside the application-level AES-256 encryption).
-3. **Lifecycle rule** — transition objects older than 90 days to `S3 Glacier Instant Retrieval` to reduce storage cost.
+3. **Lifecycle rule** — transition objects after 30 days and expire objects and old versions according to `backup_retention_days`.
 4. **Block Public Access** — enabled on all four settings.
 
 ---
@@ -65,6 +65,13 @@ All scripts are in `scripts/backup/`:
 | `restore-db.sh` | Download → decrypt → validate → restore |
 | `retention.sh` | Apply 7-daily / 4-weekly / 3-monthly retention |
 | `check-backup-health.sh` | Verify beacon age; alert PagerDuty if stale |
+| `notify-failure.py` | Alert PagerDuty when any backup workflow step fails, including upload or policy verification |
+
+The backup script checks the uploaded object's server-side encryption metadata
+and confirms an enabled lifecycle expiration rule before writing a successful
+health beacon. A failed workflow sends a PagerDuty event with its revision and
+run URL. The PagerDuty routing key must be configured for those failure alerts
+to be actionable.
 
 ### Run a manual backup
 
@@ -218,6 +225,35 @@ successful backup run. The beacon contains:
 If the beacon is absent or older than `MAX_BACKUP_AGE_HOURS` (default: 25 h),
 a critical PagerDuty incident is created.
 
+### What the health beacon proves
+
+The beacon proves that the backup job reported a successful dump/upload. It
+does **not** prove that the encrypted object can be decrypted, restored, or
+used by the application. An S3 object listing and a fresh beacon are likewise
+not restore verification. Only a completed staging restore followed by data
+and application checks counts as a verified recovery point.
+
+The database dump covers PostgreSQL data only. `agent/src/stateBackup.ts`
+contains versioned state-store implementations and a 60-second-capable backup
+manager, but no production instantiation/wiring is present in `agent/src`.
+Therefore agent scheduler/metrics state backups must be treated as **not
+configured** until the deployed service proves that it calls the manager and
+identifies its store/key. If a deployment has added that wiring, back up and
+restore that store separately using its provider's snapshot/version mechanism;
+record state schema version and `savedAt` and reject incompatible state. Do not
+claim the documented agent RPO for an unwired module.
+
+Event ingestion has no durable listener cursor today: `eventListener` begins
+from the latest ledger when it starts. Record the last verified ledger from
+chain and `MAX(ledger_sequence)` from `vault_events` before recovery, then
+reconcile and backfill the gap as described in [the RPC outage runbook](INCIDENT_RUNBOOK.md#54-stellar-rpc-unavailable-p1).
+Do not infer event completeness from a database restore alone.
+
+The RPO/RTO figures in the table above are targets, not measured guarantees.
+Record actual backup age and elapsed recovery time in each drill. A successful
+drill must reconcile restored records and event coverage against the selected
+chain ledger, in addition to checking row counts.
+
 ---
 
 ## Quarterly Restore Drill
@@ -232,7 +268,12 @@ procedure. Record results using the template below.
 - [ ] Restore to a staging database (never production)
 - [ ] Verify row counts match expected production values
 - [ ] Verify application can connect and query the restored database
+- [ ] Record the latest included event ledger and compare it with chain at the selected recovery time
+- [ ] Reconcile deposit/withdraw records and transaction hashes against chain events; record any gap and backfill plan
+- [ ] Restore the agent state store separately and confirm its `lastLedger` is consistent with the database and chain
+- [ ] Verify the deployed agent actually wires `StateBackupManager`; if it does not, mark agent state backup unavailable and record the recovery impact
 - [ ] Record actual RTO (target: < 2 hours)
+- [ ] Record actual RPO (time/data loss from the incident point)
 - [ ] Note any issues or deviations from this document
 
 ### Results template
@@ -255,6 +296,9 @@ Issues encountered: (none / describe)
 Action items:       (none / describe)
 
 Result: PASS / FAIL
+Restore verification: PASS / FAIL (a listed object or fresh beacon alone is not a pass)
+Chain reconciliation: PASS / FAIL / GAP DOCUMENTED
+Agent state restore: PASS / FAIL / NOT CONFIGURED
 ```
 
 Append completed drill results to this document under a `## Drill History` section.
@@ -263,4 +307,6 @@ Append completed drill results to this document under a `## Drill History` secti
 
 ## Drill History
 
-_No drills recorded yet. First drill due Q4 2026._
+_No drills recorded yet. First drill due Q4 2026. No staging restore or chain
+reconciliation was performed while preparing this runbook; staging access was
+not available. Backup existence and the stated RTO remain unverified._

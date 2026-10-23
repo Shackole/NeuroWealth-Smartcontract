@@ -10,6 +10,32 @@ the Stellar Mainnet.
 > `./scripts/deploy.sh --network mainnet` invocation is permitted. Items marked
 > **CRITICAL** are hard blockers — the deployment must not proceed without them.
 
+## Production readiness evidence index (Issue #467)
+
+This index is the sign-off record for the checklist below. A requirement is not
+complete because its documentation exists, a badge is green, or a checkbox is
+present: attach or link inspectable evidence, name the accountable reviewer,
+and record the date it was checked. Until the evidence and sign-off fields are
+filled, readiness is **unverified** and deployment remains blocked.
+
+| Checklist section | Evidence artifact to attach/link | Accountable role | Last verified (UTC) | Status / unresolved blocker |
+|---|---|---|---|---|
+| 1. Key management | Redacted key-separation record, HSM/secret-store policy reference, owner/agent address verification output | Security lead + key custodian | Not recorded | Open — attach evidence and named sign-off; never attach secret material |
+| 2. Initialization and deployment | Reproducible build identity, deploy/initialize transaction hashes, verified contract ID and read-back of owner, agent, token, version | Release operator + contract reviewer | Not recorded | Open — no deployment evidence recorded here |
+| 3. Caps and deposit limits | Owner-authorized configuration transaction and read-back for TVL, user, and per-transaction limits (USDC values) | Contract operator + finance reviewer | Not recorded | Open — record configured values and review |
+| 4. Blend integration | Approved mainnet pool/token addresses, verification source, permission/liquidity review, isolated interaction evidence | Protocol integration lead | Not recorded | Open — attach address and pool review |
+| 5. DEX integration | Approved pool/token addresses, verification source, permission/liquidity review, isolated interaction evidence | Protocol integration lead | Not recorded | Open — attach address and pool review |
+| 6. Emergency and pause drill | Dated drill log showing pause authorization, expected blocked actions, recovery/unpause steps, and monitoring evidence | Incident commander + owner custodian | Not recorded | Open — complete and review the drill |
+| 7. Upgrade and governance | Multisig threshold/policy reference, upgrade timelock proposal/cancel/execute evidence on an isolated network, recovery signer roster | Governance lead + contract reviewer | Not recorded | Open — prove the recovery path and approvals |
+| 8. Security audit and formal review | Signed independent audit report, finding disposition, Kani/proof and security review artifacts | Security lead | Not recorded | Open — attach report and disposition; no audit sign-off recorded here |
+| 9. Cooldown and circuit breaker | Configured values/read-back, alert thresholds, isolated trigger/recovery evidence | Agent operator + SRE | Not recorded | Open — verify configuration and alert route |
+| 10. Secret scanning | CI secret-scan run URL/report and redacted incident disposition for any finding | Security engineer | Not recorded | Open — attach a clean current scan and review |
+| 11. Contacts and on-call | Dated on-call rota, escalation paths, acknowledgement/coverage confirmation | Operations lead | Not recorded | Open — populate current primary and backup contacts |
+
+For each row, replace “Not recorded” only after reviewing the linked artifact.
+Record the artifact URL/path, reviewer name, and verification date beside the
+relevant checklist sign-off. Preserve a dated snapshot for the release record.
+
 ---
 
 ## 📋 Table of Contents
@@ -474,7 +500,7 @@ Only a real network run proves the full cycle.
 - [ ] **C2.** Install new WASM on testnet; capture hash.
 - [ ] **C3.** `schedule_upgrade` with that hash; note `effective_ledger`.
 - [ ] **C4.** Wait 17,280 ledgers (~24 h). Do not shorten the constant.
-- [ ] **C5.** `execute_upgrade` once `current_ledger >= effective_ledger`; `UpgradedEvent` emitted.
+- [ ] **C5.** At `current_ledger == effective_ledger`, execute with owner authorization and, if configured, guardian authorization bound to the same pending hash; `UpgradedEvent` emitted.
 - [ ] **C6.** `get_version()` returns V + 1.
 - [ ] **C7.** `get_pending_upgrade` returns `null` after execution.
 - [ ] **C8.** Storage survived: `get_total_assets()`, `get_total_shares()`, `get_owner()`, `get_agent()`, sample `get_shares(user)` match pre-upgrade values.

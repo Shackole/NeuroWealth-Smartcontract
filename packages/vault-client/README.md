@@ -18,6 +18,55 @@ yarn add @neurowealth/vault-client @stellar/stellar-sdk
 
 `@stellar/stellar-sdk` ≥ 12.0.0 is a peer dependency and must be installed separately.
 
+## Contract artifacts and regeneration (Issue #466)
+
+| Artifact | Source / owner | Committed? |
+|---|---|---|
+| `neurowealth-vault/target/wasm32-unknown-unknown/release/neurowealth_vault.wasm` | Rust contract workspace (`neurowealth-vault/Cargo.toml`, Soroban SDK version in that manifest); built for `wasm32-unknown-unknown` with the Stellar CLI pinned by `.stellar-version` or the CI Rust target build | No; build output under `target/` is disposable |
+| `contract-spec.json` | `scripts/generate-spec.py` reads contract source plus the generator's function/event/error metadata; `scripts/validate-spec.py` compares public functions, events, event fields, error codes, and required spec structure to `neurowealth-vault/contracts/vault/src/lib.rs` | Yes; source-controlled interface metadata |
+| `src/generated/vault.ts` | `scripts/generate-client.js` consumes `contract-spec.json` and generates typed Soroban client bindings | Yes; generated output, never hand-edit |
+| `src/index.ts`, `src/event-listener.ts` | Hand-maintained package exports and event-stream wrapper; they re-export/use the generated bindings | Yes; update by hand when the public package wrapper changes |
+
+The Rust contract source is authoritative for implementation. The JSON spec is
+the checked, versioned client interface description; the TypeScript file is a
+derived artifact. The spec generator uses source parsing and maintained
+metadata, not binary reflection. A WASM build alone does not regenerate or
+validate the spec.
+
+Current generation toolchain: Stellar CLI `21.2.0` (`.stellar-version`),
+Soroban SDK `28.0.0` (`neurowealth-vault/Cargo.toml`), Python `3.11` and Node
+`20` in `contract-spec.yml`, and `@stellar/stellar-sdk` `^17.1.0` for the
+vault-client package. The checked-in spec declares version `1.0.0`.
+
+### Regenerate after a contract interface change
+
+From the repository root, with Python 3, the pinned Rust/WASM toolchain, the
+Stellar CLI version in `.stellar-version`, Node.js, and package dependencies
+installed:
+
+```bash
+cd neurowealth-vault
+stellar contract build
+cd ..
+python3 scripts/generate-spec.py
+python3 scripts/validate-spec.py
+node scripts/generate-client.js
+node scripts/bump-client-version.js
+cd packages/vault-client
+npm ci
+npm run typecheck
+```
+
+Review and commit changes to `contract-spec.json`,
+`packages/vault-client/src/generated/vault.ts`, and any package version/lockfile
+updates. Do not hand-edit generated `vault.ts`. If validation reports drift,
+update the Rust source or the generator metadata to the intended contract
+behavior, regenerate, and inspect the resulting diff; do not silence the
+validator by editing generated output. The `Contract Spec Generation &
+Validation` workflow runs the spec generator, validator, client generator,
+version bump, and client typecheck, then checks for uncommitted generated-file
+drift on pull requests.
+
 ---
 
 ## Quick start
@@ -183,8 +232,8 @@ Signature: `method(signer: Keypair, ...contractParams): Promise<TxResult<ReturnT
 | `set_deposit_limits` | owner-only | Update min/max per tx |
 | `set_blend_pool` | owner-only | Configure Blend pool |
 | `set_dex_pool` | owner-only | Configure DEX pool |
-| `set_blend_approval_ttl` | owner-only | Set Blend approval TTL |
-| `set_approval_ttl` | owner-only | Set token approval TTL |
+| `set_blend_approval_ttl` | owner-only | Set shared Blend/DEX approval TTL (0–500,000 ledgers; zero is immediate expiry) |
+| `set_approval_ttl` | owner-only | Set shared token approval TTL (1,000–500,000 ledgers) |
 | `set_rebalance_cooldown` | owner-only | Set rebalance cooldown |
 | `update_agent` | owner-only | Propose agent update (timelock step 1) |
 | `confirm_agent_update` | owner-only | Confirm agent update (timelock step 2) |

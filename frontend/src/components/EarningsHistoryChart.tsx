@@ -13,6 +13,11 @@ import {
 } from 'recharts';
 import { TrendingUp, BarChart2 } from 'lucide-react';
 import { getEarningsHistory, type EarningsDataPoint } from '@/lib/database';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { useReducedMotion } from '@/lib/useReducedMotion';
+
+// Stable QueryClient (created once per page load; avoids reinit on re-renders)
+const qc = new QueryClient();
 
 // ─── Time range config ─────────────────────────────────────────────────────────
 type Range = '1D' | '7D' | '1M' | '3M' | 'All';
@@ -95,19 +100,9 @@ export interface EarningsHistoryChartProps {
   network?: string;
 }
 
-export const EarningsHistoryChart: React.FC<EarningsHistoryChartProps> = ({
-  publicKey,
-  initialData,
-  isUnavailable = false,
-  unavailableReason,
-  network = 'Stellar Testnet',
-}) => {
-  const [range, setRange] = useState<Range>('1M');
-  const [rawData, setRawData] = useState<EarningsDataPoint[]>(initialData ?? []);
-  const [isLoading, setIsLoading] = useState<boolean>(false);
-  const [fetchError, setFetchError] = useState<string | null>(null);
-  const [sortField, setSortField] = useState<SortField>('date');
-  const [sortDir, setSortDir] = useState<SortDirection>('asc');
+function ChartInner({ publicKey }: ChartInnerProps) {
+  const reducedMotion = useReducedMotion();
+  const [range, setRange] = React.useState<Range>('1M');
 
   React.useEffect(() => {
     if (initialData !== undefined) {
@@ -300,60 +295,71 @@ export const EarningsHistoryChart: React.FC<EarningsHistoryChartProps> = ({
       ) : chartData.length === 0 ? (
         <EmptyState isConnected={true} />
       ) : (
-        <div
+        <motion.div
+          key={range}
+          initial={reducedMotion ? false : { opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: reducedMotion ? 0 : 0.4, ease: 'easeOut' }}
           className="h-72 w-full"
           role="img"
           aria-label={`Cumulative earnings chart in USDC for range ${range} on ${network}`}
         >
-          {canRenderRecharts ? (
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart
-                data={chartData}
-                margin={{ top: 10, right: 10, left: -10, bottom: 0 }}
-              >
-                <defs>
-                  <linearGradient id="earningsGradient" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#2563eb" stopOpacity={0.45} />
-                    <stop offset="95%" stopColor="#2563eb" stopOpacity={0.0} />
-                  </linearGradient>
-                </defs>
+          <ResponsiveContainer width="100%" height="100%">
+            <AreaChart
+              data={chartData}
+              margin={{ top: 10, right: 10, left: -10, bottom: 0 }}
+            >
+              <defs>
+                <linearGradient id="earningsGradient" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#10b981" stopOpacity={0.45} />
+                  <stop offset="95%" stopColor="#10b981" stopOpacity={0.0} />
+                </linearGradient>
+              </defs>
 
-                <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
+              <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
 
-                <XAxis
-                  dataKey="date"
-                  stroke="#475569"
-                  fontSize={11}
-                  tickLine={false}
-                  axisLine={false}
-                  interval="preserveStartEnd"
-                />
+              <XAxis
+                dataKey="date"
+                stroke="#475569"
+                fontSize={11}
+                tickLine={false}
+                axisLine={false}
+                interval="preserveStartEnd"
+              />
 
-                <YAxis
-                  stroke="#475569"
-                  fontSize={11}
-                  tickLine={false}
-                  axisLine={false}
-                  tickFormatter={(v) => `$${Number(v).toFixed(2)}`}
-                />
+              <YAxis
+                stroke="#475569"
+                fontSize={11}
+                tickLine={false}
+                axisLine={false}
+                tickFormatter={(v) => `${Number(v).toFixed(2)}`}
+                label={{
+                  value: 'USDC',
+                  angle: -90,
+                  position: 'insideLeft',
+                  offset: 12,
+                  fill: '#475569',
+                  fontSize: 11,
+                }}
+              />
 
-                <Tooltip content={<CustomTooltip />} />
+              <Tooltip content={<CustomTooltip />} />
 
-                <Area
-                  type="monotone"
-                  dataKey="balance"
-                  stroke="#2563eb"
-                  strokeWidth={2.5}
-                  fill="url(#earningsGradient)"
-                  dot={false}
-                  activeDot={{ r: 5, fill: '#2563eb', stroke: '#1e3a8a' }}
-                  name="Cumulative Earnings (USDC)"
-                  animationDuration={600}
-                />
-              </AreaChart>
-            </ResponsiveContainer>
-          ) : null}
-        </div>
+              <Area
+                type="monotone"
+                dataKey="balance"
+                stroke="#10b981"
+                strokeWidth={2.5}
+                fill="url(#earningsGradient)"
+                dot={false}
+                activeDot={{ r: 5, fill: '#10b981', stroke: '#064e3b' }}
+                name="Cumulative Earnings"
+                isAnimationActive={!reducedMotion}
+                animationDuration={reducedMotion ? 0 : 600}
+              />
+            </AreaChart>
+          </ResponsiveContainer>
+        </motion.div>
       )}
 
       {/* Accessible Data Table */}

@@ -4,6 +4,7 @@
  */
 
 import assert from 'assert';
+import { chooseStartLedger, eventRequestPosition, isHistoricalRangeUnavailable, nextLedgerAfterWindow, parseVaultEvent } from './eventCursor';
 
 // ── Event topic constants (mirrors topics.rs symbol_short! values) ────────────
 const EVENT_TOPICS = {
@@ -124,6 +125,35 @@ test('prefers deposit over withdraw when both present', () => {
 
 test('does not confuse rebalance_cooldown (reb_cd) with rebalance', () => {
   assert.notStrictEqual(classifyEvent(['reb_cd']), 'rebalance');
+});
+
+test('parses a valid event while rejecting malformed payloads without aborting a batch', () => {
+  assert.deepStrictEqual(parseVaultEvent({ id: 'event-1', ledger: 22, topic: ['deposit'] }), {
+    eventType: 'deposit', id: 'event-1', ledger: 22,
+  });
+  assert.strictEqual(parseVaultEvent({ id: 'bad-event', ledger: '22', topic: ['deposit'] }), null);
+  assert.deepStrictEqual(parseVaultEvent({ id: 'event-2', ledger: 23, topic: ['withdraw'] })?.eventType, 'withdraw');
+});
+
+test('advances empty event windows through the RPC latest ledger', () => {
+  assert.strictEqual(nextLedgerAfterWindow(100, [], 107), 108);
+  assert.strictEqual(nextLedgerAfterWindow(100, [], 99), 100);
+});
+
+test('resumes from a persisted checkpoint rather than the current latest ledger', () => {
+  assert.strictEqual(chooseStartLedger(900, 742), 742);
+  assert.strictEqual(chooseStartLedger(900, null), 900);
+  assert.deepStrictEqual(eventRequestPosition(742, 'opaque-event-cursor', 100), {
+    pagination: { limit: 100, cursor: 'opaque-event-cursor' },
+  });
+  assert.deepStrictEqual(eventRequestPosition(742, null, 100), {
+    startLedger: 742, pagination: { limit: 100 },
+  });
+});
+
+test('detects unavailable historical event ranges for an operator recovery signal', () => {
+  assert.strictEqual(isHistoricalRangeUnavailable(new Error('start ledger is older than available history')), true);
+  assert.strictEqual(isHistoricalRangeUnavailable(new Error('temporary gateway timeout')), false);
 });
 
 // Back-off logic

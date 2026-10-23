@@ -729,8 +729,12 @@ ledgers (~29 days).
 
 **Conditions**:
 - `set_approval_ttl(ttl)` with `ttl > 500_000`
+- `set_blend_approval_ttl(owner, ttl)` with `ttl > 500_000`
+- A protocol supply using an invalid legacy TTL already stored above
+  `500_000`
 
-**Resolution**: Pass a TTL of at most 500,000 ledgers.
+**Resolution**: Pass a TTL of at most 500,000 ledgers. The legacy setter also
+allows zero and short TTLs for compatibility.
 
 ---
 
@@ -784,9 +788,12 @@ pending.
 **Conditions**:
 - `update_agent(new_agent)` called while `PendingAgent` key already exists
 - `schedule_upgrade(wasm_hash)` called while `PendingUpgradeHash` already exists
+- `set_guardian(new_guardian)` or `remove_guardian()` called while
+  `PendingUpgradeHash` exists
 
 **Resolution**: Cancel the existing proposal with `cancel_agent_update()` or
-`cancel_upgrade()` before scheduling a new one.
+`cancel_upgrade()` before scheduling a new one or changing guardian
+configuration.
 
 ---
 

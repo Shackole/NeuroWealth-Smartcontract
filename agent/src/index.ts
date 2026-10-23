@@ -5,6 +5,7 @@ import { evaluateYield } from './yieldComparison';
 import healthRouter, { configureHealthChecks } from './health';
 import logger from './logger';
 import { initializeTracing } from './tracing';
+import { configureHttpSecurity, configureHttpTimeouts } from './httpSecurity';
 
 import { ipRateLimiter, userRateLimiter } from './rateLimiter';
 
@@ -25,7 +26,7 @@ initializeTracing();
 const app = express();
 const PORT = parseInt(process.env.PORT || '3001', 10);
 
-app.use(express.json());
+configureHttpSecurity(app);
 app.use(ipRateLimiter);
 app.use(userRateLimiter);
 app.use(healthRouter);
@@ -106,6 +107,7 @@ async function main() {
   const serverInstance = app.listen(PORT, () => {
     logger.info({ port: PORT }, 'Agent HTTP server listening');
   });
+  configureHttpTimeouts(serverInstance);
 
   // Graceful shutdown
   async function shutdown(signal: string) {

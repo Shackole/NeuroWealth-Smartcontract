@@ -996,6 +996,41 @@ See the [Datadog Node.js APM docs](https://docs.datadoghq.com/tracing/setup_over
 
 ## 15. On-Call Response Procedures
 
+### Enabled critical Prometheus alerts: response and closure
+
+The source of truth for active Prometheus thresholds is
+[`infra/rules/neurowealth_alerts.yml`](../infra/rules/neurowealth_alerts.yml).
+Queue depth is Bull waiting-job backlog; it does not measure chain event
+ingestion. Event ingestion lag is the difference between the latest chain
+ledger and the maximum `vault_events.ledger_sequence`. There is currently no
+Prometheus rule for that lag, so responders must check it directly:
+
+```sql
+SELECT MAX(ledger_sequence) AS last_stored_event_ledger,
+       COUNT(*) AS stored_events
+FROM vault_events;
+```
+
+Compare that value with `getLatestLedger` from the configured, same-network
+Soroban RPC. Missing event coverage requires the RPC backfill procedure in
+[`INCIDENT_RUNBOOK.md` §5.4](INCIDENT_RUNBOOK.md#54-stellar-rpc-unavailable-p1).
+
+| Enabled critical alert | Trigger and rationale | First response and diagnosis | Owner role | Close only when |
+|---|---|---|---|---|
+| `AgentDown` | `(time() - agent_last_decision_loop_timestamp_seconds) > 300` for 2 min; 5 min detects a stalled decision loop, with 2 min scrape tolerance. | `curl --max-time 10 http://127.0.0.1:3001/health`; `docker compose ps`; `docker compose logs --tail=200 agent`; inspect lease/state store. Do not start a second primary while lease ownership is unclear. | Platform on-call; escalate to Incident Commander | One active lease owner; `/health` and decision timestamp healthy for 15 min; listener continuity checked. |
+| `QueueDepthCritical` | `queue_depth > 500` for 1 min; 500 waiting jobs is the configured severe backlog threshold, with 1 min persistence to filter brief bursts. | `curl --fail --show-error http://127.0.0.1:3001/api/metrics/snapshot`; `docker compose logs --tail=200 agent`; identify queue name, failed/waiting jobs, Redis reachability, worker throughput, DB and RPC failures. Compare queue backlog with the separate event-ledger lag query above. | Platform on-call | Queue below 100 for 15 min, workers healthy, and no unresolved failed jobs or ingestion gap. |
+| `VaultPausedTooLong` | `neurowealth_vault_paused == 1` for 1440 min (24 h); the delay flags a prolonged service interruption, not authorization to unpause. | `stellar contract invoke --id "$VAULT_CONTRACT_ID" --source "$OWNER_ID" --network "$NETWORK" --rpc-url "$RPC_URL" --send=no -- is_paused`; review pause event/cause, incident status, balances and pending admin actions. Never unpause solely to clear an alert. | Protocol lead + Incident Commander | Authorized unpause is confirmed on-chain, safety checks pass, and paused metric remains 0 for 15 min. If intentionally paused, keep the incident tracked and document the accepted alert state; do not claim recovery. |
+| `UnexplainedTvlDropCritical` | TVL drops >5% over 1 min without a matching withdrawal or authorized asset-decrease counter; >5% is the immediate loss-signature threshold. | Treat as possible loss: pause/emergency-pause through approved owner process, stop agent, compare `get_total_assets`, `get_total_shares`, protocol balances, events and transaction hashes using the explicit network/RPC invocation above. | Protocol lead + Security lead | Root cause reconciled to authorized events/balances; invariant checks pass and monitoring is healthy for 15 min. |
+| `AssetsUpdatedSustainedBleedDrain` | Cumulative reported asset decreases >300 bps over 24 h; captures a sustained >3% decline even when each update is individually small. | Review `update_total_assets` calls, protocol balances, agent key and yield source; stop agent and pause if unexplained. Rotate credentials only under key-compromise procedure. | Security lead + Protocol lead | Decrease is explained and reconciled, compromised/misconfigured source is contained, and asset trend is stable for 15 min. |
+| `ShareSupplyUnaccountedDrift` | Total shares change in 1 min without deposit/withdraw counters; any unexplained supply mutation violates accounting invariants, so it pages immediately (`for: 0m`). | Query `get_total_shares`, `get_total_assets`, and affected users' `get_shares`/`get_balance` on the explicit network; treat as accounting invariant failure, pause, and preserve ledger/transaction evidence. | Protocol lead + Security lead | Every share change is accounted for, balances reconcile, and read-only invariant checks remain healthy for 15 min. |
+
+For every alert, record the firing time, observed metric/value, network and
+contract, diagnosis commands/results, action owner, and the recovery evidence.
+Alert closure requires an observed return to the clear condition for at least
+15 minutes plus the row-specific checks above; a resolved PagerDuty notification
+by itself is not evidence of recovery. Queue backlog and event-ingestion lag
+must be reported separately.
+
 > **Escalation path:** automated alert → on-call engineer → engineering lead
 
 ### 15.1 Escalation tiers

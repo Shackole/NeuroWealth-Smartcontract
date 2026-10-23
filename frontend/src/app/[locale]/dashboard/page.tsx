@@ -69,13 +69,14 @@ export default function DashboardViewPage() {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <BalanceCard
               balance={vaultState.balance}
-              strategy={vaultState.strategy}
+              usdEquivalent={vaultState.balance}
               exchangeRate={vaultState.exchangeRate}
-              onDeposit={() => {
+              isConnected={!!publicKey}
+              onOpenDeposit={() => {
                 setModalType('deposit');
                 setIsModalOpen(true);
               }}
-              onWithdraw={() => {
+              onOpenWithdraw={() => {
                 setModalType('withdraw');
                 setIsModalOpen(true);
               }}
@@ -109,9 +110,9 @@ export default function DashboardViewPage() {
           isOpen={isModalOpen}
           type={modalType}
           onClose={() => setIsModalOpen(false)}
-          onSuccess={() => setIsModalOpen(false)}
-          publicKey={publicKey || ''}
-          currentBalance={vaultState.balance}
+          userPublicKey={publicKey}
+          balance={vaultState.balance}
+          exchangeRate={vaultState.exchangeRate}
         />
       )}
     </div>
