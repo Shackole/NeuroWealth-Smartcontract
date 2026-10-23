@@ -2,7 +2,7 @@
 
 import dynamic from 'next/dynamic';
 import React from 'react';
-import { ChartDataPoint } from '@/lib/database';
+import { PortfolioChartProps } from './PortfolioChart';
 
 // Lazy-load PortfolioChart so Recharts is NOT included in the initial JS bundle.
 // This improves LCP and reduces TTI on first load.
@@ -21,10 +21,8 @@ const PortfolioChart = dynamic(
   }
 );
 
-interface LazyPortfolioChartProps {
-  data: ChartDataPoint[];
-}
+export type LazyPortfolioChartProps = PortfolioChartProps;
 
-export const LazyPortfolioChart: React.FC<LazyPortfolioChartProps> = ({ data }) => {
-  return <PortfolioChart data={data} />;
+export const LazyPortfolioChart: React.FC<LazyPortfolioChartProps> = (props) => {
+  return <PortfolioChart {...props} />;
 };

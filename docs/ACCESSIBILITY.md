@@ -20,7 +20,7 @@ The vault UI targets **WCAG 2.1 Level AA**. Automated checks (axe-core) run in C
 | Focus indicators | `:focus-visible` outline uses `primary-700` (`#1d4ed8`) at 0.125rem, offset 0.125rem. |
 | Colour contrast | Body and UI text use `gray-900` / `gray-700` on `gray-50`/`white` (≥ 4.5:1). Primary actions use `primary-700` on white (≥ 4.5:1). |
 | Text sizing | Layout and type use rem-based Tailwind tokens; the root font size is not locked to pixels. Users can zoom to 200% without loss of function. |
-| Images / icons | Decorative marks are CSS-only. Informative images have `alt`. Charts expose a visually hidden data table. |
+| Images / icons | Decorative marks are CSS-only. Informative images have `alt`. Charts (`PortfolioChart`, `EarningsHistoryChart`) expose persistent text summaries and a keyboard-operable tabular data table (`<table>`) with explicit `UTC` dates, `USDC` monetary units, and `% APY` yield rates, covering populated, empty, and unavailable series. |
 | Forms | Every input has a `<label>`. Errors are announced via `role="alert"` and referenced from the field. |
 | Reduced motion | `prefers-reduced-motion: reduce` disables non-essential transitions. |
 
@@ -138,7 +138,7 @@ The table below documents accessibility issues that are partially addressed or n
 
 | Gap | Criterion | Severity | Planned Resolution Date |
 |-----|-----------|----------|------------------------|
-| Complex charts (multi-series APY history, portfolio allocation) rely on colour differentiation and an optional data table toggle. The data table is present but not automatically surfaced — users must activate it. Some chart annotations are not fully accessible to screen readers. | 1.4.1 Use of Color, 1.1.1 Non-text Content | Medium | Q1 2025 |
+| Complex charts (multi-series APY history, portfolio allocation) previously relied on colour differentiation and hover tooltips. Resolved in #498: `PortfolioDashboard`, `PortfolioChart`, and `EarningsHistoryChart` now render persistent text summaries and keyboard-operable data tables with explicit `UTC` dates, `USDC` amounts, `% APY` values, and explicit status messages for empty and unavailable series. | 1.4.1 Use of Color, 1.1.1 Non-text Content | Resolved (#498) | Resolved |
 | The WhatsApp bot interface (`whatsapp/`) has no automated accessibility testing. Conversational UI accessibility (message threading, button responses) has not been formally evaluated against WCAG 2.1. | 4.1.2 Name, Role, Value | Low | Q1 2025 |
 | iOS VoiceOver testing is currently performed only via the macOS simulator. Native on-device testing on physical iOS hardware (iPhone / iPad) has not been conducted. Simulator behaviour may differ from real-device results. | 1.3.1 Info and Relationships, 2.4.3 Focus Order | Low | Q2 2025 |
 | The earnings projection chart uses a canvas-based renderer for performance. Canvas content is not exposed to the accessibility tree; only a static `aria-label` on the container is provided. A full text alternative (data table) is not yet implemented for this chart. | 1.1.1 Non-text Content | Medium | Q2 2025 |
