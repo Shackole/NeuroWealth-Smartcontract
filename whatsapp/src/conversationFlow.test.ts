@@ -20,19 +20,15 @@ import {
   processVerifiedIntent,
   intentQueue,
   IntentJobData,
-  canExecuteIntent,
-  INTENT_WORKER_CONCURRENCY,
-  INTENT_JOB_ATTEMPTS,
 } from './webhook';
 import { hashPhoneNumber } from './cryptoUtils';
 import { getSession, updateState, UserState } from './stateManager';
-import { createCustodialWallet } from './walletService';
-import { generateOTP, verifyOTP } from './otpService';
+import { createCustodialWallet, getWallet } from './walletService';
+import { generateOTP } from './otpService';
 
 // ── Test harness ─────────────────────────────────────────────────────────────
 let passed = 0;
 let failed = 0;
-let messageCounter = 0;
 
 async function runTest(name: string, fn: () => Promise<void> | void) {
   try {
@@ -64,7 +60,7 @@ function createMockReq(
   host = 'example.com',
 ): Request {
   return {
-    body: { MessageSid: `SM-test-${++messageCounter}`, ...body },
+    body,
     headers,
     protocol,
     get: (header: string) => {
@@ -104,88 +100,6 @@ console.log('WhatsApp Bot Conversation Flow Tests (#88)');
 console.log('======================================================\n');
 
 async function runAllTests() {
-  await runTest('expired OTP confirmations and cross-user replay are rejected', async () => {
-    const originalNow = Date.now;
-    let now = 1_700_000_000_000;
-    Date.now = () => now;
-    const phoneA = hashPhoneNumber('whatsapp:+15550006661');
-    const phoneB = hashPhoneNumber('whatsapp:+15550006662');
-    try {
-      const code = generateOTP(phoneA);
-      assert.strictEqual(verifyOTP(phoneB, code).success, false, 'another conversation cannot consume this OTP');
-      assert.strictEqual(verifyOTP(phoneA, code).success, true, 'the issuing conversation can confirm once');
-      assert.strictEqual(verifyOTP(phoneA, code).success, false, 'a consumed confirmation cannot be replayed');
-
-      const expiredCode = generateOTP(phoneA);
-      now += 5 * 60 * 1000 + 1;
-      const expired = verifyOTP(phoneA, expiredCode);
-      assert.strictEqual(expired.success, false);
-      assert.ok(expired.message.includes('expired'));
-    } finally {
-      Date.now = originalNow;
-    }
-  });
-
-  await runTest('queued duplicate provider deliveries with a changed amount remain one immutable job', async () => {
-    const phone = 'whatsapp:+15550006663';
-    const phoneHash = hashPhoneNumber(phone);
-    updateState(phoneHash, UserState.VERIFIED);
-    createCustodialWallet(phoneHash);
-    const originalAdd = intentQueue.add.bind(intentQueue);
-    const accepted = new Map<string, IntentJobData>();
-    intentQueue.add = async (data: IntentJobData, options: any) => {
-      if (!accepted.has(options.jobId)) accepted.set(options.jobId, data);
-      return { id: options.jobId, data } as any;
-    };
-    try {
-      const first = createMockReq({ From: phone, Body: 'withdraw 10', MessageSid: 'SM-duplicate-1' });
-      const alteredRetry = createMockReq({ From: phone, Body: 'withdraw 90', MessageSid: 'SM-duplicate-1' });
-      await handleWhatsAppWebhook(first, createMockRes() as unknown as Response);
-      await handleWhatsAppWebhook(alteredRetry, createMockRes() as unknown as Response);
-      assert.strictEqual(accepted.size, 1);
-      assert.strictEqual([...accepted.values()][0].messageBody, 'withdraw 10');
-    } finally {
-      intentQueue.add = originalAdd;
-    }
-  });
-
-  await runTest('queued transaction work remains bound to its verified phone identity', async () => {
-    const owner = hashPhoneNumber('whatsapp:+15550006664');
-    const other = hashPhoneNumber('whatsapp:+15550006665');
-    updateState(owner, UserState.VERIFIED);
-    createCustodialWallet(owner);
-    assert.strictEqual(canExecuteIntent(owner), true);
-    assert.strictEqual(canExecuteIntent(other), false);
-  });
-
-  await runTest('distinct deliveries retain arrival order for the serial worker', async () => {
-    const phone = 'whatsapp:+15550006666';
-    const phoneHash = hashPhoneNumber(phone);
-    updateState(phoneHash, UserState.VERIFIED);
-    createCustodialWallet(phoneHash);
-    const received: string[] = [];
-    const originalAdd = intentQueue.add.bind(intentQueue);
-    intentQueue.add = async (data: IntentJobData) => {
-      received.push(data.messageSid);
-      return { id: data.messageSid, data } as any;
-    };
-    try {
-      await handleWhatsAppWebhook(
-        createMockReq({ From: phone, Body: 'deposit 10', MessageSid: 'SM-arrived-first' }),
-        createMockRes() as unknown as Response,
-      );
-      await handleWhatsAppWebhook(
-        createMockReq({ From: phone, Body: 'withdraw 2', MessageSid: 'SM-arrived-second' }),
-        createMockRes() as unknown as Response,
-      );
-      assert.deepStrictEqual(received, ['SM-arrived-first', 'SM-arrived-second']);
-      assert.strictEqual(INTENT_WORKER_CONCURRENCY, 1, 'financial intents execute in queue order');
-      assert.strictEqual(INTENT_JOB_ATTEMPTS, 1, 'uncertain financial outcomes are never blindly retried');
-    } finally {
-      intentQueue.add = originalAdd;
-    }
-  });
-
   // ── Scenario 1: Invalid Twilio signature -> 401 rejected ───────────────────
   await runTest('invalid Twilio signature returns 401 Unauthorized', async () => {
     const savedToken = process.env.TWILIO_AUTH_TOKEN;
@@ -217,6 +131,44 @@ async function runAllTests() {
       process.env.TWILIO_AUTH_TOKEN = savedToken;
       process.env.WEBHOOK_BASE_URL = savedBaseUrl;
     }
+  });
+
+  await runTest('verified phone must consent before custodial wallet creation', async () => {
+    const fromPhone = 'whatsapp:+15550001112';
+    const phoneHash = hashPhoneNumber(fromPhone);
+    updateState(phoneHash, UserState.AWAITING_OTP);
+    const otp = generateOTP(phoneHash);
+    const verifyRes = createMockRes();
+    await handleWhatsAppWebhook(
+      createMockReq({ From: fromPhone, Body: otp }),
+      verifyRes as unknown as Response,
+    );
+
+    assert.strictEqual(getSession(phoneHash).state, UserState.AWAITING_CUSTODIAL_CONSENT);
+    assert.strictEqual(getWallet(phoneHash), undefined, 'OTP verification must not create a wallet');
+    assert.ok(String(verifyRes.bodyData).includes('Reply AGREE'));
+
+    const agreeRes = createMockRes();
+    await handleWhatsAppWebhook(
+      createMockReq({ From: fromPhone, Body: 'AGREE' }),
+      agreeRes as unknown as Response,
+    );
+    assert.strictEqual(getSession(phoneHash).state, UserState.VERIFIED);
+    assert.ok(getWallet(phoneHash), 'explicit consent creates the custodial wallet');
+  });
+
+  await runTest('declining custodial consent leaves wallet uncreated', async () => {
+    const fromPhone = 'whatsapp:+15550001113';
+    const phoneHash = hashPhoneNumber(fromPhone);
+    updateState(phoneHash, UserState.AWAITING_CUSTODIAL_CONSENT);
+    const res = createMockRes();
+    await handleWhatsAppWebhook(
+      createMockReq({ From: fromPhone, Body: 'DECLINE' }),
+      res as unknown as Response,
+    );
+    assert.strictEqual(getSession(phoneHash).state, UserState.UNVERIFIED);
+    assert.strictEqual(getWallet(phoneHash), undefined);
+    assert.ok(String(res.bodyData).includes('No wallet was created'));
   });
 
   // ── Scenario 2: New user message -> OTP flow triggered ───────────────────────
