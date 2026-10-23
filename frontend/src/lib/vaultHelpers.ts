@@ -191,7 +191,111 @@ export async function previewDepositToShares(
 // ─── Build + sign helpers ─────────────────────────────────────────────────────
 
 /**
+ * Describes the restore-footprint requirement returned when simulation detects
+ * that one or more ledger entries are archived and must be restored before the
+ * original operation can proceed.
+ */
+export interface RestoreRequirement {
+  /** Estimated XLM fee (in stroops) for the restore-footprint transaction. */
+  feeStroops: bigint;
+  /** Human-readable XLM cost, e.g. "0.001 XLM". */
+  feeXlm: string;
+  /** Number of ledger entries that need to be restored. */
+  entryCount: number;
+}
+
+/**
+ * Check whether a simulation result indicates that archived contract data must
+ * be restored before the operation can be executed.
+ *
+ * The Soroban RPC returns `restorePreamble` on the simulation response when the
+ * footprint contains entries whose TTL has expired. In that case the caller must
+ * first submit a `restore_footprint` transaction and then re-simulate.
+ */
+function extractRestoreRequirement(
+  sim: SorobanRpc.Api.SimulateTransactionResponse,
+): RestoreRequirement | null {
+  // @ts-expect-error — restorePreamble is present in SDK ≥ v11 but may not be
+  // reflected in older type definitions shipped with the installed version.
+  const preamble = (sim as any).restorePreamble as
+    | { minResourceFee: string; transactionData: unknown }
+    | undefined;
+
+  if (!preamble) return null;
+
+  const feeStroops = BigInt(preamble.minResourceFee ?? '0');
+  const feeXlm = (Number(feeStroops) / 1e7).toFixed(7).replace(/\.?0+$/, '') + ' XLM';
+
+  // The restore footprint covers every expired entry referenced by the
+  // original transaction. We surface a count of 1+ to the UI; a more precise
+  // count would require parsing the SorobanTransactionData, which is optional
+  // detail for the user-facing confirmation dialog.
+  const entryCount = 1;
+
+  return { feeStroops, feeXlm, entryCount };
+}
+
+/**
+ * Submit and confirm a restore-footprint transaction.
+ *
+ * This rebuilds the transaction using the restore preamble provided by the RPC,
+ * sends it for Freighter signing, and polls until it is confirmed.
+ */
+async function executeRestoreFootprint(
+  publicKey: string,
+  originalTx: import('@stellar/stellar-sdk').Transaction,
+  sim: SorobanRpc.Api.SimulateTransactionResponse,
+): Promise<string> {
+  // @ts-expect-error — restorePreamble typing — see extractRestoreRequirement
+  const preamble = (sim as any).restorePreamble as
+    | { minResourceFee: string; transactionData: unknown }
+    | undefined;
+
+  if (!preamble) {
+    throw new Error('No restore preamble found — cannot build restore transaction');
+  }
+
+  const { RestoreFootprintOperation, SorobanDataBuilder, xdr } =
+    await import('@stellar/stellar-sdk');
+
+  const server = getServer();
+  const account = await server.getAccount(publicKey);
+
+  // Reconstruct the transaction data from the preamble so the restore covers
+  // exactly the entries identified by the RPC simulation.
+  const restoreTxData = SorobanDataBuilder.fromXDR(
+    // The SDK serialises transactionData as a base64-encoded XDR string.
+    typeof preamble.transactionData === 'string'
+      ? preamble.transactionData
+      : xdr.SorobanTransactionData.toXDR(preamble.transactionData as any).toString('base64'),
+  );
+
+  const restoreTx = new TransactionBuilder(account, {
+    fee: preamble.minResourceFee,
+    networkPassphrase: NETWORK_PASSPHRASE,
+  })
+    .addOperation(RestoreFootprintOperation.restoreFootprint({}))
+    .setSorobanData(restoreTxData.build())
+    .setTimeout(30)
+    .build();
+
+  const signedXdr = await signWithFreighter(restoreTx.toXDR(), NETWORK_PASSPHRASE);
+  if (!signedXdr) {
+    throw new Error('Restore transaction was rejected in Freighter');
+  }
+
+  return submitAndConfirm(signedXdr);
+}
+
+/**
  * Build, simulate, and sign a transaction using Freighter.
+ *
+ * If the simulation detects archived ledger entries (restore-footprint
+ * requirement), this function throws a {@link RestoreNeededError} so that the
+ * caller can present the user with a confirmation dialog before proceeding.
+ * The caller should then call {@link buildAndSignTxWithRestore} which handles
+ * the full restore → re-simulate → sign flow.
+ *
  * Returns the signed XDR for submission.
  */
 async function buildAndSignTx(
@@ -216,6 +320,12 @@ async function buildAndSignTx(
     throw new Error(errSim.error ?? 'Transaction simulation failed');
   }
 
+  // Detect archived-entry requirement before assembling
+  const restoreReq = extractRestoreRequirement(sim);
+  if (restoreReq) {
+    throw new RestoreNeededError(restoreReq, tx, sim);
+  }
+
   const prepared = SorobanRpc.assembleTransaction(tx, sim).build();
   const xdr = prepared.toXDR();
 
@@ -226,6 +336,103 @@ async function buildAndSignTx(
   }
 
   return signedXdr;
+}
+
+/**
+ * Error thrown by {@link buildAndSignTx} when the RPC simulation indicates that
+ * one or more ledger entries are archived. The caller should present the user
+ * with a restore-footprint confirmation step, then call
+ * {@link buildAndSignTxWithRestore} to complete the flow.
+ */
+export class RestoreNeededError extends Error {
+  public readonly requirement: RestoreRequirement;
+  /** The unsigned transaction that triggered the restore requirement. */
+  public readonly tx: import('@stellar/stellar-sdk').Transaction;
+  /** The raw simulation response, used to build the restore transaction. */
+  public readonly sim: SorobanRpc.Api.SimulateTransactionResponse;
+
+  constructor(
+    requirement: RestoreRequirement,
+    tx: import('@stellar/stellar-sdk').Transaction,
+    sim: SorobanRpc.Api.SimulateTransactionResponse,
+  ) {
+    super(
+      `Archived contract data must be restored before this transaction can proceed. ` +
+        `Restore fee: ${requirement.feeXlm}.`,
+    );
+    this.name = 'RestoreNeededError';
+    this.requirement = requirement;
+    this.tx = tx;
+    this.sim = sim;
+  }
+}
+
+/**
+ * Full restore → re-simulate → sign flow.
+ *
+ * Call this after the user has confirmed the restore-footprint step.
+ *
+ * 1. Submits and confirms the restore-footprint transaction.
+ * 2. Re-simulates the original operation (now that entries are live again).
+ * 3. Signs and returns the assembled transaction XDR.
+ *
+ * @param publicKey   - The signer's Stellar public key.
+ * @param operation   - The original contract operation that needs signing.
+ * @param restoreErr  - The {@link RestoreNeededError} thrown by a prior
+ *                      {@link buildAndSignTx} call. Contains the restore
+ *                      preamble data needed to build the restore transaction.
+ * @returns The signed XDR of the original operation, ready for submission.
+ */
+export async function buildAndSignTxWithRestore(
+  publicKey: string,
+  operation: ReturnType<Contract['call']>,
+  restoreErr: RestoreNeededError,
+): Promise<{ restoreHash: string; signedXdr: string }> {
+  // Step 1 — submit restore-footprint transaction
+  const restoreHash = await executeRestoreFootprint(
+    publicKey,
+    restoreErr.tx,
+    restoreErr.sim,
+  );
+
+  // Step 2 — re-simulate now that all entries have been restored
+  const server = getServer();
+  const account = await server.getAccount(publicKey);
+
+  const tx = new TransactionBuilder(account, {
+    fee: '100000',
+    networkPassphrase: NETWORK_PASSPHRASE,
+  })
+    .addOperation(operation)
+    .setTimeout(30)
+    .build();
+
+  const sim = await server.simulateTransaction(tx);
+  if (SorobanRpc.Api.isSimulationError(sim)) {
+    const errSim = sim as SorobanRpc.Api.SimulateTransactionErrorResponse;
+    throw new Error(errSim.error ?? 'Transaction simulation failed after restore');
+  }
+
+  // Archived entries should be live again — if another restore is required
+  // something unexpected happened; surface a clear error rather than looping.
+  const secondRestore = extractRestoreRequirement(sim);
+  if (secondRestore) {
+    throw new Error(
+      'A second restore-footprint was required after the first restore completed. ' +
+        'This is unexpected — please contact support.',
+    );
+  }
+
+  const prepared = SorobanRpc.assembleTransaction(tx, sim).build();
+  const xdr = prepared.toXDR();
+
+  // Step 3 — sign with Freighter
+  const signedXdr = await signWithFreighter(xdr, NETWORK_PASSPHRASE);
+  if (!signedXdr) {
+    throw new Error('Transaction was rejected or Freighter signing failed');
+  }
+
+  return { restoreHash, signedXdr };
 }
 
 /** Submit a signed XDR and poll until confirmed. Returns the tx hash. */
@@ -275,6 +482,22 @@ async function submitAndConfirm(signedXdr: string): Promise<string> {
 export interface DepositResult {
   strategyHash?: string;
   depositHash: string;
+  /** Restore transaction hash, present when archived data was restored. */
+  restoreHash?: string;
+}
+
+/**
+ * Intermediate state emitted when the deposit simulation detects archived
+ * ledger entries. The caller should surface a confirmation dialog showing
+ * `requirement` details, then call `executeDepositAfterRestore` to complete.
+ */
+export interface DepositRestoreStep {
+  type: 'restore_required';
+  requirement: RestoreRequirement;
+  /** Internal error object — pass to executeDepositAfterRestore. */
+  restoreErr: RestoreNeededError;
+  /** The original operation that needs the restore, held for re-signing. */
+  operation: ReturnType<Contract['call']>;
 }
 
 /**
@@ -283,12 +506,17 @@ export interface DepositResult {
  *   2. deposit USDC into vault
  *
  * Both transactions are signed with Freighter and submitted in sequence.
+ *
+ * If archived ledger entries are detected during simulation, the function
+ * returns a {@link DepositRestoreStep} instead of a {@link DepositResult}.
+ * The caller must present a restore-footprint confirmation dialog and then
+ * call {@link executeDepositAfterRestore} to complete the flow.
  */
 export async function executeDeposit(
   publicKey: string,
   amountUsdc: number,
   strategy: Strategy,
-): Promise<DepositResult> {
+): Promise<DepositResult | DepositRestoreStep> {
   const contract = getContract();
   const rawAmount = toRawUnits(amountUsdc);
   const strategySymbol = strategyToSymbol(strategy);
@@ -300,8 +528,28 @@ export async function executeDeposit(
     nativeToScVal(strategySymbol, { type: 'symbol' }),
   );
 
-  const strategyXdr = await buildAndSignTx(publicKey, strategyOp);
-  const strategyHash = await submitAndConfirm(strategyXdr);
+  let strategyHash: string | undefined;
+  try {
+    const strategyXdr = await buildAndSignTx(publicKey, strategyOp);
+    strategyHash = await submitAndConfirm(strategyXdr);
+  } catch (err) {
+    if (err instanceof RestoreNeededError) {
+      // Surface the restore requirement — the deposit op is the one blocked,
+      // but the strategy op shares the same footprint so we restore for deposit.
+      const depositOp = contract.call(
+        'deposit',
+        new Address(publicKey).toScVal(),
+        nativeToScVal(rawAmount, { type: 'i128' }),
+      );
+      return {
+        type: 'restore_required',
+        requirement: err.requirement,
+        restoreErr: err,
+        operation: depositOp,
+      };
+    }
+    throw err;
+  }
 
   // ── 2. Deposit into vault ─────────────────────────────────────────────────
   const depositOp = contract.call(
@@ -310,10 +558,46 @@ export async function executeDeposit(
     nativeToScVal(rawAmount, { type: 'i128' }),
   );
 
-  const depositXdr = await buildAndSignTx(publicKey, depositOp);
-  const depositHash = await submitAndConfirm(depositXdr);
+  try {
+    const depositXdr = await buildAndSignTx(publicKey, depositOp);
+    const depositHash = await submitAndConfirm(depositXdr);
+    return { strategyHash, depositHash };
+  } catch (err) {
+    if (err instanceof RestoreNeededError) {
+      return {
+        type: 'restore_required',
+        requirement: err.requirement,
+        restoreErr: err,
+        operation: depositOp,
+      };
+    }
+    throw err;
+  }
+}
 
-  return { strategyHash, depositHash };
+/**
+ * Complete a deposit that was interrupted by an archived-data restore step.
+ *
+ * Call this after the user has confirmed the restore-footprint transaction in
+ * the UI. Passes `restoreErr` and the blocked operation to
+ * {@link buildAndSignTxWithRestore}, then submits the original deposit.
+ *
+ * @param publicKey   - The signer's Stellar public key.
+ * @param restoreStep - The {@link DepositRestoreStep} returned by a prior
+ *                      {@link executeDeposit} call.
+ * @returns The completed {@link DepositResult} including the restore hash.
+ */
+export async function executeDepositAfterRestore(
+  publicKey: string,
+  restoreStep: DepositRestoreStep,
+): Promise<DepositResult> {
+  const { restoreHash, signedXdr } = await buildAndSignTxWithRestore(
+    publicKey,
+    restoreStep.operation,
+    restoreStep.restoreErr,
+  );
+  const depositHash = await submitAndConfirm(signedXdr);
+  return { depositHash, restoreHash };
 }
 
 // ─── Human-readable error messages ───────────────────────────────────────────
@@ -322,6 +606,11 @@ export async function executeDeposit(
  * Translate raw contract / SDK error messages into user-friendly strings.
  */
 export function humanizeError(error: unknown): string {
+  // RestoreNeededError has its own clear message — surface it directly
+  if (error instanceof RestoreNeededError) {
+    return error.message;
+  }
+
   const raw = error instanceof Error ? error.message : String(error);
 
   if (raw.includes('rejected') || raw.includes('Freighter')) {
