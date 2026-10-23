@@ -6,6 +6,8 @@ export const JWT_SECRET = process.env.JWT_SECRET || 'neurowealth-test-jwt-secret
 export interface UserPayload {
   userId: string;
   stellarAddress: string;
+  role?: string;
+  scopes?: string[];
 }
 
 declare global {
@@ -50,4 +52,39 @@ export function authenticateToken(req: Request, res: Response, next: NextFunctio
     });
     return;
   }
+}
+
+/**
+ * Explicit operator authorization. Requires an authenticated token whose
+ * payload carries the operator role or the `operator:jobs` scope. Anything
+ * else is rejected with 403 so operational access is never implicit.
+ */
+export function requireOperator(req: Request, res: Response, next: NextFunction): void {
+  const user = req.user;
+  const isOperator =
+    !!user &&
+    (user.role === 'operator' || (Array.isArray(user.scopes) && user.scopes.includes('operator:jobs')));
+
+  if (!isOperator) {
+    res.status(403).json({
+      error: 'Forbidden: Operator authorization required',
+      code: 'AUTH_OPERATOR_REQUIRED'
+    });
+    return;
+  }
+
+  next();
+}
+
+/**
+ * Ownership check for user-scoped job/transaction lookups. Returns true only
+ * when the authenticated user owns the job. Operators are intentionally NOT
+ * granted implicit access here; operational access must go through
+ * `requireOperator` on a separate route.
+ */
+export function isJobOwner(req: Request, jobUserId: string | undefined | null): boolean {
+  if (!req.user || !jobUserId) {
+    return false;
+  }
+  return req.user.userId === jobUserId;
 }

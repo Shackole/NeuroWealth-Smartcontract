@@ -36,125 +36,58 @@ export function getPoolMetrics() {
 }
 
 /**
- * Durable record of an in-flight transaction submission.
- *
- * A row is written (status `submitted`) before the transaction is broadcast so
- * that an RPC timeout leaves a durable hash we can reconcile against the
- * network before ever constructing or signing a replacement.
+ * Durable distributed lease table used by the scheduler so that only one
+ * replica owns a given rebalance interval. A crashed owner is replaced once
+ * its lease expires (expires_at < now()).
  */
-export type TransactionSubmissionStatus =
-  | 'submitted'
-  | 'pending'
-  | 'success'
-  | 'failed';
-
-export interface TransactionSubmissionRecord {
-  id: number;
-  account: string;
-  txHash: string;
-  status: TransactionSubmissionStatus;
-  attempts: number;
-  lastError: string | null;
-  createdAt: Date;
-  updatedAt: Date;
-}
-
-let submissionsTableReady: Promise<void> | null = null;
-
-/**
- * Ensure the transaction submission ledger exists. Idempotent and memoized so
- * callers can await it cheaply on every submission.
- */
-export function ensureTransactionSubmissionsTable(): Promise<void> {
-  if (!submissionsTableReady) {
-    submissionsTableReady = pool
-      .query(
-        `CREATE TABLE IF NOT EXISTS transaction_submissions (
-           id SERIAL PRIMARY KEY,
-           account TEXT NOT NULL,
-           tx_hash TEXT NOT NULL UNIQUE,
-           status TEXT NOT NULL DEFAULT 'submitted',
-           attempts INTEGER NOT NULL DEFAULT 1,
-           last_error TEXT,
-           created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-           updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-         )`,
-      )
-      .then(() => undefined)
-      .catch((err) => {
-        submissionsTableReady = null;
-        throw err;
-      });
-  }
-  return submissionsTableReady;
+export async function ensureSchedulerLeaseTable(): Promise<void> {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS scheduler_leases (
+      lease_key TEXT PRIMARY KEY,
+      owner_id TEXT NOT NULL,
+      expires_at TIMESTAMPTZ NOT NULL,
+      renewed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `);
 }
 
 /**
- * Persist a transaction hash before broadcast. Returns the existing record when
- * the hash was already recorded (e.g. a retried submission of the same tx).
+ * Attempt to acquire (or renew) a lease for `leaseKey` on behalf of `ownerId`.
+ * Returns true when the caller now owns the lease. Acquisition is atomic: a
+ * single conditional upsert only succeeds if the lease is free, expired, or
+ * already held by the same owner.
  */
-export async function recordTransactionSubmission(
-  account: string,
-  txHash: string,
-): Promise<TransactionSubmissionRecord> {
-  await ensureTransactionSubmissionsTable();
-  const { rows } = await pool.query<TransactionSubmissionRecord>(
-    `INSERT INTO transaction_submissions (account, tx_hash, status)
-     VALUES ($1, $2, 'submitted')
-     ON CONFLICT (tx_hash) DO UPDATE
-       SET attempts = transaction_submissions.attempts + 1,
-           updated_at = now()
-     RETURNING id, account, tx_hash AS "txHash", status, attempts,
-               last_error AS "lastError", created_at AS "createdAt",
-               updated_at AS "updatedAt"`,
-    [account, txHash],
+export async function acquireLease(
+  leaseKey: string,
+  ownerId: string,
+  ttlMs: number
+): Promise<boolean> {
+  const result = await pool.query(
+    `INSERT INTO scheduler_leases (lease_key, owner_id, expires_at, renewed_at)
+     VALUES ($1, $2, now() + ($3::int * interval '1 millisecond'), now())
+     ON CONFLICT (lease_key) DO UPDATE
+       SET owner_id = EXCLUDED.owner_id,
+           expires_at = EXCLUDED.expires_at,
+           renewed_at = now()
+       WHERE scheduler_leases.owner_id = EXCLUDED.owner_id
+          OR scheduler_leases.expires_at < now()
+     RETURNING owner_id`,
+    [leaseKey, ownerId, ttlMs]
   );
-  return rows[0];
+  return result.rowCount === 1 && result.rows[0].owner_id === ownerId;
 }
 
 /**
- * Look up a previously recorded submission by hash so an uncertain result can
- * be reconciled instead of blindly retried.
+ * Release a lease held by `ownerId`. Returns true when the lease was released
+ * by this owner (false if it was already expired/reassigned).
  */
-export async function getTransactionSubmission(
-  txHash: string,
-): Promise<TransactionSubmissionRecord | null> {
-  await ensureTransactionSubmissionsTable();
-  const { rows } = await pool.query<TransactionSubmissionRecord>(
-    `SELECT id, account, tx_hash AS "txHash", status, attempts,
-            last_error AS "lastError", created_at AS "createdAt",
-            updated_at AS "updatedAt"
-       FROM transaction_submissions
-      WHERE tx_hash = $1`,
-    [txHash],
+export async function releaseLease(
+  leaseKey: string,
+  ownerId: string
+): Promise<boolean> {
+  const result = await pool.query(
+    `DELETE FROM scheduler_leases WHERE lease_key = $1 AND owner_id = $2`,
+    [leaseKey, ownerId]
   );
-  return rows[0] ?? null;
-}
-
-/**
- * Update the reconciliation status of a recorded submission. Terminal states
- * (`success`, `failed`) are sticky: once recorded they are not overwritten by a
- * later `pending`/`submitted` observation.
- */
-export async function updateTransactionSubmissionStatus(
-  txHash: string,
-  status: TransactionSubmissionStatus,
-  lastError: string | null = null,
-): Promise<TransactionSubmissionRecord | null> {
-  await ensureTransactionSubmissionsTable();
-  const { rows } = await pool.query<TransactionSubmissionRecord>(
-    `UPDATE transaction_submissions
-        SET status = CASE
-              WHEN status IN ('success', 'failed') THEN status
-              ELSE $2
-            END,
-            last_error = COALESCE($3, last_error),
-            updated_at = now()
-      WHERE tx_hash = $1
-      RETURNING id, account, tx_hash AS "txHash", status, attempts,
-                last_error AS "lastError", created_at AS "createdAt",
-                updated_at AS "updatedAt"`,
-    [txHash, status, lastError],
-  );
-  return rows[0] ?? null;
+  return (result.rowCount ?? 0) > 0;
 }

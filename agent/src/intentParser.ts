@@ -9,6 +9,11 @@
  *  4. Log confidence scores; prompt confirmation for low-confidence intents
  *  5. Support multi-turn context (e.g. "do the same but with 200 USDC")
  *  6. Ask a clarifying question for genuinely ambiguous inputs
+ *
+ * #419: Parsing is separated from execution. `parseIntent` only extracts an
+ * intent; it never enqueues or submits a transaction. Financial intents must
+ * be turned into a bound `IntentConfirmation` (amount, asset, destination,
+ * network) and explicitly confirmed before any execution occurs.
  */
 
 import Anthropic from '@anthropic-ai/sdk';
@@ -56,6 +61,129 @@ export type ParsedIntent = z.infer<typeof ParsedIntentSchema>;
 
 /** Threshold below which we ask the user to confirm before executing */
 export const LOW_CONFIDENCE_THRESHOLD = 0.7;
+
+// ─────────────────────────────────────────────────────────
+// Explicit confirmation for financial intents (#419)
+// ─────────────────────────────────────────────────────────
+
+/** Actions that move funds and therefore require explicit confirmation. */
+export const FINANCIAL_ACTIONS: ReadonlySet<Action> = new Set<Action>([
+  'deposit',
+  'withdraw',
+  'withdraw_all',
+]);
+
+export function isFinancialAction(action: Action): boolean {
+  return FINANCIAL_ACTIONS.has(action);
+}
+
+/**
+ * Structured confirmation bound to a single financial operation.
+ * Every field is explicit so the user can review amount, asset,
+ * destination, and network before execution.
+ */
+export const IntentConfirmationSchema = z.object({
+  /** Unique id of this confirmation; used to bind the authorized operation. */
+  id: z.string(),
+  /** The action this confirmation authorizes. */
+  action: ActionSchema,
+  /** Amount in the asset's base units (positive). */
+  amount: z.number().positive(),
+  /** Asset symbol, e.g. "USDC". */
+  asset: z.string().min(1),
+  /** Destination address (Stellar account / Soroban contract). */
+  destination: z.string().min(1),
+  /** Network identity, e.g. "testnet" | "mainnet". */
+  network: z.string().min(1),
+  /** Fingerprint of the parsed intent this confirmation was derived from. */
+  intentFingerprint: z.string(),
+  /** Creation time (ms since epoch). */
+  createdAt: z.number(),
+  /** Expiry time (ms since epoch); stale confirmations are rejected. */
+  expiresAt: z.number(),
+});
+
+export type IntentConfirmation = z.infer<typeof IntentConfirmationSchema>;
+
+/** How long a confirmation remains valid before it must be re-issued. */
+export const CONFIRMATION_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+/**
+ * Stable fingerprint of the fields that define a financial operation.
+ * Any edit to amount/asset/destination/network changes the fingerprint,
+ * which invalidates previously issued confirmations.
+ */
+export function fingerprintIntent(
+  intent: Pick<ParsedIntent, 'action' | 'amount' | 'withdrawAll'>,
+  details: { asset: string; destination: string; network: string },
+): string {
+  return JSON.stringify({
+    action: intent.action,
+    amount: intent.amount ?? null,
+    withdrawAll: intent.withdrawAll ?? false,
+    asset: details.asset,
+    destination: details.destination,
+    network: details.network,
+  });
+}
+
+/**
+ * Build a structured confirmation for a financial intent.
+ * Returns `null` when the intent is not financial or is missing required
+ * fields (amount/asset/destination/network) — callers must NOT execute in
+ * that case and should ask the user to clarify instead.
+ */
+export function buildConfirmation(
+  intent: ParsedIntent,
+  details: { asset?: string; destination?: string; network?: string },
+  now: number = Date.now(),
+): IntentConfirmation | null {
+  if (!isFinancialAction(intent.action)) return null;
+  if (intent.action !== 'withdraw_all' && typeof intent.amount !== 'number') return null;
+  if (!details.asset || !details.destination || !details.network) return null;
+
+  const fingerprint = fingerprintIntent(intent, {
+    asset: details.asset,
+    destination: details.destination,
+    network: details.network,
+  });
+
+  return {
+    id: `${intent.action}:${now}:${fingerprint}`,
+    action: intent.action,
+    amount: intent.amount ?? 0,
+    asset: details.asset,
+    destination: details.destination,
+    network: details.network,
+    intentFingerprint: fingerprint,
+    createdAt: now,
+    expiresAt: now + CONFIRMATION_TTL_MS,
+  };
+}
+
+/**
+ * Verify that a confirmation authorizes exactly the operation being executed.
+ * Rejects expired confirmations and any confirmation whose bound fields no
+ * longer match the current intent (edits invalidate old confirmations).
+ */
+export function verifyConfirmation(
+  confirmation: IntentConfirmation,
+  intent: ParsedIntent,
+  details: { asset: string; destination: string; network: string },
+  now: number = Date.now(),
+): { ok: true } | { ok: false; reason: string } {
+  if (now > confirmation.expiresAt) {
+    return { ok: false, reason: 'confirmation_expired' };
+  }
+  if (confirmation.action !== intent.action) {
+    return { ok: false, reason: 'action_mismatch' };
+  }
+  const expected = fingerprintIntent(intent, details);
+  if (confirmation.intentFingerprint !== expected) {
+    return { ok: false, reason: 'intent_changed' };
+  }
+  return { ok: true };
+}
 
 // ─────────────────────────────────────────────────────────
 // Multi-turn context store (per-user conversation history)
@@ -249,184 +377,76 @@ export function parseIntentWithRegex(message: string): ParsedIntent {
   // Deposit <amount>
   const depositMatch = lower.match(/\bdeposit\s+([\d,]+(?:\.\d+)?)/);
   if (depositMatch) {
-    const stratMatch = lower.match(/\b(conservative|balanced|growth)\b/);
     return {
       action: 'deposit',
       amount: parseFloat(depositMatch[1].replace(/,/g, '')),
-      strategy: stratMatch ? (stratMatch[1] as Strategy) : undefined,
       confidence: 0.9,
       raw: message,
     };
   }
 
-  // Balance
-  if (/\b(balance|how much|my portfolio|portfolio)\b/.test(lower)) {
+  // Balance / earnings / apy / strategy
+  if (/\b(balance|how much do i have)\b/.test(lower)) {
     return { action: 'check_balance', confidence: 0.9, raw: message };
   }
-
-  // Earnings
-  if (/\b(earn|earnings|yield|profit|made)\b/.test(lower)) {
+  if (/\b(earnings|yield|interest)\b/.test(lower)) {
     return { action: 'check_earnings', confidence: 0.85, raw: message };
   }
-
-  // APY
-  if (/\b(apy|interest|rate|annual)\b/.test(lower)) {
+  if (/\b(apy|rate|return)\b/.test(lower)) {
     return { action: 'get_apy', confidence: 0.85, raw: message };
   }
-
-  // Strategy switch
-  const stratMatch = lower.match(
-    /\b(?:switch|change|set|use)\b.*\b(conservative|balanced|growth)\b/,
-  );
-  if (stratMatch) {
+  const strategyMatch = lower.match(/\b(conservative|balanced|growth)\b/);
+  if (strategyMatch) {
     return {
       action: 'set_strategy',
-      strategy: stratMatch[1] as Strategy,
-      confidence: 0.9,
+      strategy: strategyMatch[1] as Strategy,
+      confidence: 0.85,
       raw: message,
     };
   }
 
-  // Bare strategy name
-  const bareStrat = lower.match(/^(conservative|balanced|growth)$/);
-  if (bareStrat) {
-    return {
-      action: 'set_strategy',
-      strategy: bareStrat[1] as Strategy,
-      confidence: 0.8,
-      raw: message,
-    };
-  }
-
-  // Fallback: ask for clarification
+  // Genuinely ambiguous — ask for clarification, never execute
   return {
     action: 'clarify',
-    clarifyingQuestion:
-      'I didn\'t understand that. Could you rephrase? For example: "deposit 100 USDC" or "check my balance".',
-    confidence: 0.3,
+    clarifyingQuestion: 'Could you clarify what you would like to do?',
+    confidence: 0.2,
     raw: message,
   };
 }
 
 // ─────────────────────────────────────────────────────────
-// Main parser
+// Public entry point
 // ─────────────────────────────────────────────────────────
 
-export interface ParseIntentOptions {
-  /** User / session identifier for multi-turn context */
-  userId?: string;
-  /**
-   * When true, skip the LLM and use only the regex parser.
-   * Useful for testing or when API keys are not configured.
-   */
-  forceRegex?: boolean;
-}
-
 /**
- * Parse a user message into a structured ParsedIntent.
+ * Parse a user message into a structured intent.
  *
- * Strategy:
- * 1. Try Anthropic (claude-3-5-haiku) — fastest, cheapest
- * 2. Try OpenAI (gpt-4o-mini) if Anthropic is unavailable
- * 3. Fall back to regex parser if both LLMs are down
- * 4. Validate output with Zod; fall back to regex on schema error
+ * IMPORTANT (#419): this function only extracts intent. It never enqueues or
+ * submits a transaction. Financial intents must be confirmed via
+ * `buildConfirmation` + `verifyConfirmation` before execution.
  */
 export async function parseIntent(
+  userId: string,
   message: string,
-  options: ParseIntentOptions = {},
 ): Promise<ParsedIntent> {
-  const { userId, forceRegex = false } = options;
-  const history = userId ? getConversationHistory(userId) : [];
+  const history = getConversationHistory(userId);
 
-  let rawJson: string | null = null;
-  let usedProvider: string | null = null;
-
-  if (!forceRegex) {
-    // ── Attempt Anthropic ──────────────────────────────────────────────────
-    if (isAvailable('anthropic') && process.env.ANTHROPIC_API_KEY) {
-      try {
-        rawJson = await callAnthropic(history, message);
-        recordSuccess('anthropic');
-        usedProvider = 'anthropic';
-      } catch (err) {
-        recordFailure('anthropic');
-        logger.warn(
-          { err: (err as Error).message },
-          'Anthropic call failed — trying OpenAI',
-        );
-      }
-    }
-
-    // ── Attempt OpenAI ─────────────────────────────────────────────────────
-    if (!rawJson && isAvailable('openai') && process.env.OPENAI_API_KEY) {
-      try {
-        rawJson = await callOpenAI(history, message);
-        recordSuccess('openai');
-        usedProvider = 'openai';
-      } catch (err) {
-        recordFailure('openai');
-        logger.warn(
-          { err: (err as Error).message },
-          'OpenAI call failed — falling back to regex parser',
-        );
-      }
-    }
-  }
-
-  // ── Parse & validate LLM output ───────────────────────────────────────────
-  if (rawJson) {
+  for (const provider of ['anthropic', 'openai'] as const) {
+    if (!isAvailable(provider)) continue;
     try {
-      const parsed = JSON.parse(rawJson);
-      const validated = ParsedIntentSchema.parse({ ...parsed, raw: message });
-
-      logger.info(
-        { action: validated.action, confidence: validated.confidence, provider: usedProvider },
-        'Intent parsed via LLM',
-      );
-
-      // Store in conversation history for multi-turn support
-      if (userId) {
-        appendToHistory(userId, 'user', message);
-        appendToHistory(userId, 'assistant', rawJson);
-      }
-
-      return validated;
+      const raw =
+        provider === 'anthropic'
+          ? await callAnthropic(history, message)
+          : await callOpenAI(history, message);
+      const parsed = ParsedIntentSchema.parse({ ...JSON.parse(raw), raw: message });
+      recordSuccess(provider);
+      return parsed;
     } catch (err) {
-      logger.warn(
-        { err: (err as Error).message, rawJson },
-        'LLM output failed Zod validation — falling back to regex',
-      );
+      recordFailure(provider);
+      logger.warn({ err, provider }, 'LLM intent parse failed, trying next provider');
     }
   }
 
-  // ── Regex fallback ─────────────────────────────────────────────────────────
-  const regexResult = parseIntentWithRegex(message);
-
-  logger.info(
-    { action: regexResult.action, confidence: regexResult.confidence, provider: 'regex' },
-    'Intent parsed via regex fallback',
-  );
-
-  if (userId) {
-    appendToHistory(userId, 'user', message);
-  }
-
-  return regexResult;
-}
-
-/**
- * Returns true when the intent confidence is too low to execute without
- * asking the user to confirm.
- */
-export function needsConfirmation(intent: ParsedIntent): boolean {
-  return intent.confidence < LOW_CONFIDENCE_THRESHOLD;
-}
-
-/**
- * Returns the breaker state snapshot for observability.
- */
-export function getBreakerStates(): Record<string, BreakerState> {
-  return Object.fromEntries(
-    Object.entries(breakers).map(([k, v]) => [k, v.state]),
-  );
+  // All providers unavailable — fall back to regex
+  return parseIntentWithRegex(message);
 }

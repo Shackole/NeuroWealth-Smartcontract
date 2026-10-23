@@ -171,6 +171,34 @@ model ApySnapshot {
 }
 
 // ─────────────────────────────────────────────
+// SCHEDULER LEASES
+// Issue #420: durable distributed lease so only
+// one agent replica owns a given rebalance
+// interval. A crashed owner is replaced once
+// `expiresAt` passes; renewal bumps `expiresAt`
+// and `renewedAt`; release clears `ownerId`.
+// ─────────────────────────────────────────────
+model SchedulerLease {
+  /// Logical interval key, e.g. "rebalance:2026-10-15T03:00Z"
+  intervalKey String    @id @map("interval_key")
+  /// Replica identity currently holding the lease (null when released)
+  ownerId     String?   @map("owner_id")
+  /// Lease expiry — after this instant another replica may acquire
+  expiresAt   DateTime  @map("expires_at")
+  /// Last successful renewal (observability)
+  renewedAt   DateTime? @map("renewed_at")
+  /// When the lease was first acquired (observability)
+  acquiredAt  DateTime  @default(now()) @map("acquired_at")
+  /// When the lease was released (observability)
+  releasedAt  DateTime? @map("released_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  @@index([expiresAt])
+  @@map("scheduler_leases")
+}
+
+// ─────────────────────────────────────────────
 // AUDIT LOGS
 // Immutable append-only audit trail, written
 // every time a custodial secret key is decrypted
