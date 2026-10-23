@@ -1,0 +1,1032 @@
+openapi: 3.0.3
+info:
+  title: NeuroWealth AI Agent API
+  version: 1.0.0
+  description: |
+    REST API for the NeuroWealth AI Agent backend — an autonomous yield-optimization
+    agent running on the Stellar blockchain.
+
+    The agent monitors the Soroban vault contract, deploys funds to the best yield
+    protocols (Blend, DEX), and exposes this HTTP interface for the dashboard UI,
+    WhatsApp bot, and external integrators.
+
+    **Base URL:** `http://localhost:3001` (development) | `https://agent.neurowealth.app` (production)
+
+    **Authentication:** Most endpoints require a Bearer JWT obtained via the
+    `/api/auth/verify` flow. Public endpoints (`/health`, `/ready`, `/api/metrics/*`,
+    `/api/apy`, `/api/stats`) do not require authentication.
+  contact:
+    name: NeuroWealth
+    url: https://github.com/Shackole/NeuroWealth-Smartcontract
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:3001
+    description: Local development
+  - url: https://agent.neurowealth.app
+    description: Production
+
+tags:
+  - name: Health
+    description: Liveness and readiness probes
+  - name: Metrics
+    description: Agent performance and alert metrics
+  - name: Balance
+    description: User vault balance and earnings
+  - name: Market
+    description: APY rates and vault statistics
+  - name: Transactions
+    description: User transaction history
+  - name: Auth
+    description: Stellar wallet challenge-response authentication
+  - name: Queue
+    description: Internal job queue monitoring
+  - name: WhatsApp
+    description: Twilio WhatsApp webhook for chatbot integration
+
+paths:
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # HEALTH
+  # ──────────────────────────────────────────────────────────────────────────
+
+  /health:
+    get:
+      tags: [Health]
+      summary: Liveness check
+      description: |
+        Returns the health status of the agent and its dependencies:
+        PostgreSQL database, Stellar Soroban RPC, and OpenAI API keys.
+        Returns HTTP 200 when all configured dependencies are healthy,
+        HTTP 503 when any dependency is degraded.
+      operationId: getHealth
+      security: []
+      responses:
+        '200':
+          description: All dependencies healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              example:
+                status: ok
+                checks:
+                  database: ok
+                  stellar_rpc: ok
+                  openai_api_keys: ok
+                metrics:
+                  dbPool:
+                    totalCount: 10
+                    idleCount: 8
+                    waitingCount: 0
+                  openAiKeys:
+                    totalConfigured: 2
+                    healthyCount: 2
+                    keys: []
+                uptime: 3600.5
+                timestamp: '2026-09-23T21:00:00.000Z'
+        '503':
+          description: One or more dependencies degraded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              example:
+                status: degraded
+                checks:
+                  database: error
+                  stellar_rpc: ok
+                  openai_api_keys: ok
+                uptime: 120.3
+                timestamp: '2026-09-23T21:00:00.000Z'
+
+  /ready:
+    get:
+      tags: [Health]
+      summary: Readiness check
+      description: |
+        Lightweight readiness probe. Only checks Stellar RPC reachability.
+        Returns HTTP 200 when the agent can process requests, HTTP 503 otherwise.
+        Used by load balancers and orchestrators (Kubernetes, Railway, Render).
+      operationId: getReady
+      security: []
+      responses:
+        '200':
+          description: Agent ready to serve requests
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ready:
+                    type: boolean
+              example:
+                ready: true
+        '503':
+          description: Agent not ready — Stellar RPC unreachable
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ready:
+                    type: boolean
+                  error:
+                    type: string
+              example:
+                ready: false
+                error: Stellar RPC unreachable
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # METRICS
+  # ──────────────────────────────────────────────────────────────────────────
+
+  /api/metrics/snapshot:
+    get:
+      tags: [Metrics]
+      summary: Full metrics snapshot
+      description: |
+        Returns a complete performance metrics snapshot for the dashboard UI.
+        Includes TVL, APY, rebalance history, uptime percentage, last heartbeat,
+        and per-protocol deployment figures.
+      operationId: getMetricsSnapshot
+      security: []
+      responses:
+        '200':
+          description: Metrics snapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MetricsSnapshot'
+              example:
+                agentHealthy: true
+                lastHeartbeatAt: 1727128800000
+                uptimePct: 99.97
+                totalTvlUsdc: 1450850000000
+                currentApyBps: 840
+                blendApyBps: 800
+                dexApyBps: 950
+                blendAllocationPct: 60
+                dexAllocationPct: 40
+                rebalanceCount24h: 3
+                lastRebalanceAt: 1727125200000
+
+  /api/metrics/alerts:
+    get:
+      tags: [Metrics]
+      summary: Active threshold alerts
+      description: |
+        Returns only the alerts that are currently firing above their configured
+        thresholds. Intended for integration with alerting systems (PagerDuty,
+        Slack, OpsGenie). Returns an empty array when no alerts are active.
+      operationId: getMetricsAlerts
+      security: []
+      responses:
+        '200':
+          description: Active alerts list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  generatedAt:
+                    type: integer
+                    format: int64
+                    description: Unix timestamp (ms) when alerts were evaluated
+                  alerts:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/MetricAlert'
+              example:
+                generatedAt: 1727128800000
+                alerts:
+                  - id: high_mev_loss
+                    severity: warning
+                    message: Cumulative MEV loss exceeds 500 USDC
+                    value: 523.4
+                    threshold: 500
+                    firedAt: 1727128700000
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # BALANCE & EARNINGS
+  # ──────────────────────────────────────────────────────────────────────────
+
+  /api/balance/{address}:
+    get:
+      tags: [Balance]
+      summary: Get user vault balance
+      description: |
+        Returns the current USDC balance for a Stellar address in the NeuroWealth
+        vault. Balance is derived from the user's share holdings at the current
+        exchange rate: `balance = shares * (totalAssets / totalShares)`.
+      operationId: getUserBalance
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/StellarAddress'
+      responses:
+        '200':
+          description: User balance
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BalanceResponse'
+              example:
+                address: GABC4XYZDEFGHIJ1234567890ABCDEF1234567890ABCDEF1234567890ABCD
+                balanceUsdc: '1450.850000'
+                balanceStroops: '14508500000'
+                shares: '1393.124000'
+                exchangeRate: '1.042000'
+                lastUpdatedAt: '2026-09-23T21:00:00.000Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/earnings/{address}:
+    get:
+      tags: [Balance]
+      summary: Get user earnings summary
+      description: |
+        Returns earnings breakdown for a user: today, this week, this month, and
+        since first deposit. All values are in USDC with 6 decimal places.
+      operationId: getUserEarnings
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/StellarAddress'
+      responses:
+        '200':
+          description: Earnings summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EarningsSummary'
+              example:
+                address: GABC4XYZDEFGHIJ1234567890ABCDEF1234567890ABCDEF1234567890ABCD
+                today: '0.230000'
+                week: '1.610000'
+                month: '6.890000'
+                allTime: '42.150000'
+                currentApyBps: 840
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # TRANSACTIONS
+  # ──────────────────────────────────────────────────────────────────────────
+
+  /api/transactions/{address}:
+    get:
+      tags: [Transactions]
+      summary: Get user transaction history
+      description: |
+        Returns a paginated list of vault transactions (deposits, withdrawals,
+        rebalances) for the specified Stellar address. Results are sorted newest
+        first.
+      operationId: getUserTransactions
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/StellarAddress'
+        - name: limit
+          in: query
+          description: Maximum number of transactions to return (default 20, max 100)
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: offset
+          in: query
+          description: Number of transactions to skip for pagination
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - name: type
+          in: query
+          description: Filter by transaction type
+          schema:
+            type: string
+            enum: [deposit, withdraw, rebalance]
+      responses:
+        '200':
+          description: Transaction list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransactionListResponse'
+              example:
+                address: GABC4XYZDEFGHIJ1234567890ABCDEF1234567890ABCDEF1234567890ABCD
+                total: 47
+                limit: 20
+                offset: 0
+                transactions:
+                  - id: evt_001
+                    type: deposit
+                    amountUsdc: '100.000000'
+                    sharesChanged: '+95.970000'
+                    txHash: abc123def456789012345678901234567890abcd
+                    ledger: 12345678
+                    timestamp: '2026-09-23T20:00:00.000Z'
+                  - id: evt_002
+                    type: withdraw
+                    amountUsdc: '-50.250000'
+                    sharesChanged: '-48.223000'
+                    txHash: def456abc123789012345678901234567890ef01
+                    ledger: 12345612
+                    timestamp: '2026-09-22T15:30:00.000Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # MARKET DATA
+  # ──────────────────────────────────────────────────────────────────────────
+
+  /api/apy:
+    get:
+      tags: [Market]
+      summary: Current APY rates
+      description: |
+        Returns the current APY rates for all supported yield protocols and the
+        vault's composite (allocation-weighted) APY.
+        Formula: `compositeApy = (blendBps * blendApy + dexBps * dexApy) / 10_000`
+      operationId: getApy
+      security: []
+      responses:
+        '200':
+          description: APY rates
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApyResponse'
+              example:
+                compositeApyBps: 840
+                compositeApyPct: '8.40'
+                protocols:
+                  blend:
+                    apyBps: 800
+                    apyPct: '8.00'
+                    allocationPct: 60
+                  dex:
+                    apyBps: 950
+                    apyPct: '9.50'
+                    allocationPct: 40
+                updatedAt: '2026-09-23T21:00:00.000Z'
+
+  /api/stats:
+    get:
+      tags: [Market]
+      summary: Vault global statistics
+      description: |
+        Returns high-level vault metrics: TVL, total users, cumulative volume,
+        current exchange rate, and per-protocol deployment breakdown.
+      operationId: getStats
+      security: []
+      responses:
+        '200':
+          description: Vault statistics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VaultStats'
+              example:
+                tvlUsdc: '1450850.000000'
+                totalUsers: 312
+                totalDeposits: '2100000.000000'
+                totalWithdrawals: '649150.000000'
+                exchangeRate: '1.042000'
+                currentProtocol: blend
+                blendDeployedUsdc: '870510.000000'
+                dexDeployedUsdc: '580340.000000'
+                updatedAt: '2026-09-23T21:00:00.000Z'
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # AUTHENTICATION
+  # ──────────────────────────────────────────────────────────────────────────
+
+  /api/auth/challenge:
+    post:
+      tags: [Auth]
+      summary: Request authentication challenge
+      description: |
+        Issues a random challenge nonce that the client must sign with their
+        Stellar private key via Freighter wallet. The signed challenge is then
+        submitted to `/api/auth/verify` to obtain a JWT.
+
+        Challenges expire after **5 minutes**.
+      operationId: requestChallenge
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [address]
+              properties:
+                address:
+                  type: string
+                  description: Stellar public key (G...) of the wallet to authenticate
+                  example: GABC4XYZDEFGHIJ1234567890ABCDEF1234567890ABCDEF1234567890ABCD
+            example:
+              address: GABC4XYZDEFGHIJ1234567890ABCDEF1234567890ABCDEF1234567890ABCD
+      responses:
+        '200':
+          description: Challenge issued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChallengeResponse'
+              example:
+                challenge: nw_chal_a1b2c3d4e5f6789012345678
+                expiresAt: '2026-09-23T21:05:00.000Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /api/auth/verify:
+    post:
+      tags: [Auth]
+      summary: Verify signed challenge and issue JWT
+      description: |
+        Accepts the challenge nonce and the client's Stellar signature (produced
+        by Freighter). If the signature is valid, returns a short-lived JWT Bearer
+        token (24 h TTL) for authenticating subsequent API requests.
+      operationId: verifyChallenge
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [address, challenge, signature]
+              properties:
+                address:
+                  type: string
+                  description: Stellar public key (must match the challenge request)
+                  example: GABC4XYZDEFGHIJ1234567890ABCDEF1234567890ABCDEF1234567890ABCD
+                challenge:
+                  type: string
+                  description: Challenge nonce returned by /api/auth/challenge
+                  example: nw_chal_a1b2c3d4e5f6789012345678
+                signature:
+                  type: string
+                  description: Stellar ed25519 signature over the challenge, hex-encoded
+                  example: 3045022100abcdef...
+            example:
+              address: GABC4XYZDEFGHIJ1234567890ABCDEF1234567890ABCDEF1234567890ABCD
+              challenge: nw_chal_a1b2c3d4e5f6789012345678
+              signature: 3045022100abcdef01234567890abcdef01234567890abcdef01234567890abcdef
+      responses:
+        '200':
+          description: Authentication successful — JWT issued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthTokenResponse'
+              example:
+                token: eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9...
+                expiresAt: '2026-09-24T21:00:00.000Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          description: Invalid or expired challenge signature
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: invalid_signature
+                message: Signature does not match the challenge for this address
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # QUEUE
+  # ──────────────────────────────────────────────────────────────────────────
+
+  /api/queue/stats:
+    get:
+      tags: [Queue]
+      summary: Internal job queue statistics
+      description: |
+        Returns rebalance scheduler queue metrics: pending jobs, active jobs,
+        completed count, failure count, and the priority queue snapshot.
+        Intended for operator dashboards and alerting systems.
+      operationId: getQueueStats
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Queue statistics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueueStats'
+              example:
+                pending: 1
+                active: 0
+                completed24h: 24
+                failed24h: 0
+                nextJobDueAt: '2026-09-23T22:00:00.000Z'
+                circuitBreakerOpen: false
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # WHATSAPP WEBHOOK
+  # ──────────────────────────────────────────────────────────────────────────
+
+  /api/whatsapp/webhook:
+    post:
+      tags: [WhatsApp]
+      summary: Twilio WhatsApp incoming message webhook
+      description: |
+        Receives incoming WhatsApp messages forwarded by Twilio. The bot handles
+        the full user lifecycle: OTP phone verification, custodial wallet creation,
+        and vault interactions via natural language (deposit, withdraw, balance,
+        strategy switch).
+
+        **Integrators:** Register this URL in the Twilio console under
+        *Messaging → WhatsApp Sandbox → When a message comes in*.
+
+        The endpoint returns Twilio Markup Language (TwiML) XML. Twilio validates
+        request authenticity via the `X-Twilio-Signature` header — requests
+        without a valid signature are rejected with HTTP 403.
+
+        **Supported intents:**
+        - `deposit 100 USDC` — deposit funds
+        - `withdraw 50` / `withdraw all` — withdraw funds
+        - `balance` / `what's my balance` — check portfolio
+        - `switch to growth` / `switch to conservative` — update strategy
+        - `hi` / `hello` — start OTP verification flow
+      operationId: handleWhatsAppWebhook
+      security: []
+      parameters:
+        - name: X-Twilio-Signature
+          in: header
+          required: false
+          description: HMAC-SHA1 signature computed by Twilio for request validation
+          schema:
+            type: string
+      requestBody:
+        required: true
+        description: URL-encoded Twilio webhook payload
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [From, Body]
+              properties:
+                From:
+                  type: string
+                  description: Sender phone number in E.164 WhatsApp format
+                  example: 'whatsapp:+15555550100'
+                Body:
+                  type: string
+                  description: Message text sent by the user
+                  example: 'deposit 100 USDC'
+                MessageSid:
+                  type: string
+                  description: Twilio message SID for deduplication
+                  example: SM1234567890abcdef1234567890abcdef
+                NumMedia:
+                  type: string
+                  description: Number of media attachments (usually 0)
+                  example: '0'
+            example:
+              From: 'whatsapp:+15555550100'
+              Body: 'deposit 100 USDC'
+              MessageSid: SM1234567890abcdef
+              NumMedia: '0'
+      responses:
+        '200':
+          description: TwiML response instructing Twilio what to reply to the user
+          content:
+            text/xml:
+              example: |
+                <?xml version="1.0" encoding="UTF-8"?>
+                <Response>
+                  <Message>✅ Deposited 100 USDC into your Balanced strategy. Earning ~8.4% APY.</Message>
+                </Response>
+        '400':
+          description: Missing required fields (From or Body)
+        '403':
+          description: Invalid Twilio signature — request rejected
+
+# ────────────────────────────────────────────────────────────────────────────
+# COMPONENTS
+# ────────────────────────────────────────────────────────────────────────────
+
+components:
+
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        JWT obtained via the `/api/auth/verify` flow. Include in the
+        `Authorization` header as `Bearer <token>`. Tokens expire after 24 hours.
+
+  parameters:
+    StellarAddress:
+      name: address
+      in: path
+      required: true
+      description: Stellar public key (G...) of the user account
+      schema:
+        type: string
+        pattern: '^G[A-Z2-7]{55}$'
+        example: GABC4XYZDEFGHIJ1234567890ABCDEF1234567890ABCDEF1234567890ABCD
+
+  responses:
+    BadRequest:
+      description: Bad request — invalid parameters or missing required fields
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: bad_request
+            message: 'address must be a valid Stellar public key starting with G'
+    Unauthorized:
+      description: Missing or invalid Bearer JWT
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: unauthorized
+            message: 'Bearer token is missing or expired'
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: not_found
+            message: 'No vault account found for this address'
+    RateLimited:
+      description: Too many requests — rate limit exceeded
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: rate_limited
+            message: 'Too many requests. Please wait 60 seconds before retrying.'
+
+  schemas:
+
+    HealthResponse:
+      type: object
+      required: [status, checks, uptime, timestamp]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+          description: Overall health status
+        checks:
+          type: object
+          description: Per-dependency health status
+          additionalProperties:
+            type: string
+            enum: [ok, error, not_configured]
+        metrics:
+          type: object
+          properties:
+            dbPool:
+              type: object
+              properties:
+                totalCount:
+                  type: integer
+                idleCount:
+                  type: integer
+                waitingCount:
+                  type: integer
+            openAiKeys:
+              type: object
+              properties:
+                totalConfigured:
+                  type: integer
+                healthyCount:
+                  type: integer
+        uptime:
+          type: number
+          description: Agent process uptime in seconds
+        timestamp:
+          type: string
+          format: date-time
+
+    MetricsSnapshot:
+      type: object
+      properties:
+        agentHealthy:
+          type: boolean
+          description: Whether the agent is operating normally
+        lastHeartbeatAt:
+          type: integer
+          format: int64
+          description: Unix timestamp (ms) of last agent heartbeat
+        uptimePct:
+          type: number
+          description: Agent uptime percentage over the last 30 days (0–100)
+        totalTvlUsdc:
+          type: integer
+          format: int64
+          description: Total value locked in stroops (7 decimals; divide by 1e7 for USDC)
+        currentApyBps:
+          type: integer
+          description: Composite allocation-weighted APY in basis points (100 bps = 1%)
+        blendApyBps:
+          type: integer
+          description: Last reported Blend protocol APY in basis points
+        dexApyBps:
+          type: integer
+          description: Last reported DEX protocol APY in basis points
+        blendAllocationPct:
+          type: number
+          description: Percentage of deployable assets allocated to Blend (0–100)
+        dexAllocationPct:
+          type: number
+          description: Percentage of deployable assets allocated to DEX (0–100)
+        rebalanceCount24h:
+          type: integer
+          description: Number of rebalance operations in the last 24 hours
+        lastRebalanceAt:
+          type: integer
+          format: int64
+          description: Unix timestamp (ms) of the most recent rebalance
+
+    MetricAlert:
+      type: object
+      required: [id, severity, message, firedAt]
+      properties:
+        id:
+          type: string
+          description: Unique alert identifier (e.g. high_mev_loss, low_tvl)
+        severity:
+          type: string
+          enum: [info, warning, critical]
+        message:
+          type: string
+          description: Human-readable alert description
+        value:
+          type: number
+          description: Current metric value that triggered the alert
+        threshold:
+          type: number
+          description: Configured threshold that was exceeded
+        firedAt:
+          type: integer
+          format: int64
+          description: Unix timestamp (ms) when the alert first fired
+
+    BalanceResponse:
+      type: object
+      properties:
+        address:
+          type: string
+          description: Stellar public key
+        balanceUsdc:
+          type: string
+          description: Human-readable USDC balance with 6 decimal places
+        balanceStroops:
+          type: string
+          description: Raw stroop balance (7 decimal places)
+        shares:
+          type: string
+          description: Vault share balance (proportional ownership token)
+        exchangeRate:
+          type: string
+          description: Current USDC per share (assets / totalShares)
+        lastUpdatedAt:
+          type: string
+          format: date-time
+          description: Timestamp of the most recent on-chain event for this user
+
+    EarningsSummary:
+      type: object
+      properties:
+        address:
+          type: string
+        today:
+          type: string
+          description: USDC earned since midnight UTC today
+        week:
+          type: string
+          description: USDC earned in the last 7 days
+        month:
+          type: string
+          description: USDC earned in the last 30 days
+        allTime:
+          type: string
+          description: Total USDC earned since first deposit
+        currentApyBps:
+          type: integer
+          description: User's effective APY in basis points at current exchange rate
+
+    TransactionRecord:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Internal event ID
+        type:
+          type: string
+          enum: [deposit, withdraw, rebalance]
+        amountUsdc:
+          type: string
+          description: Signed USDC amount (positive for deposits, negative for withdrawals)
+        sharesChanged:
+          type: string
+          description: Signed share delta (e.g. '+95.970000' or '-48.223000')
+        txHash:
+          type: string
+          description: Stellar transaction hash
+        ledger:
+          type: integer
+          description: Stellar ledger sequence number
+        timestamp:
+          type: string
+          format: date-time
+
+    TransactionListResponse:
+      type: object
+      properties:
+        address:
+          type: string
+        total:
+          type: integer
+          description: Total number of transactions matching the filter
+        limit:
+          type: integer
+        offset:
+          type: integer
+        transactions:
+          type: array
+          items:
+            $ref: '#/components/schemas/TransactionRecord'
+
+    ApyResponse:
+      type: object
+      properties:
+        compositeApyBps:
+          type: integer
+          description: Allocation-weighted composite APY in basis points
+        compositeApyPct:
+          type: string
+          description: Human-readable composite APY percentage (e.g. '8.40')
+        protocols:
+          type: object
+          description: Per-protocol APY breakdown
+          additionalProperties:
+            type: object
+            properties:
+              apyBps:
+                type: integer
+                description: APY in basis points
+              apyPct:
+                type: string
+                description: Human-readable APY percentage
+              allocationPct:
+                type: number
+                description: Percentage of vault assets allocated to this protocol
+        updatedAt:
+          type: string
+          format: date-time
+
+    VaultStats:
+      type: object
+      properties:
+        tvlUsdc:
+          type: string
+          description: Total value locked in USDC (6 decimal places)
+        totalUsers:
+          type: integer
+          description: Number of addresses with active share positions
+        totalDeposits:
+          type: string
+          description: Cumulative USDC deposited all-time
+        totalWithdrawals:
+          type: string
+          description: Cumulative USDC withdrawn all-time
+        exchangeRate:
+          type: string
+          description: Current USDC per share rate
+        currentProtocol:
+          type: string
+          enum: [blend, dex, multi, none]
+          description: Active yield protocol
+        blendDeployedUsdc:
+          type: string
+          description: USDC currently deployed to Blend
+        dexDeployedUsdc:
+          type: string
+          description: USDC currently deployed to the DEX pool
+        updatedAt:
+          type: string
+          format: date-time
+
+    ChallengeResponse:
+      type: object
+      properties:
+        challenge:
+          type: string
+          description: Random nonce to be signed by the client wallet
+        expiresAt:
+          type: string
+          format: date-time
+          description: When the challenge expires (5 minutes from issuance)
+
+    AuthTokenResponse:
+      type: object
+      properties:
+        token:
+          type: string
+          description: JWT Bearer token (EdDSA-signed, 24 h TTL)
+        expiresAt:
+          type: string
+          format: date-time
+
+    QueueStats:
+      type: object
+      properties:
+        pending:
+          type: integer
+          description: Jobs waiting to be processed
+        active:
+          type: integer
+          description: Jobs currently executing
+        completed24h:
+          type: integer
+          description: Jobs completed successfully in the last 24 hours
+        failed24h:
+          type: integer
+          description: Jobs that failed in the last 24 hours
+        nextJobDueAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the next scheduled rebalance job is due
+        circuitBreakerOpen:
+          type: boolean
+          description: Whether the circuit breaker has paused scheduling after consecutive failures
+
+    ErrorResponse:
+      type: object
+      required: [error, message]
+      properties:
+        error:
+          type: string
+          description: Machine-readable error code (snake_case)
+        message:
+          type: string
+          description: Human-readable error description
+
+# ────────────────────────────────────────────────────────────────────────────
+# CHANGELOG
+# ────────────────────────────────────────────────────────────────────────────
+# v1.0.0 (2026-09-23)
+#   - Initial OpenAPI 3.0.3 specification — Issue #62
+#   - All 13 backend REST endpoints documented
+#   - Endpoints:
+#       GET  /health
+#       GET  /ready
+#       GET  /api/metrics/snapshot
+#       GET  /api/metrics/alerts
+#       GET  /api/balance/:address
+#       GET  /api/earnings/:address
+#       GET  /api/transactions/:address
+#       GET  /api/apy
+#       GET  /api/stats
+#       POST /api/auth/challenge
+#       POST /api/auth/verify
+#       GET  /api/queue/stats
+#       POST /api/whatsapp/webhook
+#   - Bearer JWT authentication via Stellar challenge-response flow
+#   - Error codes: 400 Bad Request, 401 Unauthorized, 403 Forbidden,
+#                  404 Not Found, 429 Rate Limited, 503 Service Unavailable
+#   - Request/response examples for all endpoints
+#
+# To preview as Swagger UI:
+#   npx @redocly/cli preview-docs docs/api.yaml
+#   # or: npx swagger-ui-watcher docs/api.yaml
+#   # or: npx @stoplight/prism-cli mock docs/api.yaml  (mock server)

@@ -13,7 +13,7 @@ if os.path.exists(path):
 
 history = payload.get(branch, {}).get("history", [])
 history.append({"sha": sha, "size_bytes": size})
-updated_history = history[-20:]
+updated_history = history[-10:]
 
 payload[branch] = {
     "latest": {

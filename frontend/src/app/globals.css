@@ -7,11 +7,39 @@
 :root {
   --font-outfit: 'Outfit', sans-serif;
   --font-space: 'Space Grotesk', sans-serif;
+
+  /* ── CVD-safe status colours (WCAG SC 1.4.1) ──────────────────────────────
+   * Each colour is paired with a distinct icon/shape so that colour is never
+   * the sole differentiator of meaning (deuteranopia + protanopia safe).
+   * Simulation validated with Color Oracle (https://www.color-oracle.org/).
+   * -------------------------------------------------------------------------
+   * cvd-success → Blue   #2563eb  (paired with ✓ CheckCircle icon)
+   * cvd-warning → Amber  #d97706  (paired with △ AlertTriangle icon)
+   * cvd-error   → Red    #dc2626  (paired with ✕ XCircle icon)
+   * cvd-info    → Teal   #0891b2  (paired with ℹ Info icon)
+   * ── Chart colours (blue/orange — maximally CVD-safe pairing) ─────────────
+   * chart-a     → Blue   #2563eb  (Portfolio Value)
+   * chart-b     → Amber  #d97706  (Accrued Yield)
+   * chart-c     → Teal   #0891b2  (reserved)
+   * chart-d     → Violet #7c3aed  (reserved)
+   */
+  --color-cvd-success: #2563eb;
+  --color-cvd-warning: #d97706;
+  --color-cvd-error:   #dc2626;
+  --color-cvd-info:    #0891b2;
+  --color-chart-a:     #2563eb;
+  --color-chart-b:     #d97706;
+  --color-chart-c:     #0891b2;
+  --color-chart-d:     #7c3aed;
 }
 
 body {
   font-family: var(--font-outfit);
   min-height: 100vh;
+  overflow-x: hidden;
+}
+
+html {
   overflow-x: hidden;
 }
 
@@ -62,6 +90,54 @@ body {
   border-color: rgba(16, 185, 129, 0.3);
   transform: translateY(-2px);
   box-shadow: 0 10px 30px -10px rgba(16, 185, 129, 0.15);
+}
+
+/* ─── Skeleton shimmer ──────────────────────────────────────────────────── */
+@keyframes shimmer {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+.skeleton-shimmer {
+  position: relative;
+  overflow: hidden;
+  background: rgba(30, 41, 59, 0.5);
+}
+
+.skeleton-shimmer::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.06) 50%,
+    transparent 100%
+  );
+  animation: shimmer 1.6s ease-in-out infinite;
+}
+
+/* ─── Reduced-motion: disable ALL decorative animations ─────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+
+  .skeleton-shimmer::after {
+    animation: none;
+  }
+
+  /* Progress and status remain visible as text; movement is never the signal. */
+  .animate-spin,
+  .animate-ping,
+  .animate-pulse,
+  .animate-bounce {
+    animation: none !important;
+  }
 }
 
 /* Custom scrollbar */

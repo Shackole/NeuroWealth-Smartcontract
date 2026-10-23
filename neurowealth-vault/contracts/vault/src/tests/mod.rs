@@ -38,9 +38,11 @@ mod test_multi_user_concurrent;
 mod test_multi_asset;
 mod test_no_privilege_escalation_proptest;
 mod test_pause;
+mod test_pause_auth_matrix;
 mod test_pool_config_idempotent;
 mod test_pool_rotation_with_deployed_funds;
 mod test_rate_limiting;
+mod test_rate_limit_enforcement;
 mod test_rebalance;
 mod test_rebalance_cooldown;
 mod test_rebalance_integration;
@@ -63,6 +65,7 @@ mod test_tvl_cap_stress;
 mod test_update_total_assets_blend;
 mod test_update_total_assets_dex;
 mod test_upgrade_compatibility;
+mod test_upgrade_regression;
 mod test_upgrade_timelock;
 mod test_user_strategy;
 mod test_users_with_shares;
@@ -82,8 +85,8 @@ mod test_performance_fee;
 // (`crate::tests::` paths that can never resolve: lib.rs mounts this file as
 // `comprehensive_tests`), missing aux modules (`../insurance.rs`),
 // ANSI-escape-corrupted attributes, and rejected API references
-// (`BatchDepositItem`, `BelowMinimumWithdrawal`). Not harvested for coverage.
-// mod test_batch_deposit;
+// (`BelowMinimumWithdrawal`). Not harvested for coverage.
+mod test_batch_deposit;
 // mod test_insurance_fund;
 // mod test_min_withdraw;
 // mod test_min_withdrawal;
@@ -92,4 +95,7 @@ mod test_performance_fee;
 mod test_user_apy;
 mod test_insurance_fund;
 mod test_withdrawal_queue;
+mod test_batch_touch_ttl;
+mod test_guardian;
+mod test_share_math_props;
 

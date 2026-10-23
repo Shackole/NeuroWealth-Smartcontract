@@ -15,6 +15,14 @@
 
 use soroban_sdk::{ symbol_short, Symbol };
 
+/// Event schema version for topic/payload compatibility checks.
+///
+/// This constant is intentionally a single version token for the current event
+/// layout. Any future change that would break decoding for existing consumers
+/// must either preserve the old payload layout under the same topic or bump this
+/// identifier and document the compatibility rule in `EVENTS.md`.
+pub const EVENT_SCHEMA_VERSION: &str = "v1";
+
 /// Topic for `VaultInitializedEvent`, published once by `initialize`.
 pub const TOPIC_INIT: Symbol = symbol_short!("init");
 /// Topic 0 for `DepositEvent`; topic 1 is the depositing user's `Address`.
@@ -23,9 +31,14 @@ pub const TOPIC_DEPOSIT: Symbol = symbol_short!("deposit");
 ///
 /// Published by both `withdraw` and `withdraw_all`.
 pub const TOPIC_WITHRAW: Symbol = symbol_short!("withdraw");
+/// Correctly-spelled alias for `TOPIC_WITHRAW`.
+/// Use this in new code; `TOPIC_WITHRAW` is retained for compatibility.
+pub const TOPIC_WITHDRAW: Symbol = symbol_short!("withdraw");
 /// Topic for `RebalanceEvent`, published by every `rebalance` outcome
 /// (including `"noop").
 pub const TOPIC_REBALANCE: Symbol = symbol_short!("rebalance");
+/// Topic for `RebalancedEvent`, published after a successful `rebalance` call.
+pub const TOPIC_REBALANCED: Symbol = symbol_short!("rebal");
 /// Topic for `VaultPausedEvent`, published by `pause`.
 pub const TOPIC_PAUSED: Symbol = symbol_short!("paused");
 /// Topic for `VaultUnpausedEvent`, published by `unpause`.
@@ -53,6 +66,9 @@ pub const TOPIC_OWNERSHIP_INITIATED: Symbol = symbol_short!("own_init");
 pub const TOPIC_OWNERSHIP_TRANSFERRED: Symbol = symbol_short!("own_xfer");
 /// Topic for `OwnershipTransferCancelledEvent`, published by `cancel_ownership_transfer`.
 pub const TOPIC_OWNERSHIP_CANCELLED: Symbol = symbol_short!("own_cncl");
+/// Topic for `PendingOwnerExpiredEvent`, published by `transfer_ownership` when a
+/// new proposal silently overwrites an expired one (#61).
+pub const TOPIC_OWNERSHIP_EXPIRED: Symbol = symbol_short!("own_expir");
 /// Topic for `AssetsUpdatedEvent`, published by `update_total_assets`.
 pub const TOPIC_ASSETS_UPDATED: Symbol = symbol_short!("assets");
 /// Topic for `UpgradedEvent`, published by `execute_upgrade`.
@@ -74,6 +90,9 @@ pub const TOPIC_DEX_POOL_CONFIGURED: Symbol = symbol_short!("dex_cfg");
 pub const TOPIC_PROTOCOL_CHANGED: Symbol = symbol_short!("proto_chg");
 /// Topic 0 for `UserStrategyUpdatedEvent`; topic 1 is the user's `Address`.
 pub const TOPIC_USER_STATEGY_UPDATED: Symbol = symbol_short!("usr_strat");
+/// Correctly-spelled alias for `TOPIC_USER_STATEGY_UPDATED`.
+/// Use this in new code; `TOPIC_USER_STATEGY_UPDATED` is retained for compatibility.
+pub const TOPIC_USER_STRATEGY_UPDATED: Symbol = symbol_short!("usr_strat");
 /// Topic for `RebalanceFailedEvent`, published when a protocol exit leg leaves
 /// a non-zero balance behind and the rebalance aborts without reverting.
 pub const TOPIC_REBALANCE_FAILED: Symbol = symbol_short!("reb_fail");
@@ -140,10 +159,6 @@ pub const TOPIC_BATCH_SIZE_LIMIT_UPDATED: Symbol = symbol_short!("batch_lim");
 /// Topic for `RateLimitExceededEvent`, published before a rate-limited call is rejected.
 pub const TOPIC_RATE_LIMIT_HIT: Symbol = symbol_short!("rate_hit");
 
-/// Topic for `MaxConsecutiveFailuresUpdatedEvent`, published by
-/// `set_max_consecutive_failures` when the circuit-breaker threshold changes.
-pub const TOPIC_MAX_FAILURES_UPDATED: Symbol = symbol_short!("maxf_upd");
-
 // ============================================================================
 // Multi-protocol adapter events (#656)
 // ============================================================================
@@ -192,3 +207,28 @@ pub const TOPIC_SUPPORTED_ASSETS_UPDATED: Symbol = symbol_short!("assets_up");
 /// Topic for `YieldAttributedEvent`, published by `update_total_assets` and
 /// `rebalance` to record per-user, per-protocol yield attribution.
 pub const TOPIC_YIELD_ATTRIBUTED: Symbol = symbol_short!("yld_attr");
+
+// ============================================================================
+// Batch TTL maintenance (#48)
+// ============================================================================
+
+/// Topic for `BatchTtlTouchedEvent`, published by `batch_touch_ttl` after
+/// processing all users in the batch.
+pub const TOPIC_BATCH_TTL_TOUCHED: Symbol = symbol_short!("batch_ttl");
+
+// ============================================================================
+// Guardian key (#44)
+// ============================================================================
+
+/// Topic for `GuardianSetEvent`, published by `set_guardian` and
+/// `remove_guardian` when the guardian key changes.
+pub const TOPIC_GUARDIAN_SET: Symbol = symbol_short!("guard_set");
+
+// ============================================================================
+// Batch deposit (#42)
+// ============================================================================
+
+/// Topic for `BatchDepositedEvent`, published by `batch_deposit` after all
+/// entries are processed. The agent address is published as an indexed topic
+/// so indexers can filter batch deposits by agent without scanning payloads.
+pub const TOPIC_BATCH_DEPOSITED: Symbol = symbol_short!("batch_dep2");

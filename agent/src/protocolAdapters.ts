@@ -18,11 +18,19 @@
  * before a venue becomes eligible to receive funds. Adding a new venue is a
  * matter of implementing `ProtocolAdapter` and registering it — no changes
  * to the yield comparison engine or rebalance scheduler are required.
+ *
+ * Issue #421: every adapter call is bounded by a per-adapter deadline so a
+ * hung venue cannot block the decision cycle. Read-only yield/balance reads
+ * that time out or fail are surfaced as explicit *unavailable* results rather
+ * than a zero value, so failed data can never look like a zero-risk venue.
  */
 
 import { ProtocolRiskScoringEngine, RiskDimensionScores } from './riskScoring';
 
 export type ProtocolId = 'blend' | 'dex' | 'phoenix' | 'aquarius' | 'none';
+
+/** Default per-adapter deadline for read-only calls (yield/balance). */
+export const DEFAULT_ADAPTER_DEADLINE_MS = 5_000;
 
 /** Describes where and for whom an adapter operation executes. */
 export interface AdapterContext {
@@ -46,17 +54,39 @@ export interface AdapterResult {
 }
 
 /**
+ * Result of a read-only adapter query (yield or balance).
+ *
+ * `available: false` means the venue could not be reached within its deadline
+ * or returned an error. Consumers MUST treat unavailable results as "no data"
+ * (excluded from comparison) and never as a zero value.
+ */
+export type AdapterQueryResult =
+  | { available: true; value: number }
+  | { available: false; error: string };
+
+/**
  * Minimal Soroban transport used by adapters.
  *
  * Kept as an interface so unit tests can inject mock transports and so the
  * concrete RPC binding (Soroban RPC via `@stellar/stellar-sdk`) lives in one
- * place.
+ * place. `signal` is optional so transports that support cancellation can
+ * abort in-flight requests when the adapter deadline elapses.
  */
 export interface SorobanGateway {
   /** Read-only contract invocation. */
-  call(contractId: string, method: string, args: unknown[]): Promise<unknown>;
+  call(
+    contractId: string,
+    method: string,
+    args: unknown[],
+    signal?: AbortSignal,
+  ): Promise<unknown>;
   /** State-changing contract invocation (signed by the agent). */
-  invoke(contractId: string, method: string, args: unknown[]): Promise<unknown>;
+  invoke(
+    contractId: string,
+    method: string,
+    args: unknown[],
+    signal?: AbortSignal,
+  ): Promise<unknown>;
 }
 
 /** Uniform protocol adapter interface (mirrors the on-chain adapter contract). */
@@ -67,10 +97,10 @@ export interface ProtocolAdapter {
   supply(ctx: AdapterContext, amount: number): Promise<AdapterResult>;
   /** Withdraw `amount` stroops from the venue (0 = exit the full position). */
   withdraw(ctx: AdapterContext, amount: number): Promise<AdapterResult>;
-  /** Current APY as a decimal fraction (0.085 = 8.5%). */
-  getApy(ctx: AdapterContext): Promise<number>;
-  /** Vault's deployed balance in the venue, in stroops. */
-  getBalance(ctx: AdapterContext): Promise<number>;
+  /** Current APY as a decimal fraction (0.085 = 8.5%), or unavailable. */
+  getApy(ctx: AdapterContext): Promise<AdapterQueryResult>;
+  /** Vault's deployed balance in the venue, in stroops, or unavailable. */
+  getBalance(ctx: AdapterContext): Promise<AdapterQueryResult>;
 }
 
 /** Envelope returned by every venue contract method: `{ ok, value | error }`. */
@@ -80,23 +110,55 @@ interface VenueEnvelope {
   error?: string;
 }
 
+/**
+ * Races `work` against a deadline. When the deadline elapses the returned
+ * promise rejects with `adapter_timeout` and the supplied `AbortSignal` is
+ * aborted so transports that support cancellation can stop the request.
+ */
+async function withDeadline<T>(
+  work: (signal: AbortSignal) => Promise<T>,
+  deadlineMs: number,
+): Promise<T> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      reject(new Error('adapter_timeout'));
+    }, deadlineMs);
+  });
+  try {
+    return await Promise.race([work(controller.signal), timeout]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 /** Shared implementation for venue-backed adapters using a Soroban gateway. */
 abstract class GatewayAdapter implements ProtocolAdapter {
   abstract readonly protocolId: ProtocolId;
   abstract readonly name: string;
 
-  protected constructor(protected readonly gateway: SorobanGateway) {}
+  protected constructor(
+    protected readonly gateway: SorobanGateway,
+    protected readonly deadlineMs: number = DEFAULT_ADAPTER_DEADLINE_MS,
+  ) {}
 
   async supply(ctx: AdapterContext, amount: number): Promise<AdapterResult> {
     if (!Number.isFinite(amount) || amount <= 0) {
       return { success: false, amount: 0, error: 'invalid_amount' };
     }
     try {
-      const raw = await this.gateway.invoke(ctx.contractId, 'supply', [
-        ctx.vaultAddress,
-        ctx.asset,
-        amount,
-      ]);
+      const raw = await withDeadline(
+        (signal) =>
+          this.gateway.invoke(
+            ctx.contractId,
+            'supply',
+            [ctx.vaultAddress, ctx.asset, amount],
+            signal,
+          ),
+        this.deadlineMs,
+      );
       return { success: true, amount: expectNumber(raw, 'supply') };
     } catch (err) {
       return {
@@ -112,11 +174,16 @@ abstract class GatewayAdapter implements ProtocolAdapter {
       return { success: false, amount: 0, error: 'invalid_amount' };
     }
     try {
-      const raw = await this.gateway.invoke(ctx.contractId, 'withdraw', [
-        ctx.vaultAddress,
-        ctx.asset,
-        amount,
-      ]);
+      const raw = await withDeadline(
+        (signal) =>
+          this.gateway.invoke(
+            ctx.contractId,
+            'withdraw',
+            [ctx.vaultAddress, ctx.asset, amount],
+            signal,
+          ),
+        this.deadlineMs,
+      );
       return { success: true, amount: expectNumber(raw, 'withdraw') };
     } catch (err) {
       return {
@@ -127,17 +194,41 @@ abstract class GatewayAdapter implements ProtocolAdapter {
     }
   }
 
-  async getApy(ctx: AdapterContext): Promise<number> {
-    const raw = await this.gateway.call(ctx.contractId, 'get_apy', []);
-    return expectNumber(raw, 'get_apy');
+  async getApy(ctx: AdapterContext): Promise<AdapterQueryResult> {
+    return this.query('get_apy', () =>
+      this.gateway.call(ctx.contractId, 'get_apy', []),
+    );
   }
 
-  async getBalance(ctx: AdapterContext): Promise<number> {
-    const raw = await this.gateway.call(ctx.contractId, 'get_balance', [
-      ctx.asset,
-      ctx.vaultAddress,
-    ]);
-    return expectNumber(raw, 'get_balance');
+  async getBalance(ctx: AdapterContext): Promise<AdapterQueryResult> {
+    return this.query('get_balance', (signal) =>
+      this.gateway.call(
+        ctx.contractId,
+        'get_balance',
+        [ctx.asset, ctx.vaultAddress],
+        signal,
+      ),
+    );
+  }
+
+  /**
+   * Runs a read-only query under the adapter deadline and normalizes the
+   * outcome into an explicit available/unavailable result. Failures and
+   * timeouts never surface as a numeric value.
+   */
+  private async query(
+    what: string,
+    work: (signal: AbortSignal) => Promise<unknown>,
+  ): Promise<AdapterQueryResult> {
+    try {
+      const raw = await withDeadline(work, this.deadlineMs);
+      return { available: true, value: expectNumber(raw, what) };
+    } catch (err) {
+      return {
+        available: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
   }
 }
 
@@ -152,8 +243,8 @@ export class PhoenixDexAdapter extends GatewayAdapter {
   readonly protocolId: ProtocolId = 'phoenix';
   readonly name = 'Phoenix Orderbook DEX';
 
-  constructor(gateway: SorobanGateway) {
-    super(gateway);
+  constructor(gateway: SorobanGateway, deadlineMs?: number) {
+    super(gateway, deadlineMs);
   }
 }
 
@@ -168,8 +259,8 @@ export class AquariusAmmAdapter extends GatewayAdapter {
   readonly protocolId: ProtocolId = 'aquarius';
   readonly name = 'Aquarius AMM';
 
-  constructor(gateway: SorobanGateway) {
-    super(gateway);
+  constructor(gateway: SorobanGateway, deadlineMs?: number) {
+    super(gateway, deadlineMs);
   }
 }
 
@@ -226,66 +317,4 @@ export class ProtocolAdapterRegistry {
   get(protocolId: ProtocolId): ProtocolAdapter | undefined {
     return this.adapters.get(protocolId);
   }
-
-  /** Lists all registered adapters. */
-  list(): ProtocolAdapter[] {
-    return [...this.adapters.values()];
-  }
-
-  /** Owner action: enables/disables a protocol on the whitelist. */
-  setWhitelisted(protocolId: ProtocolId, enabled: boolean): this {
-    if (enabled) {
-      this.whitelist.add(protocolId);
-    } else {
-      this.whitelist.delete(protocolId);
-    }
-    return this;
-  }
-
-  /** Whether the protocol is on the owner-managed whitelist. */
-  isWhitelisted(protocolId: ProtocolId): boolean {
-    return this.whitelist.has(protocolId);
-  }
-
-  /** Snapshot of the current whitelist. */
-  getWhitelist(): ProtocolId[] {
-    return [...this.whitelist];
-  }
-
-  /** Sets the maximum acceptable composite risk score (1-100). */
-  setMaxRiskScore(maxRiskScore: number): this {
-    this.maxRiskScore = maxRiskScore;
-    return this;
-  }
-
-  /**
-   * Full eligibility check: registered + whitelisted + risk score below the
-   * ceiling. Reasons are returned for observability and alerting.
-   */
-  assessEligibility(
-    protocolId: ProtocolId,
-    riskScores: RiskDimensionScores,
-  ): AdapterEligibility {
-    const reasons: string[] = [];
-    const composite = this.riskEngine.calculateCompositeRisk(riskScores);
-    const category = this.riskEngine.getRiskCategory(composite);
-
-    if (!this.adapters.has(protocolId)) {
-      reasons.push('adapter_not_registered');
-    }
-    if (!this.isWhitelisted(protocolId)) {
-      reasons.push('not_whitelisted');
-    }
-    if (composite > this.maxRiskScore) {
-      reasons.push('risk_score_above_ceiling');
-    }
-
-    return {
-      eligible: reasons.length === 0,
-      riskScore: composite,
-      riskCategory: category,
-      reasons,
-    };
-  }
 }
-

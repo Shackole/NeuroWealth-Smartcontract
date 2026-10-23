@@ -1,4 +1,4 @@
-import { Server, Contract, Address, rpc } from '@stellar/stellar-sdk';
+import { Contract, Address, rpc } from '@stellar/stellar-sdk';
 import { getWallet } from './walletService';
 
 const SOROBAN_RPC_URL = process.env.SOROBAN_RPC_URL || 'https://soroban-testnet.stellar.org';

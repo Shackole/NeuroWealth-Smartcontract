@@ -50,7 +50,7 @@ export const StrategyBadge: React.FC<StrategyBadgeProps> = ({ strategy, apy, onS
             Current Strategy
           </span>
           <span className={`text-xs font-semibold px-3 py-1 rounded-full border ${meta.bg} ${meta.color} ${meta.border} flex items-center gap-1.5`}>
-            <IconComponent size={14} />
+            <IconComponent size={14} aria-hidden="true" />
             {strategy}
           </span>
         </div>
@@ -64,21 +64,29 @@ export const StrategyBadge: React.FC<StrategyBadgeProps> = ({ strategy, apy, onS
               Net APY
             </span>
             <span className="text-xs font-medium text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20 flex items-center gap-1 ml-auto">
-              <TrendingUp size={12} /> +0.4% this week
+              <TrendingUp size={12} aria-hidden="true" /> +0.4% this week
             </span>
           </div>
           <p className="text-xs text-slate-400 mt-2">{meta.desc}</p>
         </div>
       </div>
 
-      <div className="pt-4 border-t border-slate-800/80 flex items-center justify-between">
-        <span className="text-xs text-slate-400">Want to optimize risk?</span>
-        <div className="flex gap-1.5">
+      <div className="pt-4 border-t border-slate-800/80">
+        <p className="text-xs text-slate-400 mb-2" id="strategy-selector-label">
+          Want to optimize risk?
+        </p>
+        <div
+          role="group"
+          aria-labelledby="strategy-selector-label"
+          className="flex gap-1.5"
+        >
           {(['Conservative', 'Balanced', 'Growth'] as const).map((st) => (
             <button
               key={st}
+              type="button"
               onClick={() => onSelectStrategy && onSelectStrategy(st)}
-              className={`text-xs px-2.5 py-1 rounded-md border transition-all ${
+              aria-pressed={strategy === st}
+              className={`text-xs px-2.5 py-1 min-h-[44px] flex items-center rounded-md border transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 ${
                 strategy === st
                   ? 'bg-slate-800 text-white border-slate-600 font-medium'
                   : 'bg-slate-900/50 text-slate-400 border-slate-800 hover:text-white'

@@ -22,6 +22,7 @@ export function OwnershipTransfer({ client, signer }: OwnershipTransferProps) {
   const [error, setError] = useState<string | null>(null);
   const [txHash, setTxHash] = useState<string | null>(null);
   const [showInitiateConfirm, setShowInitiateConfirm] = useState(false);
+  const [reviewedOwner, setReviewedOwner] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"initiate" | "cancel">("initiate");
 
   useEffect(() => {
@@ -44,8 +45,8 @@ export function OwnershipTransfer({ client, signer }: OwnershipTransferProps) {
     }
   };
 
-  const handleInitiateTransfer = async () => {
-    if (!newOwner.startsWith("G")) {
+  const handleInitiateTransfer = async (proposedOwner: string) => {
+    if (!proposedOwner.startsWith("G")) {
       setError("Invalid Stellar address (must start with G)");
       return;
     }
@@ -58,11 +59,12 @@ export function OwnershipTransfer({ client, signer }: OwnershipTransferProps) {
       const result = await client.transfer_ownership(
         signer,
         signer.publicKey(),
-        newOwner,
+        proposedOwner,
       );
       setTxHash(result.hash);
-      setPendingOwner(newOwner);
+      setPendingOwner(proposedOwner);
       setShowInitiateConfirm(false);
+      setReviewedOwner(null);
       setNewOwner("");
 
       // Poll for confirmation
@@ -222,24 +224,33 @@ export function OwnershipTransfer({ client, signer }: OwnershipTransferProps) {
                   <p className="text-sm text-red-200 mt-1">
                     You are about to initiate ownership transfer to:
                     <br />
-                    <span className="font-mono">{newOwner}</span>
+                    <span className="font-mono">{reviewedOwner || "No reviewed proposal"}</span>
+                    <br />
+                    Current owner: <span className="font-mono">{owner || "Unknown"}</span>
+                    <br />
+                    Network: {String(network)}
+                    <br />
+                    Required signer role: current contract owner
+                    <br />
+                    Signing account: <span className="font-mono break-all">{signer.publicKey()}</span>
                     <br />
                     <br />
-                    This action cannot be undone. The new owner must call
-                    accept_ownership() to complete the transfer.
+                    The new owner must call accept_ownership() to complete the
+                    transfer. The contract currently reports no ownership
+                    timelock; initiation does not mean the transfer is complete.
                   </p>
                 </div>
               </div>
               <div className="flex gap-2">
                 <button
-                  onClick={handleInitiateTransfer}
-                  disabled={loading}
+                  onClick={() => reviewedOwner && void handleInitiateTransfer(reviewedOwner)}
+                  disabled={loading || !reviewedOwner}
                   className="button-danger px-4 py-2 disabled:opacity-50"
                 >
                   {loading ? "Processing..." : "Confirm Transfer"}
                 </button>
                 <button
-                  onClick={() => setShowInitiateConfirm(false)}
+                  onClick={() => { setShowInitiateConfirm(false); setReviewedOwner(null); }}
                   disabled={loading}
                   className="button-secondary px-4 py-2"
                 >
@@ -249,7 +260,7 @@ export function OwnershipTransfer({ client, signer }: OwnershipTransferProps) {
             </div>
           ) : (
             <button
-              onClick={() => setShowInitiateConfirm(true)}
+              onClick={() => { setReviewedOwner(newOwner); setShowInitiateConfirm(true); }}
               disabled={!newOwner || loading}
               className="button-primary w-full py-3 disabled:opacity-50"
             >

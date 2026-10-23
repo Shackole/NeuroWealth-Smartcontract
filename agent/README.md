@@ -4,12 +4,130 @@ The NeuroWealth agent is an autonomous background service that continuously moni
 
 ---
 
+## Local Development (Docker Compose)
+
+Spin up the complete local environment — Node.js agent, PostgreSQL 15, Redis 7,
+and RedisInsight — with a single command.
+
+### Prerequisites
+
+- [Docker](https://docs.docker.com/get-docker/) ≥ 24
+- [Docker Compose](https://docs.docker.com/compose/install/) ≥ 2.20 (bundled with Docker Desktop)
+
+### Quick start
+
+```bash
+# 1. Copy the environment template and fill in your secrets
+cp agent/.env.local.template agent/.env.local
+#    Edit agent/.env.local — at minimum set OPENAI_API_KEYS and VAULT_CONTRACT_ID
+
+# 2. Start all services (from the repo root or the agent/ directory)
+docker-compose up
+
+# 3. The agent is now available at http://localhost:3001
+#    RedisInsight UI is available at  http://localhost:8001
+#    PostgreSQL is available at       localhost:5432
+
+# 4. Start the Next.js frontend in a separate terminal (optional)
+cd frontend && npm run dev
+```
+
+> **Hot-reload**: agent source files in `agent/src/` are mounted as volumes. Any
+> change you save is automatically picked up by `ts-node-dev` without restarting
+> the container.
+
+### Services
+
+| Service      | Port  | Description                          |
+|-------------|-------|--------------------------------------|
+| agent        | 3001  | AI agent HTTP API                    |
+| postgres     | 5432  | PostgreSQL 15 (named volume `pgdata`)|
+| redis        | 6379  | Redis 7 queue / cache                |
+| redisinsight | 8001  | RedisInsight browser UI              |
+
+### Prisma migrations
+
+Prisma migrations run **automatically** on agent container start
+(`prisma migrate deploy`). To create a new migration after editing the schema:
+
+```bash
+# Run inside the running container
+docker-compose exec agent npx prisma migrate dev --name describe-your-change
+```
+
+### Useful commands
+
+```bash
+# Tail agent logs only
+docker-compose logs -f agent
+
+# Open a psql shell
+docker-compose exec postgres psql -U postgres -d neurowealth
+
+# Stop all services (keep volumes)
+docker-compose down
+
+# Stop and remove all data volumes (clean slate)
+docker-compose down -v
+```
+
+### Environment variables
+
+All variables are loaded from `agent/.env.local` (git-ignored).
+Copy `agent/.env.local.template` and fill in your values. The Docker Compose
+file also sets safe defaults for database credentials so a fresh checkout works
+without any extra configuration.
+
+---
+
+The NeuroWealth agent is an autonomous background service that continuously monitors yield opportunities across Stellar DeFi protocols (Blend Protocol, Soroswap/Phoenix DEX pools) and executes rebalancing for vault participants.
+
+---
+
+## Startup and routing map
+
+The production command in `package.json` is `npm run start:prod`, which runs
+`src/index.ts`. The production Docker image uses the same `npx ts-node
+src/index.ts` entrypoint. `docker-compose.yml` is a separate development
+configuration: it runs `prisma migrate deploy` and `ts-node-dev
+src/index.ts`.
+
+`src/index.ts` constructs its own Express app. It mounts JSON parsing, IP and
+user rate limiting, the health router, and the strategy-distribution router.
+It then starts the event polling loop, an hourly yield decision loop, and the
+issuer-freeze monitor. On `SIGTERM`/`SIGINT` it stops those loops and closes the
+database pool. The only application data route mounted there is
+`GET /api/agent/strategy-distribution`; health routes are `GET /health`,
+`/health/ready`, and `/health/live`. See [`API.md`](API.md) for the route table.
+
+There are parallel source modules that are not wired into this entrypoint:
+
+- `src/app.ts` is an alternate Express app factory. It mounts health and the
+  older `src/api.ts` router under `/api`.
+- `src/apiRouter.ts` is another, newer route implementation. It already uses
+  `/api/...` paths and is not mounted; mounting it under `/api` would duplicate
+  the prefix.
+- `src/authRouter.ts` implements SIWS challenge, verify, and refresh routes,
+  but neither app entrypoint mounts it. `src/api.ts` instead uses the older
+  `src/auth.ts` JWT middleware.
+- `src/metricsApi.ts` exports `startMetricsServer`; `src/index.ts` does not call
+  it. Metrics routes are therefore not part of the production HTTP process
+  unless another launcher starts that server.
+- `src/queueRouter.ts` and additional workers/utilities are not mounted from
+  `index.ts`; check imports before treating them as live HTTP endpoints or
+  background jobs.
+
+The event listener polls Soroban RPC every five seconds and begins at the
+latest ledger after process startup. It does not restore a durable event
+checkpoint or paginate. See [`../EVENTS.md`](../EVENTS.md) for decoding and
+backfill limits.
+
 ## Key Modules
 
 - **Yield Comparison Engine** (`src/yieldComparison.ts`): Aggregates real-time and historical (7d/30d/90d) APYs, calculating risk-adjusted return ratios (Sharpe-like metric) and enforcing the 0.5% minimum improvement threshold.
 - **Risk Scoring Engine** (`src/riskScoring.ts`): Multi-dimensional risk evaluation (smart contract, liquidity, oracle, governance, centralization risks) to determine protocol eligibility and risk thresholds.
 - **Intent Parser** (`src/intentParser.ts`): Natural language parsing for WhatsApp & chat commands.
-- **Event Listener** (`src/eventListener.ts`): Real-time contract event ingestion.
+- **Event Listener** (`src/eventListener.ts`): Five-second Soroban RPC polling for contract events; it is best-effort and does not restore missed events after downtime.
 - **Protocol Adapters** (`src/protocolAdapters.ts`): Uniform venue adapters (`supply`, `withdraw`, `get_apy`, `get_balance`) with a registry enforcing the owner-managed protocol whitelist and the risk-scoring gate (#656). Phase 2 venues: Phoenix orderbook DEX, Aquarius AMM — see `docs/PROTOCOL_ADAPTER_INTERFACE.md`.
 - **Rebalancing Scheduler** (`src/scheduler.ts`): time-based and event-driven rebalancing with gas awareness (#651, below).
 - **Metrics & Dashboard API** (`src/metrics.ts`, `src/metricsApi.ts`): performance-metrics aggregation + HTTP endpoints for the dashboard UI (#652).

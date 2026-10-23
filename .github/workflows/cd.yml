@@ -1,0 +1,256 @@
+name: CD — Vercel Deploy
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Continuous deployment for the Next.js frontend.
+#
+# On every pull request:
+#   1. Builds the frontend and deploys a preview URL to Vercel.
+#   2. Posts the preview URL as a PR comment.
+#   3. Runs Lighthouse CI against the preview URL.
+#
+# On merge to main:
+#   - Deploys to the production Vercel URL.
+#
+# Prerequisites (GitHub Actions environments):
+#   VERCEL_TOKEN          — Vercel personal access token (Settings → Tokens)
+#   VERCEL_ORG_ID         — Found in Vercel project settings
+#   VERCEL_PROJECT_ID     — Found in Vercel project settings
+#   Configure preview values in `vercel-preview` and production values in
+#   `vercel-production`; the production environment should allow only `main`.
+#
+# Optional:
+#   LHCI_GITHUB_APP_TOKEN — Lighthouse CI GitHub App token for rich PR annotations
+# ─────────────────────────────────────────────────────────────────────────────
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "frontend/**"
+      - ".github/workflows/cd.yml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "frontend/**"
+      - ".github/workflows/cd.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write   # needed to post preview URL comment
+
+# Serialize revisions within each ref. Do not cancel an active production
+# deployment; later main revisions remain queued for the same group.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # ───────────────────────────────────────────────────────────────────────────
+  # Build & deploy
+  # ───────────────────────────────────────────────────────────────────────────
+  deploy:
+    name: Build & Deploy to Vercel
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ github.ref == 'refs/heads/main' && 'vercel-production' || 'vercel-preview' }}
+    outputs:
+      preview_url: ${{ steps.deploy.outputs.preview_url }}
+      is_production: ${{ steps.context.outputs.is_production }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      # Fails the workflow if the Next.js build fails — broken builds never
+      # reach Vercel. NEXT_TELEMETRY_DISABLED prevents anonymous build stats.
+      - name: Build Next.js app
+        working-directory: frontend
+        run: npm run build
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+          # Public environment variables required at build time.
+          # Set NEXT_PUBLIC_* vars in the Vercel dashboard for production;
+          # the values below are safe fallbacks for the CI build step.
+          NEXT_PUBLIC_RPC_URL: ${{ vars.NEXT_PUBLIC_RPC_URL || 'https://soroban-testnet.stellar.org' }}
+          NEXT_PUBLIC_NETWORK_PASSPHRASE: ${{ vars.NEXT_PUBLIC_NETWORK_PASSPHRASE || 'Test SDF Network ; September 2015' }}
+
+      - name: Determine deployment context
+        id: context
+        run: |
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            echo "is_production=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_production=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Pull Vercel project settings so `vercel deploy` knows the project.
+      - name: Pull Vercel project settings
+        working-directory: frontend
+        run: npx vercel pull --yes --environment=preview --token=${{ secrets.VERCEL_TOKEN }}
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
+      # Build the Vercel output artifact from the already-validated Next.js build.
+      - name: Build Vercel output
+        working-directory: frontend
+        run: npx vercel build ${{ steps.context.outputs.is_production == 'true' && '--prod' || '' }} --token=${{ secrets.VERCEL_TOKEN }}
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
+      # Deploy the pre-built artifact — avoids a second full build on Vercel.
+      - name: Deploy to Vercel
+        id: deploy
+        working-directory: frontend
+        run: |
+          DEPLOY_URL=$(npx vercel deploy --prebuilt \
+            ${{ steps.context.outputs.is_production == 'true' && '--prod' || '' }} \
+            --token=${{ secrets.VERCEL_TOKEN }})
+          echo "preview_url=$DEPLOY_URL" >> "$GITHUB_OUTPUT"
+          echo "Deployed to: $DEPLOY_URL"
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
+      - name: Set up Rust for release contract artifact
+        if: steps.context.outputs.is_production == 'true'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Build the contract WASM included in release provenance
+        if: steps.context.outputs.is_production == 'true'
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/neurowealth-target
+        run: |
+          cargo build \
+            --manifest-path neurowealth-vault/Cargo.toml \
+            -p neurowealth-vault \
+            --target wasm32-unknown-unknown \
+            --release
+
+      - name: Package immutable deployment evidence
+        if: steps.context.outputs.is_production == 'true'
+        env:
+          DEPLOYMENT_URL: ${{ steps.deploy.outputs.preview_url }}
+          CARGO_TARGET_DIR: ${{ runner.temp }}/neurowealth-target
+        run: |
+          mkdir -p "$RUNNER_TEMP/release-provenance"
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
+            -czf "$RUNNER_TEMP/release-provenance/vercel-output.tar.gz" \
+            -C frontend .vercel/output
+          cp "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/neurowealth_vault.wasm" \
+            "$RUNNER_TEMP/release-provenance/neurowealth_vault.wasm"
+          {
+            echo "commit_sha=$GITHUB_SHA"
+            echo "workflow_run_id=$GITHUB_RUN_ID"
+            echo "deployment_url=$DEPLOYMENT_URL"
+            echo "vercel_output_sha256=$(sha256sum "$RUNNER_TEMP/release-provenance/vercel-output.tar.gz" | cut -d' ' -f1)"
+            echo "contract_wasm_sha256=$(sha256sum "$RUNNER_TEMP/release-provenance/neurowealth_vault.wasm" | cut -d' ' -f1)"
+            echo "frontend_lockfile_sha256=$(sha256sum frontend/package-lock.json | cut -d' ' -f1)"
+            echo "agent_image_digest=not-applicable (this workflow deploys a Vercel build artifact, not a container image)"
+            echo "configuration_file_hashes:"
+            sha256sum .github/workflows/cd.yml frontend/package-lock.json agent/Dockerfile infra/docker-compose.monitoring.yml
+          } > "$RUNNER_TEMP/release-provenance/manifest.txt"
+
+      - name: Retain immutable deployment evidence
+        if: steps.context.outputs.is_production == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-provenance-${{ github.sha }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/release-provenance/
+          retention-days: 90
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Post preview URL as a PR comment
+  # ───────────────────────────────────────────────────────────────────────────
+  comment:
+    name: Post Preview URL
+    runs-on: ubuntu-latest
+    needs: deploy
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - name: Find existing preview comment
+        uses: peter-evans/find-comment@v3
+        id: find_comment
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          comment-author: "github-actions[bot]"
+          body-includes: "<!-- vercel-preview -->"
+
+      - name: Create or update preview comment
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          comment-id: ${{ steps.find_comment.outputs.comment-id }}
+          issue-number: ${{ github.event.pull_request.number }}
+          edit-mode: replace
+          body: |
+            <!-- vercel-preview -->
+            ## 🚀 Vercel Preview Deployment
+
+            | | |
+            |---|---|
+            | **Preview URL** | ${{ needs.deploy.outputs.preview_url }} |
+            | **Status** | ✅ Ready |
+            | **Commit** | `${{ github.sha }}` |
+
+            > Deployed with `vercel deploy --prebuilt`. Build failed = no deploy.
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Lighthouse CI against the preview URL (PRs only)
+  # ───────────────────────────────────────────────────────────────────────────
+  lighthouse:
+    name: Lighthouse CI
+    runs-on: ubuntu-latest
+    needs: deploy
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Wait for preview to be ready
+        # Give Vercel's edge network up to 60 s to propagate the deployment
+        run: |
+          URL="${{ needs.deploy.outputs.preview_url }}"
+          echo "Waiting for $URL to respond..."
+          for i in $(seq 1 12); do
+            STATUS=$(curl -o /dev/null -s -w "%{http_code}" "$URL")
+            if [ "$STATUS" = "200" ]; then
+              echo "Preview is ready (HTTP $STATUS)"
+              exit 0
+            fi
+            echo "Attempt $i: HTTP $STATUS — retrying in 5s..."
+            sleep 5
+          done
+          echo "Preview did not become ready in time; running Lighthouse anyway"
+
+      - name: Run Lighthouse CI against preview URL
+        run: |
+          npx --yes @lhci/cli@0.14.x autorun \
+            --collect.url="${{ needs.deploy.outputs.preview_url }}" \
+            --collect.numberOfRuns=1 \
+            --upload.target=temporary-public-storage
+        env:
+          LHCI_GITHUB_APP_TOKEN: ${{ secrets.LHCI_GITHUB_APP_TOKEN }}

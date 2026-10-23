@@ -1,8 +1,187 @@
 {
   "Index": {
-    "title": "NeuroWealth | Plataforma de Rendimento DeFi baseada em IA",
-    "description": "Agente de investimento autônomo gerenciando estratégias de contratos inteligentes.",
+    "title": "NeuroWealth | Plataforma de rendimento DeFi com IA",
+    "description": "Agente de investimento autônomo com IA gerenciando estratégias de rendimento em contratos inteligentes.",
     "getStarted": "Começar",
     "language": "Idioma"
+  },
+  "Header": {
+    "tagline": "Rendimento DeFi autônomo na Stellar",
+    "nav": {
+      "dashboard": "Painel",
+      "strategies": "Estratégias",
+      "transactions": "Transações",
+      "whatsapp": "Bot WhatsApp"
+    }
+  },
+  "Hero": {
+    "badge": "Motor de rendimento autônomo com IA"
+  },
+  "BalanceCard": {
+    "title": "Valor total do portfólio",
+    "protected": "Protegido pelo Soroban Vault",
+    "usdLabel": "USD",
+    "rateLabel": "Taxa",
+    "deposit": "Depositar",
+    "withdraw": "Sacar"
+  },
+  "EarningsCard": {
+    "title": "Ganhos de rendimento",
+    "autoCompounded": "Auto-composto",
+    "yieldNote": "Rendimento gerado de forma autônoma pela estratégia do agente IA",
+    "today": "Hoje",
+    "week": "7 dias",
+    "month": "30 dias"
+  },
+  "StrategyBadge": {
+    "title": "Estratégia atual",
+    "apyLabel": "APY líquido",
+    "weeklyGain": "+0,4% esta semana",
+    "optimiseQuestion": "Quer otimizar o risco?",
+    "conservative": "Conservador",
+    "balanced": "Equilibrado",
+    "growth": "Crescimento",
+    "descriptions": {
+      "conservative": "Empréstimos em stablecoins no Blend (Baixo risco)",
+      "balanced": "Mix ideal de empréstimos + liquidez DEX (Recomendado)",
+      "growth": "Implantação multi-protocolo DEX LP (Maior rendimento)"
+    }
+  },
+  "TransactionHistory": {
+    "title": "Histórico de transações",
+    "noTransactions": "Nenhuma transação ainda",
+    "deposit": "Depósito",
+    "withdraw": "Saque",
+    "rebalance": "Rebalanceamento",
+    "harvest": "Colheita"
+  },
+  "WhatsAppCard": {
+    "title": "Integração WhatsApp",
+    "live": "Bot ativo",
+    "heading": "Interaja pelo WhatsApp",
+    "description": "Sem necessidade de navegador ou carteira! Basta enviar uma mensagem ao nosso bot Twilio para verificar com OTP, consultar saldo, depositar ou sacar.",
+    "webhookLabel": "URL do webhook:",
+    "demoUser": "Usuário: depositar 100 USDC",
+    "demoAgent": "Agente: Feito! 100 USDC depositados na estratégia Equilibrada. ✅"
+  },
+  "ActionModal": {
+    "depositTitle": "Depositar USDC",
+    "withdrawTitle": "Sacar USDC",
+    "depositSubtitle": "Cunhar cotas no vault Soroban",
+    "withdrawSubtitle": "Queimar cotas e sacar USDC",
+    "amountLabel": "Valor (USDC)",
+    "decimalHelp": "Use ponto para separar decimais. Não use separadores de milhares.",
+    "invalidAmount": "Digite o valor com números e ponto decimal, sem separadores de milhares.",
+    "amountOutOfRange": "Digite um valor entre 1 USDC e o limite disponível.",
+    "available": "Disponível",
+    "capRemaining": "Limite restante",
+    "max": "MÁX",
+    "exchangeRate": "Taxa de câmbio",
+    "estimatedShares": "Cotas estimadas",
+    "networkFee": "Taxa de rede",
+    "signingWith": "Assinando com Freighter…",
+    "confirmDeposit": "Confirmar depósito",
+    "confirmWithdraw": "Confirmar saque",
+    "depositSuccess": "Depósito realizado!",
+    "withdrawSuccess": "Saque realizado!",
+    "txHashLabel": "Hash da transação:",
+    "confirmedIn": "Confirmado em ~3,8 segundos na Stellar",
+    "done": "Concluído"
+  },
+  "WalletConnect": {
+    "connect": "Conectar carteira",
+    "disconnect": "Desconectar",
+    "connected": "Conectada",
+    "address": "Endereço"
+  },
+  "Footer": {
+    "brand": "NeuroWealth AI Vault",
+    "architecture": "Arquitetura de contratos inteligentes Soroban",
+    "stellar": "Rede Stellar",
+    "soroban": "SDK Soroban",
+    "freighter": "Carteira Freighter"
+  },
+  "LanguageSwitcher": {
+    "label": "Idioma"
+  },
+  "Onboarding": {
+    "skip": "Pular",
+    "next": "Próximo",
+    "finish": "Finalizar",
+    "step1Title": "Bem-vindo ao NeuroWealth",
+    "step1Body": "Seu agente autônomo de rendimento com IA na Stellar. Conecte sua carteira para começar.",
+    "step2Title": "Deposite USDC",
+    "step2Body": "Deposite USDC e deixe o agente IA encontrar as melhores estratégias de rendimento.",
+    "step3Title": "Ganhe automaticamente",
+    "step3Body": "Seus fundos são implantados 24/7 no Blend e pools de liquidez DEX."
+  },
+  "Validation": {
+    "amountRequired": "O valor é obrigatório.",
+    "amountMustBeNumber": "O valor deve ser um número válido.",
+    "amountMustBePositive": "O valor deve ser maior que zero.",
+    "amountBelowMinimum": "O depósito mínimo é de {min} USDC.",
+    "amountAboveMaximum": "O depósito máximo é de {max} USDC.",
+    "amountExceedsBalance": "O valor supera seu saldo disponível de {balance} USDC.",
+    "strategyRequired": "Por favor selecione uma estratégia de rendimento.",
+    "decimalInputHint": "Insira um valor decimal, ex. 10,50. Os valores são arredondados a 7 casas decimais (stroops).",
+    "withdrawMinimum": "O saque mínimo é de {min} USDC.",
+    "withdrawExceedsBalance": "O valor do saque supera seu saldo no vault de {balance} USDC."
+  },
+  "WalletErrors": {
+    "notConnected": "Conecte sua carteira Freighter para continuar.",
+    "freighterRejected": "A transação foi cancelada. Aprove-a em sua carteira Freighter.",
+    "freighterUnavailable": "A extensão Freighter não está instalada. Instale-a em freighter.app.",
+    "accountNotFound": "Carteira não encontrada na rede Stellar. Certifique-se de que sua conta está financiada.",
+    "insufficientXlm": "XLM insuficiente para cobrir a taxa de transação. Adicione XLM à sua carteira.",
+    "networkMismatch": "Sua carteira Freighter está conectada a outra rede Stellar. Mude para o Testnet.",
+    "signingFailed": "A assinatura da transação falhou. Por favor tente novamente.",
+    "simulationFailed": "Não foi possível estimar as taxas. A rede pode estar ocupada — tente novamente.",
+    "transactionTimeout": "A transação expirou. Seus fundos estão seguros — verifique o explorador Stellar."
+  },
+  "ContractErrors": {
+    "amountTooSmall": "O depósito mínimo é de 1 USDC.",
+    "amountTooLarge": "O valor ultrapassa o máximo permitido por transação.",
+    "userCapExceeded": "Este depósito excederia seu limite pessoal de 10.000 USDC.",
+    "tvlCapExceeded": "O vault atingiu sua capacidade total. Por favor tente mais tarde.",
+    "insufficientBalance": "Saldo insuficiente para concluir este saque.",
+    "insufficientShares": "Você não tem cotas suficientes no vault para este saque.",
+    "vaultPaused": "O vault está temporariamente pausado para manutenção. Por favor tente mais tarde.",
+    "rateLimitExceeded": "Muitas requisições. Aguarde um momento e tente novamente.",
+    "unauthorized": "Você não está autorizado a realizar esta ação.",
+    "unknown": "Ocorreu um erro inesperado. Por favor tente novamente.",
+    "restoreRequired": "Os dados contratuais arquivados precisam ser restaurados antes de prosseguir com esta transação.",
+    "restoreRejected": "Restauração cancelada. Sua ação original não foi enviada.",
+    "restoreSuccess": "Dados arquivados restaurados. Prosseguindo com sua transação…"
+  },
+  "DepositPage": {
+    "title": "Depositar USDC",
+    "subtitle": "Deposite fundos no vault do contrato inteligente NeuroWealth para começar a ganhar rendimento DeFi automatizado.",
+    "badge": "Alocação de rendimento autônomo",
+    "amountLabel": "Valor do depósito (USDC)",
+    "amountHint": "Depósito mínimo: 1 USDC. Os valores são precisos a 7 casas decimais (1 USDC = 10.000.000 stroops).",
+    "strategyLegend": "Selecionar estratégia de rendimento",
+    "estimatedShares": "Cotas estimadas do vault:",
+    "networkFee": "Taxa de rede:",
+    "networkFeeValue": "~0,00001 XLM",
+    "submitButton": "Confirmar depósito",
+    "successTitle": "Depósito confirmado!",
+    "successBody": "{amount} USDC depositados com sucesso na estratégia {strategy}.",
+    "makeAnother": "Fazer outro depósito"
+  },
+  "WithdrawPage": {
+    "title": "Sacar USDC",
+    "subtitle": "Queime cotas do vault e saque o capital USDC e o rendimento acumulado para sua carteira.",
+    "badge": "Liquidez instantânea",
+    "availableBalance": "Saldo disponível do vault:",
+    "amountLabel": "Valor do saque (USDC)",
+    "amountHint": "Os USDC serão transferidos para sua carteira Freighter conectada após confirmação.",
+    "maxButton": "MÁX",
+    "sharesBurned": "Cotas queimadas:",
+    "protocolFee": "Taxa de protocolo:",
+    "protocolFeeValue": "0,00% (Sem taxa de saída)",
+    "submitButton": "Confirmar saque",
+    "successTitle": "Saque processado!",
+    "successBody": "{amount} USDC sacados com sucesso para sua carteira Stellar.",
+    "makeAnother": "Fazer outro saque"
   }
 }

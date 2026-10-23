@@ -1,8 +1,187 @@
 {
   "Index": {
-    "title": "NeuroWealth | AIを活用したDeFi利回りプラットフォーム",
-    "description": "スマートコントラクトの利回り戦略を管理する自律型AI投資エージェント。",
-    "getStarted": "はじめる",
+    "title": "NeuroWealth | AI搭載DeFiイールドプラットフォーム",
+    "description": "スマートコントラクトのイールド戦略を管理する自律型AI投資エージェント。",
+    "getStarted": "始める",
     "language": "言語"
+  },
+  "Header": {
+    "tagline": "StellarにおけるDeFi自律イールド",
+    "nav": {
+      "dashboard": "ダッシュボード",
+      "strategies": "戦略",
+      "transactions": "取引履歴",
+      "whatsapp": "WhatsAppボット"
+    }
+  },
+  "Hero": {
+    "badge": "AI搭載の自律イールドエンジン"
+  },
+  "BalanceCard": {
+    "title": "ポートフォリオ総額",
+    "protected": "Soroban Vault保護済み",
+    "usdLabel": "USD",
+    "rateLabel": "レート",
+    "deposit": "入金",
+    "withdraw": "出金"
+  },
+  "EarningsCard": {
+    "title": "イールド収益",
+    "autoCompounded": "自動複利",
+    "yieldNote": "AIエージェント戦略によって自律的に生成された収益",
+    "today": "今日",
+    "week": "7日間",
+    "month": "30日間"
+  },
+  "StrategyBadge": {
+    "title": "現在の戦略",
+    "apyLabel": "純APY",
+    "weeklyGain": "今週+0.4%",
+    "optimiseQuestion": "リスクを最適化しますか？",
+    "conservative": "保守的",
+    "balanced": "バランス",
+    "growth": "成長",
+    "descriptions": {
+      "conservative": "Blendのステーブルコイン貸付（低リスク）",
+      "balanced": "最適な貸付+DEX流動性ミックス（推奨）",
+      "growth": "マルチプロトコルDEX LPデプロイ（高収益）"
+    }
+  },
+  "TransactionHistory": {
+    "title": "取引履歴",
+    "noTransactions": "まだ取引がありません",
+    "deposit": "入金",
+    "withdraw": "出金",
+    "rebalance": "リバランス",
+    "harvest": "ハーベスト"
+  },
+  "WhatsAppCard": {
+    "title": "WhatsApp連携",
+    "live": "ライブボット",
+    "heading": "WhatsAppチャットで操作",
+    "description": "ブラウザやウォレット不要！TwilioボットにメッセージしてOTP認証、残高確認、入金、出金がどこでもできます。",
+    "webhookLabel": "WebhookのURL：",
+    "demoUser": "ユーザー：100 USDCを入金",
+    "demoAgent": "エージェント：了解！バランス戦略に100 USDCを入金しました。✅"
+  },
+  "ActionModal": {
+    "depositTitle": "USDCを入金",
+    "withdrawTitle": "USDCを出金",
+    "depositSubtitle": "Soroban vaultでシェアをミント",
+    "withdrawSubtitle": "シェアを焼却してUSDCを出金",
+    "amountLabel": "金額（USDC）",
+    "decimalHelp": "小数にはピリオドを使用してください。桁区切り記号は入力しないでください。",
+    "invalidAmount": "数字と小数点を使って入力し、桁区切り記号は使用しないでください。",
+    "amountOutOfRange": "1 USDC以上、利用可能な上限以下の金額を入力してください。",
+    "available": "利用可能",
+    "capRemaining": "残り上限",
+    "max": "最大",
+    "exchangeRate": "交換レート",
+    "estimatedShares": "推定シェア数",
+    "networkFee": "ネットワーク手数料",
+    "signingWith": "Freighterで署名中…",
+    "confirmDeposit": "入金を確認",
+    "confirmWithdraw": "出金を確認",
+    "depositSuccess": "入金成功！",
+    "withdrawSuccess": "出金成功！",
+    "txHashLabel": "トランザクションハッシュ：",
+    "confirmedIn": "Stellarで約3.8秒で確認",
+    "done": "完了"
+  },
+  "WalletConnect": {
+    "connect": "ウォレットを接続",
+    "disconnect": "切断",
+    "connected": "接続済み",
+    "address": "アドレス"
+  },
+  "Footer": {
+    "brand": "NeuroWealth AI Vault",
+    "architecture": "Sorobanスマートコントラクトアーキテクチャ",
+    "stellar": "Stellarネットワーク",
+    "soroban": "Soroban SDK",
+    "freighter": "Freighterウォレット"
+  },
+  "LanguageSwitcher": {
+    "label": "言語"
+  },
+  "Onboarding": {
+    "skip": "スキップ",
+    "next": "次へ",
+    "finish": "完了",
+    "step1Title": "NeuroWealthへようこそ",
+    "step1Body": "Stellar上の自律型AIイールドエージェント。ウォレットを接続して始めましょう。",
+    "step2Title": "USDCを入金",
+    "step2Body": "USDCを入金して、AIエージェントに最適なイールド戦略を見つけてもらいましょう。",
+    "step3Title": "自動で稼ぐ",
+    "step3Body": "あなたの資金はBlendとDEX流動性プールに24時間365日デプロイされています。"
+  },
+  "Validation": {
+    "amountRequired": "金額は必須です。",
+    "amountMustBeNumber": "金額は有効な数値である必要があります。",
+    "amountMustBePositive": "金額はゼロより大きい必要があります。",
+    "amountBelowMinimum": "最低入金額は{min} USDCです。",
+    "amountAboveMaximum": "最高入金額は{max} USDCです。",
+    "amountExceedsBalance": "金額がご利用可能残高{balance} USDCを超えています。",
+    "strategyRequired": "イールド戦略を選択してください。",
+    "decimalInputHint": "小数点を含む金額を入力してください（例：10.50）。値は小数点以下7桁（stroops）に丸められます。",
+    "withdrawMinimum": "最低出金額は{min} USDCです。",
+    "withdrawExceedsBalance": "出金額がvault残高{balance} USDCを超えています。"
+  },
+  "WalletErrors": {
+    "notConnected": "続行するにはFreighterウォレットを接続してください。",
+    "freighterRejected": "トランザクションがキャンセルされました。Freighterウォレットで承認してください。",
+    "freighterUnavailable": "Freighterウォレット拡張機能がインストールされていません。freighter.appからインストールしてください。",
+    "accountNotFound": "Stellarネットワークでウォレットが見つかりません。アカウントに資金があることを確認してください。",
+    "insufficientXlm": "取引手数料をカバーするXLMが不足しています。ウォレットにXLMを追加してください。",
+    "networkMismatch": "FreighterウォレットはStellarの別のネットワークに接続されています。Testnetに切り替えてください。",
+    "signingFailed": "トランザクションの署名に失敗しました。再試行してください。",
+    "simulationFailed": "取引手数料を見積もれませんでした。ネットワークが混雑している可能性があります — 再試行してください。",
+    "transactionTimeout": "トランザクションがタイムアウトしました。資金は安全です — Stellarエクスプローラーで最新の状況を確認してください。"
+  },
+  "ContractErrors": {
+    "amountTooSmall": "最低入金額は1 USDCです。",
+    "amountTooLarge": "金額がトランザクションごとに許可された最大値を超えています。",
+    "userCapExceeded": "この入金により個人入金上限の10,000 USDCを超えます。",
+    "tvlCapExceeded": "vaultが総容量に達しました。後ほど再試行してください。",
+    "insufficientBalance": "この出金を完了するための残高が不足しています。",
+    "insufficientShares": "この出金に必要なvaultシェアが不足しています。",
+    "vaultPaused": "vaultはメンテナンスのため一時停止中です。後ほど再試行してください。",
+    "rateLimitExceeded": "リクエストが多すぎます。しばらく待ってから再試行してください。",
+    "unauthorized": "この操作を実行する権限がありません。",
+    "unknown": "予期せぬエラーが発生しました。再試行してください。",
+    "restoreRequired": "このトランザクションを処理する前に、アーカイブされたコントラクトデータを復元する必要があります。",
+    "restoreRejected": "復元がキャンセルされました。元の操作は送信されませんでした。",
+    "restoreSuccess": "アーカイブデータが復元されました。トランザクションを続行します…"
+  },
+  "DepositPage": {
+    "title": "USDCを入金",
+    "subtitle": "NeuroWealthスマートコントラクトvaultに資金を預け入れ、自動化DeFiイールドを獲得しましょう。",
+    "badge": "自律的なイールド配分",
+    "amountLabel": "入金額（USDC）",
+    "amountHint": "最低入金額：1 USDC。値は小数点以下7桁（1 USDC = 10,000,000 stroops）。",
+    "strategyLegend": "イールド戦略を選択",
+    "estimatedShares": "推定vaultシェア：",
+    "networkFee": "ネットワーク手数料：",
+    "networkFeeValue": "約0.00001 XLM",
+    "submitButton": "入金を確認",
+    "successTitle": "入金が確認されました！",
+    "successBody": "{amount} USDCを{strategy}イールド戦略に正常に入金しました。",
+    "makeAnother": "別の入金を行う"
+  },
+  "WithdrawPage": {
+    "title": "USDCを出金",
+    "subtitle": "vaultシェアを焼却し、USDC元本と累積イールドをウォレットに引き出します。",
+    "badge": "即時流動性",
+    "availableBalance": "利用可能なvault残高：",
+    "amountLabel": "出金額（USDC）",
+    "amountHint": "トランザクション確認後、USDCは接続されたFreighterウォレットに転送されます。",
+    "maxButton": "最大",
+    "sharesBurned": "焼却されたシェア：",
+    "protocolFee": "プロトコル手数料：",
+    "protocolFeeValue": "0.00%（出金手数料なし）",
+    "submitButton": "出金を確認",
+    "successTitle": "出金が処理されました！",
+    "successBody": "{amount} USDCをStellarウォレットに正常に出金しました。",
+    "makeAnother": "別の出金を行う"
   }
 }

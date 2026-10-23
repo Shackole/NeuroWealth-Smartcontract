@@ -2,20 +2,21 @@
 
 ## CI Limit
 
-The CI pipeline fails if the optimised contract WASM exceeds **1.5 MB** (configurable via `WASM_SIZE_LIMIT_BYTES` in `.github/workflows/ci.yml`).
+The CI pipeline enforces a **1.2 MB safety budget** and a **1.5 MB repository-configured ceiling** (configurable via `WASM_SIZE_BUDGET_BYTES` and `WASM_SIZE_LIMIT_BYTES` in `.github/workflows/ci.yml`). The budget is 20% below that ceiling. Confirm the live network's `maxContractSizeBytes` independently before deployment; the repository setting is not a substitute for querying the target network.
 
 Stellar's Soroban network enforces a `maxContractSizeBytes` network parameter that caps how large a contract WASM can be when uploaded via `stellar contract upload`. The CI gate sits well below that limit to catch unintentional bloat early and leave room for future feature additions.
 
 ## Trend Tracking
 
-The CI workflow now records the latest optimised WASM size for merged commits in `.github/wasm-size-history.json` and uses that baseline when a PR runs. The PR check reports the size delta versus the base branch in the workflow summary so gradual growth is visible even when the binary stays under the hard limit.
+The CI workflow records optimised sizes for successful main/develop pushes in `.github/wasm-size-history.json`, keeps the latest ten measurements per branch, and uses the base branch's latest measurement when a PR runs. The PR check reports the size delta in the workflow summary. The history file is seeded by the next successful main/develop build; it is not populated with estimates.
 
 ## Why This Matters
 
 | Issue | Consequence |
 |-------|-------------|
 | WASM > network `maxContractSizeBytes` | Deployment transaction rejected by the Soroban network |
-| WASM > CI limit | PR blocked until size is reduced |
+| WASM > 1.2 MB safety budget | PR blocked until size is reduced or the budget is deliberately changed |
+| WASM > 1.5 MB repository ceiling | CI fails; deployments must also be checked against the target network parameter |
 | Gradual growth | Limits room for future feature additions |
 
 ## How to Reduce WASM Size
@@ -36,17 +37,18 @@ The CI workflow now records the latest optimised WASM size for merged commits in
 
 ## Size Trend Log
 
-Entries are added whenever a PR meaningfully changes the compiled contract size. Record the
-optimised size (post `wasm-opt`) against the merge commit so the history is reproducible.
+The table below preserves the measured values available in the previous documentation.
+For current rolling history, use `.github/wasm-size-history.json`; CI retains ten
+successful main/develop measurements. A fresh size must be measured by CI or a local
+`wasm-opt` build before adding a new numeric row; do not estimate it.
 
 | Date | Commit | Description | Optimised size (bytes) | Delta |
 |------|--------|-------------|------------------------|-------|
 | 2026-07-29 | *(baseline — pre-harvest feature)* | Baseline before harvest() code path was added | 487,312 | — |
 | 2026-07-29 | *(harvest PR)* | Added `harvest()`, `HarvestEvent`, `TOPIC_HARVEST`, cooldown reuse via `LastRebalanceLedger` | 492,048 | +4,736 |
 
-> **How to update this table:** after merging a PR that affects contract size, run the `wasm-opt`
-> command from [How to Reduce WASM Size](#how-to-reduce-wasm-size) and append a row with today's
-> date, the merge commit short hash, a brief description, and the new optimised size.
+> **How to update this table:** after a PR materially changes contract size, take the measured
+> post-`wasm-opt` size from CI and append a row with the merge commit and change description.
 
 ---
 

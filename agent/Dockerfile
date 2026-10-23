@@ -1,4 +1,4 @@
-FROM node:20-alpine AS builder
+FROM node:22.23.2-alpine3.24 AS builder
 
 WORKDIR /app
 
@@ -8,22 +8,19 @@ RUN npm ci
 COPY . .
 RUN npm run build
 
-FROM node:20-alpine AS runner
+FROM node:22.23.2-alpine3.24 AS runner
 
 WORKDIR /app
+ENV NODE_ENV=production
 
-RUN apk add --no-cache wget
-
-COPY package*.json ./
-RUN npm ci --only=production
-
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/src ./src
-COPY --from=builder /app/tsconfig.json ./
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev && npm cache clean --force
+COPY --from=builder --chown=node:node /app/dist ./dist
 
 EXPOSE 3001
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://localhost:3001/health || exit 1
+  CMD node -e "require('http').get('http://127.0.0.1:3001/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
 
-CMD ["npx", "ts-node", "src/index.ts"]
+USER node
+CMD ["node", "dist/index.js"]

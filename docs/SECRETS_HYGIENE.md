@@ -1,14 +1,15 @@
-# Secrets Hygiene (#605)
+# Secrets Hygiene (#605, #115)
 
 This document records the full-history secret scan of this repository, the
-triage of its findings, and the enforcement now in place to prevent future
-leaks of Stellar secret seeds (`S...`) and `.env` contents.
+triage of its findings, and the enforcement in place to prevent future leaks
+of Stellar secret seeds (`S...`), API keys, and other credentials.
 
 ## Full-history scan
 
 - **Tool:** [gitleaks](https://github.com/gitleaks/gitleaks) v8.30.1, default
   ruleset plus the repo config in [`.gitleaks.toml`](../.gitleaks.toml)
-  (adds a `stellar-secret-key` rule for `S` + 55 base32 characters).
+  (adds project-specific rules for Stellar keys, AWS credentials, GCP keys,
+  JWT secrets, and private keys).
 - **Scope:** entire git history (260 commits, ~174 MB scanned), all branches
   reachable from `main`.
 - **Command:** `gitleaks git --redact -v .`
@@ -32,7 +33,7 @@ for agent keys.
 
 ## Enforcement
 
-Two independent layers keep secrets out of the repository going forward:
+Three independent layers keep secrets out of the repository going forward:
 
 ### 1. Pre-commit hook (developer machines)
 
@@ -48,15 +49,76 @@ The hook fails closed: if `gitleaks` is not installed it refuses the commit
 rather than silently skipping the scan (`brew install gitleaks` /
 `go install github.com/gitleaks/gitleaks/v8@latest`).
 
-### 2. CI gate (all pull requests and pushes)
+### 2. Dedicated CI workflow (`secret-scan.yml`)
+
+The dedicated workflow in
+[`.github/workflows/secret-scan.yml`](../.github/workflows/secret-scan.yml)
+provides the primary secret-scanning gate. It runs on:
+
+| Trigger | Jobs run |
+|---------|----------|
+| Every PR targeting `main`, `develop`, `feat/**`, `fix/**`, `release/**` | `gitleaks-scan` (PR diff + history) |
+| Every push to `main` / `develop` | `gitleaks-scan` |
+| Weekly schedule (Monday 04:00 UTC) | `gitleaks-scan` + `full-history-scan` |
+| Manual (`workflow_dispatch`) | `gitleaks-scan` + `full-history-scan` |
+
+**How findings are reported:**
+
+- `gitleaks/gitleaks-action@v2` annotates the PR check with the exact
+  **file path** and **line number** of each finding.
+- A SARIF report is uploaded as a workflow artifact (retained 30 days) for
+  deep-link analysis.
+- The workflow step summary explains immediate remediation steps.
+- On any finding, the `notify-security` job posts a Slack alert to the
+  security channel (see [Slack alerting](#slack-alerting) below).
+
+**Full-history job** (`full-history-scan`): runs on the weekly schedule and
+manual dispatch. Scans the entire git history and opens (or updates) a
+GitHub Issue if a finding is detected, so incidents surfaced outside of PR
+context are still tracked.
+
+### 3. Basic CI gate (`ci.yml`)
 
 The `secret-scan` job in
-[`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs
-`gitleaks/gitleaks-action@v2` with full history (`fetch-depth: 0`) on every
-PR targeting `main`/`develop`, every push to those branches and `feat/**`,
-and the weekly scheduled run — so a leak that slips past a developer's
-hooks is still caught before merge, and the whole history is re-swept
-weekly as rules improve.
+[`.github/workflows/ci.yml`](../.github/workflows/ci.yml) provides a
+secondary, lightweight gate on every push and PR. Both jobs must pass before
+a PR can merge.
+
+## Slack alerting
+
+When `gitleaks-scan` fails, the `notify-security` job sends a message to the
+security Slack channel configured via the `SECURITY_SLACK_WEBHOOK_URL` secret.
+
+Set this secret in **Settings → Secrets and variables → Actions**:
+
+| Secret | Description |
+|--------|-------------|
+| `SECURITY_SLACK_WEBHOOK_URL` | Incoming webhook URL for the `#security-alerts` channel |
+
+The alert includes the repository name, branch/ref, triggering actor, and a
+direct link to the failing workflow run.
+
+## Quarterly false-positive review {#quarterly-review}
+
+The allowlist in `.gitleaks.toml` and fingerprints in `.gitleaksignore` must
+be reviewed **every quarter** (January, April, July, October) to ensure:
+
+1. No entry has become stale (pattern no longer present in codebase).
+2. No entry incorrectly suppresses a real credential.
+3. New rules from upstream gitleaks releases are evaluated for applicability.
+
+**Review checklist:**
+
+- [ ] Read every entry in `[allowlist]` and `[[rules.allowlist]]` blocks in
+  `.gitleaks.toml`; confirm each is still justified.
+- [ ] Read every fingerprint in `.gitleaksignore`; confirm each is still a
+  known false positive.
+- [ ] Run `gitleaks git --redact -v .` locally and verify zero real findings.
+- [ ] Check the upstream gitleaks [CHANGELOG](https://github.com/gitleaks/gitleaks/releases)
+  for new rules relevant to this project.
+- [ ] Update the "Last reviewed" date below.
+
+**Last reviewed:** 2026-09-27 (initial setup)
 
 ## Rules of thumb
 
@@ -69,4 +131,7 @@ weekly as rules improve.
   seeds into this repo's history).
 - Suppress a false positive by adding its *fingerprint* to
   `.gitleaksignore` with a comment justifying it — never by weakening a
-  rule.
+  rule or expanding an allowlist path more than necessary.
+- AWS keys, GCP service account JSON, and database URLs with passwords are
+  covered by rules in `.gitleaks.toml`. Store them in Railway/environment
+  secrets, never in source code or configuration files.

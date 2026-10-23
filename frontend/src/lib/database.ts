@@ -8,15 +8,19 @@ export interface ChartDataPoint {
   date: string;
   value: number;
   yield: number;
+  apyBps?: number | null;
 }
 
 export interface TransactionRecord {
   id: string;
   type: 'deposit' | 'withdrawal' | 'rebalance';
   amount: number;
+  asset?: string;
+  address?: string;
+  strategy?: string;
   txHash: string;
   timestamp: string;
-  status: 'confirmed' | 'pending';
+  status: 'confirmed' | 'pending' | 'failed';
 }
 
 /**

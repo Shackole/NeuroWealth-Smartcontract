@@ -1,294 +1,365 @@
 # NeuroWealth Bug Bounty Program
 
 > **Status:** Active — Pre-Mainnet  
-> **Last updated:** 2026-08-24  
-> **Program managed by:** NeuroWealth Security Team
+> **Last updated:** 2026-09-24  
+> **Program managed by:** NeuroWealth Security Team  
 
-We reward security researchers who responsibly disclose vulnerabilities in the
-NeuroWealth smart contract system. Our goal is a safe mainnet launch, and your
-help makes that possible.
+We reward security researchers who responsibly disclose vulnerabilities in the NeuroWealth ecosystem. Our goal is a safe mainnet launch, and community contributions are essential to securing user assets and protocol infrastructure.
 
 ---
 
 ## Table of Contents
 
-1. [Scope](#scope)
-2. [Out of Scope](#out-of-scope)
-3. [Severity Rubric](#severity-rubric)
-4. [Reporting Channel](#reporting-channel)
-5. [Safe-Harbor Terms](#safe-harbor-terms)
-6. [Response SLAs](#response-slas)
-7. [Payout Process](#payout-process)
-8. [Disclosure Policy](#disclosure-policy)
+1. [Program Overview](#program-overview)
+2. [Scope](#scope)
+   - [Vault Smart Contract (Primary Scope)](#vault-smart-contract-primary-scope)
+   - [Backend API & Off-Chain Agent](#backend-api--off-chain-agent)
+   - [Frontend Web Application](#frontend-web-application)
+   - [WhatsApp Bot Service](#whatsapp-bot-service)
+3. [Out of Scope](#out-of-scope)
+   - [Third-Party Protocols & Infrastructure](#third-party-protocols--infrastructure)
+   - [Social Engineering & Physical Attacks](#social-engineering--physical-attacks)
+   - [Non-Impactful & Operational Exclusions](#non-impactful--operational-exclusions)
+4. [Severity Rubric & Payout Ranges](#severity-rubric--payout-ranges)
+   - [Summary of Payout Ranges (in USDC)](#summary-of-payout-ranges-in-usdc)
+   - [Critical Severity](#critical-severity)
+   - [High Severity](#high-severity)
+   - [Medium Severity](#medium-severity)
+   - [Low Severity](#low-severity)
+   - [Informational Severity](#informational-severity)
+5. [Submission Instructions](#submission-instructions)
+   - [Authorized Disclosure Channels](#authorized-disclosure-channels)
+   - [Vulnerability Report Template](#vulnerability-report-template)
+6. [Safe Harbour Clause](#safe-harbour-clause)
+   - [Safe Harbour Protections](#safe-harbour-protections)
+   - [Researcher Obligations](#researcher-obligations)
+7. [Response SLAs](#response-slas)
+8. [Payout Process](#payout-process)
+9. [Coordinated Disclosure Policy](#coordinated-disclosure-policy)
+
+---
+
+## Program Overview
+
+The NeuroWealth bug bounty program provides financial rewards in USDC for vulnerability reports affecting our smart contracts, backend infrastructure, frontend interfaces, and messaging integrations. All rewards are denominated and disbursed in USDC on the Stellar network.
 
 ---
 
 ## Scope
 
-The following assets are **in scope** for the bug bounty:
+The following assets are **in scope** for the bug bounty program:
 
-### Smart Contracts (Primary Scope)
+### Vault Smart Contract (Primary Scope)
 
-| Path | Description |
-|------|-------------|
-| `neurowealth-vault/contracts/vault/src/lib.rs` | Core vault contract (deposit, withdraw, rebalance, upgrade, pause logic) |
-| `neurowealth-vault/contracts/vault/src/topics.rs` | Event topic constants |
-| All deployed contract addresses listed in the latest [Mainnet Deployment Runbook](../scripts/MAINNET_DEPLOYMENT_RUNBOOK.txt) | On-chain instances |
+| Target | Path / Repository Location | Description |
+|---|---|---|
+| Core Vault Contract | `neurowealth-vault/contracts/vault/src/lib.rs` | Core vault logic: deposit, withdraw, rebalance, harvest, pause, share calculations, and timelocked upgrade execution |
+| Vault Topics & Events | `neurowealth-vault/contracts/vault/src/topics.rs` | Event topics, on-chain state emission, and audit logs |
+| Rate Limiter & Caps | `neurowealth-vault/contracts/vault/src/lib.rs` | Rate limiting mechanisms, TVL caps, and user deposit limits |
+| Deployed Instances | Deployed Soroban contracts | All testnet/mainnet contract addresses published in [`scripts/MAINNET_DEPLOYMENT_RUNBOOK.txt`](../scripts/MAINNET_DEPLOYMENT_RUNBOOK.txt) |
 
-### Repository / Off-Chain Components (Secondary Scope)
+**Key Concerns for Vault Contract:**
+- **Share-Price Manipulation:** Any technique that artificially inflates or deflates the vault's `total_assets` / `total_shares` ratio to steal or dilute value from depositors.
+- **Authentication & Role Bypass:** Calling owner-only, agent-only, or guardian-only functions without authorization.
+- **Unauthorized Fund Extraction:** Any flaw allowing USDC or minted shares to be moved to unauthorized addresses.
+- **Upgrade Hijacking & Timelock Bypass:** Bypassing the 24-hour timelock or forging a `schedule_upgrade` / `execute_upgrade` call.
+- **Emergency Pause Bypass:** Executing paused functions while the vault is in an emergency paused state.
+- **Reentrancy & State Desynchronization:** Cross-contract reentrancy or state desynchronization breaking accounting invariants.
+- **Arithmetic Errors:** Integer overflow, underflow, or precision truncation in share or asset accounting.
 
-| Path | Description |
-|------|-------------|
-| `agent/src/` | AI agent backend (event listener, intent parser, yield comparison) |
-| `packages/vault-client/src/` | TypeScript vault client library |
-| `scripts/deploy-*.sh` | Deployment scripts (key hygiene, initialization ordering) |
+### Backend API & Off-Chain Agent
 
-### What We Care About Most
+| Target | Path / Repository Location | Description |
+|---|---|---|
+| AI Agent Service | `agent/src/` | Automated strategy engine, rebalance intent parser, yield comparison, and transaction dispatch service |
+| Backend API Endpoints | `agent/src/` | REST/JSON-RPC off-chain APIs serving vault metrics, yield calculations, and agent communications |
+| Vault Client Package | `packages/vault-client/src/` | TypeScript SDK client consumed by backend services and automated pipelines |
 
-- **Share-price manipulation** — any technique that artificially inflates or
-  deflates the vault's `total_assets` / `total_shares` ratio to steal value
-  from other depositors.
-- **Authentication bypass** — calling owner-only, agent-only, or user-only
-  functions without the required authorization.
-- **Unauthorized fund extraction** — any path that moves USDC to an address
-  that did not deposit it.
-- **Upgrade hijacking** — bypassing the upgrade timelock or forging a
-  `schedule_upgrade` / `execute_upgrade` call.
-- **Pause bypass** — executing a paused-blocked function while the vault is
-  paused.
-- **Reentrancy** — despite CEI pattern enforcement, any novel cross-contract
-  reentrant path that breaks invariants.
-- **Integer overflow / underflow** — arithmetic bugs in share or asset
-  accounting that checked-math should catch but might not.
-- **Front-running / MEV** — exploitable ordering of initialize, deposit, or
-  upgrade transactions in the Stellar mempool.
+**Key Concerns for Backend API:**
+- **Remote Code Execution (RCE):** Arbitrary code execution or system command injection on backend hosts.
+- **Private Key Exposure:** Exposure or exfiltration of the AI agent hot key used for transaction signing.
+- **Telemetry & Asset Valuation Tampering:** Manipulation of off-chain yield computations or falsified total asset reporting via `update_total_assets`.
+- **API Authentication Bypass:** Broken object-level authorization (BOLA) or unauthenticated execution of internal admin/agent API routes.
+- **Market Data Injection:** Injection of spoofed or manipulated oracle/market inputs triggering malicious rebalance executions.
+
+### Frontend Web Application
+
+| Target | Path / Repository Location | Description |
+|---|---|---|
+| Frontend Web Client | `frontend/` | Next.js/React web interface for user deposits, withdrawals, strategy selection, and portfolio tracking |
+| UI Component Library | `packages/vault-ui/` | Shared UI components, state hooks, and notification handlers |
+
+**Key Concerns for Frontend:**
+- **Transaction Parameter Tampering:** Intercepting or modifying recipient addresses, deposit sums, or slippage limits prior to wallet signature prompts.
+- **Stored or Reflected XSS:** Cross-Site Scripting vulnerabilities enabling credential exfiltration, session hijacking, or automated unauthorized transactions.
+- **Clickjacking & UI Redressing:** Deceptive interface overlays tricking users into signing malicious transactions.
+- **Client-Side Secret Exposure:** Exposure of sensitive backend service keys or credentials in client bundles.
+
+### WhatsApp Bot Service
+
+| Target | Path / Repository Location | Description |
+|---|---|---|
+| WhatsApp Bot Service | `whatsapp/` | Notification service, portfolio alert delivery, user interactive commands, and webhook ingress |
+
+**Key Concerns for WhatsApp Bot:**
+- **Webhook Signature Bypass:** Forging inbound webhook payloads to execute unauthorized actions on behalf of users.
+- **Information Disclosure:** Leaking sensitive user data, wallet addresses, or portfolio balances to unauthorized phone numbers.
+- **Command & Prompt Injection:** Injecting arbitrary commands or manipulating prompt flows in automated conversational interfaces.
+- **Denial of Service:** Disrupting webhook processing to block critical security or liquidation notifications.
 
 ---
 
 ## Out of Scope
 
-The following are **not eligible** for bounty rewards:
+The following areas, systems, and attack vectors are **explicitly out of scope** and ineligible for rewards:
 
-- Theoretical or speculative attacks with no working proof-of-concept.
-- Issues in third-party protocols (Blend, Stellar DEX) unless the vault's
-  integration amplifies the impact.
-- Bugs already reported or currently being fixed in an open issue or PR.
-- Bugs in test files (`src/tests/`) or fuzz targets (`fuzz/`) that do not
-  reflect production contract behavior.
-- Social-engineering attacks against team members.
-- Denial-of-service that only affects testnet or devnet.
-- Front-end / UI bugs that are cosmetic and do not affect funds.
-- Issues requiring physical access to a developer's machine.
-- Informational-only findings with no exploitable impact.
-- Planned / acknowledged risks already documented in
-  [`SECURITY.md`](../SECURITY.md) (e.g., Blend utilization liquidity risk).
+### Third-Party Protocols & Infrastructure
+- **Third-Party DeFi Protocols:** Flaws in external protocols including **Blend** lending pools or decentralized exchanges (**Phoenix, Soroswap, Stellar DEX**), unless NeuroWealth's contract integration directly introduces or amplifies the vulnerability.
+- **Stellar Network Core & Consensus:** Vulnerabilities in the Stellar Consensus Protocol (SCP), Soroban runtime environment, or core Stellar validator infrastructure.
+- **Third-Party Wallet Applications:** Vulnerabilities residing within external wallet applications (e.g., Freighter, Lobstr, xBull).
 
----
+### Social Engineering & Physical Attacks
+- **Social Engineering:** Phishing, spear-phishing, credential stuffing, or social engineering attacks targeting NeuroWealth team members, contractors, or users.
+- **Physical Security:** Any physical attacks directed against facilities, hardware, or employees.
 
-## Severity Rubric
-
-We use a four-tier severity system aligned with industry standards
-(Immunefi / HackerOne).
-
-### Critical — Up to **$50,000**
-
-Direct, on-chain theft or permanent loss of user funds without requiring any
-privileged key.
-
-**Example bug classes:**
-
-| Class | Example |
-|-------|---------|
-| Share-price manipulation | Inflate `total_assets` via `update_total_assets` to drain other users on withdrawal |
-| Auth bypass | Call `rebalance()` or `execute_upgrade()` as an arbitrary address |
-| Unauthorized withdrawal | Extract USDC to a non-depositor address without their auth |
-| Upgrade hijack | Execute `execute_upgrade()` before the timelock expires, or bypass the owner-auth check |
-| Reentrancy theft | Cross-contract reentrant call that double-mints shares or double-withdraws USDC |
-
-**Criteria:** Funds at risk, exploitable on mainnet, no trusted actor required.
+### Non-Impactful & Operational Exclusions
+- **Theoretical Attacks:** Speculative claims lacking a working proof of concept (PoC) or tangible security impact.
+- **Known & Documented Risks:** Acknowledged risks documented in [`SECURITY.md`](../SECURITY.md) (e.g., Blend liquidity utilization constraints during market stress).
+- **Pre-Existing Reports:** Vulnerabilities already tracked in open issues, open pull requests, or past security audit reports.
+- **Testing & Fuzzing Harnesses:** Bugs identified strictly in test code, mock contracts, or fuzz targets (`neurowealth-vault/contracts/vault/src/tests/` or `fuzz/`) that do not reflect production smart contract behavior.
+- **Volumetric Denial of Service:** Network-layer DDoS or brute-force rate-limiting attacks against testnet/devnet endpoints.
+- **Cosmetic UI Issues:** Minor layout bugs, styling inconsistencies, or typographical errors with zero security impact.
 
 ---
 
-### High — Up to **$10,000**
+## Severity Rubric & Payout Ranges
 
-Severe impact on vault integrity or user funds requiring a single compromised
-or malicious trusted actor (owner or agent).
+Vulnerabilities are evaluated using a five-tier classification model based on impact and exploitability. Payouts are denominated and disbursed in **USDC**.
 
-**Example bug classes:**
+### Summary of Payout Ranges (in USDC)
 
-| Class | Example |
-|-------|---------|
-| Privilege escalation | Agent can call owner-only functions (e.g., `set_tvl_cap`) |
-| Pause bypass | Paused function executes a state-changing operation despite the paused flag |
-| Forced lock-up | Owner can permanently brick withdrawals beyond the documented pause mechanism |
-| Cap bypass | Depositing more than `user_deposit_cap` or `tvl_cap` in a single tx |
-| Agent over-reporting | `update_total_assets` reports more than on-chain balance without triggering the solvency check |
-
-**Criteria:** High impact, but typically requires a compromised key or
-specific race condition.
+| Severity Tier | Payout Range (USDC) | Criteria Summary |
+|---|---|---|
+| **Critical** | **$10,000 – $50,000 USDC** | Direct theft or permanent freeze of user funds; complete authentication bypass |
+| **High** | **$2,500 – $10,000 USDC** | Privilege escalation; pause mechanism bypass; critical backend API compromise |
+| **Medium** | **$500 – $2,500 USDC** | State griefing; systematic rounding value extraction; bot/webhook spoofing; localized DoS |
+| **Low** | **$100 – $500 USDC** | Minor access control gap; missing event emissions; low-impact input validation errors |
+| **Informational** | **$0 – $100 USDC** | Security hardening suggestions; documentation discrepancies; non-exploitable improvements |
 
 ---
 
-### Medium — Up to **$2,500**
+### Critical Severity: $10,000 – $50,000 USDC
 
-Moderate impact, exploitable under specific conditions, or degraded security
-guarantees.
+**Definition:** Direct on-chain theft, permanent loss, or irreversible freezing of user or vault funds without requiring privileged credentials. Complete breakdown of core protocol invariants.
 
-**Example bug classes:**
-
-| Class | Example |
-|-------|---------|
-| Griefing / DoS | Any account can lock the vault into a state requiring owner intervention |
-| Rounding manipulation | Systematic rounding abuse to drain value from the vault over many transactions |
-| Event spoofing | Emit misleading events that cause off-chain agents to take incorrect action |
-| TTL expiry abuse | Deliberately expire another user's `Shares` storage entry to cause data loss |
-| Cooldown bypass | Call `rebalance()` / `harvest()` more frequently than configured |
-
-**Criteria:** Real impact but not direct fund loss in a single transaction.
-
----
-
-### Low — Up to **$500**
-
-Minor issues that violate documented security properties but have limited
-practical exploitability.
-
-**Example bug classes:**
-
-| Class | Example |
-|-------|---------|
-| Access-control gap | Non-critical function callable by wrong role without real-world impact |
-| Missing event | State-changing function that silently omits an event that indexers rely on |
-| Input validation | Edge-case input (e.g., `amount = 0`) not rejected with the correct error code |
-| Documentation mismatch | SECURITY.md or ARCHITECTURE.md describes behavior that differs from code |
-
-**Criteria:** Low exploitability or impact confined to off-chain tooling.
+**Component Examples:**
+- **Vault Contract:**
+  - Share-price manipulation via `update_total_assets` or initial deposit donation that drains user capital.
+  - Calling `rebalance()`, `emergency_pause()`, or `execute_upgrade()` without authorization.
+  - Extracting USDC to a non-depositor address without user consent.
+  - Bypassing the 24-hour timelock to execute an unauthorized contract upgrade.
+  - Reentrancy attacks leading to double-minting of shares or double-withdrawals of underlying assets.
+- **Backend API:**
+  - Remote code execution (RCE) on backend infrastructure hosting agent signing keys.
+  - Unauthorized manipulation of production databases resulting in fraudulent balance adjustments.
+- **Frontend:**
+  - Injected malicious payload modifying transaction parameters before signing, redirecting user funds to an attacker.
+- **WhatsApp Bot:**
+  - Flaw allowing an attacker to trigger arbitrary fund transfers or compromise signing credentials via messaging interactions.
 
 ---
 
-## Reporting Channel
+### High Severity: $2,500 – $10,000 USDC
 
-**Primary:** Email `security@neurowealth.io` with subject line:
+**Definition:** Severe impact on vault integrity or temporary freezing of user funds, requiring a single compromised semi-trusted key (e.g., AI agent hot key), or critical backend infrastructure compromise without direct fund theft.
+
+**Component Examples:**
+- **Vault Contract:**
+  - Privilege escalation enabling the AI agent key to call owner-restricted functions (e.g., `set_tvl_cap`).
+  - Executing state-changing transactions while the vault is in an emergency paused state.
+  - Circumventing `user_deposit_cap` or `tvl_cap` limits in a single transaction.
+  - Bypassing solvency checks during asset updates to report inflated balances.
+- **Backend API:**
+  - Server-Side Request Forgery (SSRF) or broken authorization enabling unauthorized manipulation of rebalance parameters.
+  - Unauthenticated access to private agent endpoints exposing operational configurations.
+- **Frontend:**
+  - Clickjacking or UI overlay vectors inducing users to execute unintended token approval transactions.
+- **WhatsApp Bot:**
+  - Flaws exposing sensitive financial information, wallet addresses, or user identifiers to third parties.
+
+---
+
+### Medium Severity: $500 – $2,500 USDC
+
+**Definition:** Moderate operational or financial impact, exploitable under specific conditional constraints, griefing vectors that do not extract funds directly, or systematic value leakage across multiple transactions.
+
+**Component Examples:**
+- **Vault Contract:**
+  - Systematic rounding errors exploited to extract value incrementally across repeated transactions.
+  - State griefing attacks forcing the vault into an inconsistent state requiring owner intervention.
+  - Deliberately expiring other users' storage entries to induce temporary denial of service.
+  - Bypassing configured rebalance cooldown timers without unauthorized asset movement.
+- **Backend API:**
+  - Denial of service targeting yield calculation endpoints, halting automated rebalancing.
+  - Event processing race conditions leading to delayed off-chain updates.
+- **Frontend:**
+  - Open redirect vulnerabilities on authentication flows.
+  - Cross-Site Request Forgery (CSRF) on non-critical user preference endpoints.
+- **WhatsApp Bot:**
+  - Webhook flood vectors causing delayed delivery of critical account and vault security notifications.
+
+---
+
+### Low Severity: $100 – $500 USDC
+
+**Definition:** Minor issues violating documented specifications or security best practices with limited practical exploitability and no risk of direct fund loss.
+
+**Component Examples:**
+- **Vault Contract:**
+  - State-changing functions omitting event emissions relied upon by indexers.
+  - Edge-case inputs (e.g., zero amounts) failing to revert with the documented `VaultError` variant.
+  - Access control inconsistencies on view or non-critical helper functions.
+- **Backend API:**
+  - Lack of rate limiting on public informational endpoints.
+  - Verbose error responses leaking framework versions or internal stack traces.
+- **Frontend:**
+  - Missing HTTP security headers (e.g., CSP, X-Frame-Options) on non-sensitive pages.
+  - Broken links or cosmetic interface misalignments during edge-case error handling.
+- **WhatsApp Bot:**
+  - Unhandled edge cases in message parsing resulting in unhelpful generic error responses.
+
+---
+
+### Informational Severity: $0 – $100 USDC
+
+**Definition:** Non-exploitable observations, code quality enhancements, defense-in-depth suggestions, or documentation discrepancies that improve system clarity and resilience.
+
+**Component Examples:**
+- **Vault Contract & Architecture:**
+  - Recommendations to optimize code structure or gas consumption without changing semantics.
+  - Documentation discrepancies between [`SECURITY.md`](../SECURITY.md) and smart contract implementation.
+  - Removal of dead code or unused storage constants.
+- **Backend API & Off-Chain:**
+  - Suggestions to update non-vulnerable dependency versions.
+  - Logging enhancements and telemetry hygiene recommendations.
+- **Frontend & Bot:**
+  - Code refactoring recommendations for improved maintainability.
+
+*Note: Informational submissions are eligible for up to $100 USDC, public acknowledgment in release notes, or recognition in the NeuroWealth Security Hall of Fame.*
+
+---
+
+## Submission Instructions
+
+To remain eligible for bounty rewards, researchers must report vulnerabilities through private, authorized channels. **Never open public GitHub issues, pull requests, or public discussions for security vulnerabilities.**
+
+### Authorized Disclosure Channels
+
+Submit reports via either of the following channels:
+
+1. **Private Disclosure Email (Primary):**  
+   Send details to `security@neurowealth.io`  
+   Subject line format: `[BUG BOUNTY] <Vulnerability Summary>`
+
+2. **GitHub Security Advisory (Alternative):**  
+   Submit privately through GitHub Security Advisories:  
+   [Report a Vulnerability](https://github.com/Shackole/NeuroWealth-Smartcontract/security/advisories/new)  
+   Navigate to repository **Security** > **Advisories** > **Report a vulnerability**.
+
+---
+
+### Vulnerability Report Template
+
+Please include the following information in every report:
+
+```markdown
+### Report Summary
+- **Title:** [Concise description of the vulnerability]
+- **Target Component:** [Vault Contract | Backend API | Frontend | WhatsApp Bot]
+- **Estimated Severity:** [Critical | High | Medium | Low | Informational]
+
+### Affected Assets
+- **File / Endpoint:** [e.g., neurowealth-vault/contracts/vault/src/lib.rs]
+- **Method / Function:** [e.g., execute_upgrade()]
+- **Lines of Code:** [e.g., L105-L120]
+
+### Vulnerability Description
+[Detailed description of the issue and why the current logic is flawed]
+
+### Step-by-Step Reproduction
+1. [Initial condition / setup]
+2. [Action executed by attacker]
+3. [Observed vulnerable behavior]
+
+### Proof of Concept (PoC)
+[Minimal, reproducible Rust test case, curl command, or test script]
+
+### Impact Analysis
+[Detailed assessment of potential damages: assets at risk, state corruption, or service degradation]
+
+### Recommended Fix
+[Proposed patch, architectural adjustment, or mitigation strategy]
 ```
-[BUG BOUNTY] <one-line summary>
-```
-
-**Alternative (for program status / questions only):** Open a
-[GitHub Security Advisory](https://github.com/Neurowealth/NeuroWealth-Smartcontract/security/advisories/new)
-via the "Report a vulnerability" button on the repo's Security tab.
-
-**Do NOT** open a public GitHub issue for a security vulnerability. Doing so
-will disqualify the report from bounty eligibility.
-
-### Report Template
-
-Please include the following in your report:
-
-```
-**Severity (your assessment):** Critical / High / Medium / Low
-
-**Affected component:** e.g., lib.rs → execute_upgrade()
-
-**Vulnerability description:**
-<clear explanation of the bug>
-
-**Attack scenario:**
-<step-by-step description of how an attacker would exploit this>
-
-**Impact:**
-<what an attacker gains: funds stolen, vault bricked, etc.>
-
-**Proof of concept:**
-<minimal Rust test or transaction sequence that demonstrates the bug>
-
-**Suggested fix (optional):**
-<your recommendation>
-```
 
 ---
 
-## Safe-Harbor Terms
+## Safe Harbour Clause
 
-NeuroWealth is committed to working with security researchers in good faith.
-We will **not** pursue legal action against researchers who:
+NeuroWealth is committed to fostering an environment where security researchers can operate safely and constructively. We provide a comprehensive Safe Harbour for individuals who act in good faith.
 
-1. Discover and report vulnerabilities via the process described in this
-   document.
-2. Act in good faith and do not exploit the vulnerability beyond what is
-   necessary to produce a minimal proof of concept.
-3. Do not access, modify, or exfiltrate user data beyond what is required
-   to demonstrate the vulnerability.
-4. Do not perform denial-of-service attacks, social engineering, or physical
-   attacks against NeuroWealth infrastructure or personnel.
-5. Do not publicly disclose the vulnerability before the coordinated
-   disclosure deadline (see [Disclosure Policy](#disclosure-policy)).
+### Safe Harbour Protections
 
-If you inadvertently access user funds or data while researching a
-vulnerability, stop immediately, include it in your report, and we will
-work with you to assess the impact without penalty.
+NeuroWealth affirms that:
+- **No Legal Action:** We will not pursue civil litigation or initiate criminal complaints against researchers who conduct security research and report findings in accordance with this policy.
+- **Authorized Activity:** Activities conducted in compliance with this policy are recognized as authorized conduct under relevant cybersecurity statutes (including the Computer Fraud and Abuse Act and equivalent regional laws).
+- **Defense Support:** If legal action is initiated by a third party against a researcher acting in good faith under this policy, NeuroWealth will provide documentation affirming the researcher's authorization.
 
-**Testing environment:** All testing should be performed on Stellar
-**testnet** or **devnet**. Testing directly against mainnet contracts may
-disqualify your report and could expose you to legal risk.
+### Researcher Obligations
+
+To qualify for Safe Harbour protections, researchers must:
+- Confine all active testing to Stellar **testnet**, **devnet**, or local mock environments. **Never test against mainnet contracts or real user funds.**
+- If personal data or real user funds are inadvertently discovered, immediately stop testing, preserve the data without exfiltration, and report the issue promptly.
+- Refrain from performing denial-of-service attacks, data destruction, or intentional disruption of production or testing environments.
+- Abide strictly by the [Coordinated Disclosure Policy](#coordinated-disclosure-policy) and refrain from public disclosure until the coordinated disclosure period has concluded.
+- Conduct all activities in good faith and in full compliance with applicable laws.
 
 ---
 
 ## Response SLAs
 
-| Milestone | Target |
-|-----------|--------|
-| Initial acknowledgement | **48 hours** of receiving the report |
-| Triage and severity assignment | **5 business days** |
-| Fix developed and reviewed | **14 business days** (Critical / High) |
-| Fix developed and reviewed | **30 business days** (Medium / Low) |
-| Patch deployed to testnet | **7 days** after fix review |
-| Patch deployed to mainnet | Dependent on timelock (24 h) + deployment schedule |
-| Bounty paid | **7 business days** after mainnet deployment confirmation |
-| Coordinated public disclosure | **90 days** after initial report (may be shortened by mutual agreement) |
+The NeuroWealth security team operates under defined response timelines for all submitted reports:
 
-If a fix requires more time than the SLA allows, we will communicate progress
-proactively and agree on an updated timeline with the reporter.
+| Milestone | Target SLA | Description |
+|---|---|---|
+| **Initial Acknowledgement** | Within **48 hours** | Initial confirmation of receipt and assignment of a tracking identifier |
+| **Triage & Severity Assignment** | Within **7 days** | Technical validation, exploitability assessment, and severity tier confirmation |
+| **Remediation (Critical / High)** | Within **14 business days** | Remediation developed, reviewed, and staged for deployment |
+| **Remediation (Medium / Low)** | Within **30 business days** | Patch implemented, verified, and incorporated into release schedule |
+| **Testnet Deployment** | Within **7 days** | Deployment and verification of fix on Stellar testnet/devnet |
+| **Mainnet Deployment** | Timelock dependent | Mainnet deployment adhering to the 24-hour upgrade timelock (17,280 ledgers) |
+| **Bounty Disbursement** | Within **7 business days** | Payout issued in USDC following mainnet fix confirmation |
+| **Coordinated Disclosure** | **90 days** | Public disclosure window from date of initial report acknowledgment |
 
 ---
 
 ## Payout Process
 
-1. **Confirmation:** We send a written confirmation of bounty eligibility and
-   the approved severity tier.
-2. **Validation:** Reporter provides wallet address (Stellar or EVM).
-3. **Payment:** Bounties are paid in **USDC** on the Stellar network.
-4. **Tax:** Reporters are responsible for any applicable taxes in their
-   jurisdiction.
-5. **Acknowledgement:** With permission, we will credit the reporter in the
-   patch release notes and our security hall of fame.
-
-Payout amounts are determined by:
-
-- Severity tier (see rubric above).
-- Quality and completeness of the report.
-- Novelty of the finding.
-- Whether a working proof-of-concept was provided.
-
-Duplicate reports (same root cause already reported by another researcher)
-receive a reduced or no bounty, at our discretion.
+1. **Validation & Assessment:** The security team confirms report validity, assigns the final severity tier, and calculates the reward amount within the published range.
+2. **Recipient Information:** The researcher submits a verified receiving address (Stellar or EVM wallet address).
+3. **Disbursement:** Bounties are paid in **USDC** on the Stellar network.
+4. **Tax Obligations:** Researchers are solely responsible for all tax liabilities and statutory reporting obligations in their respective jurisdictions.
+5. **Duplicate Submissions:** If multiple independent reports describe the same underlying vulnerability, the bounty is awarded to the first valid submission received (by timestamp).
+6. **Hall of Fame & Recognition:** Researchers will be credited in patch release notes and the Security Hall of Fame, unless anonymity is explicitly requested.
 
 ---
 
-## Disclosure Policy
+## Coordinated Disclosure Policy
 
-- We follow a **90-day coordinated disclosure** window from the date we
-  acknowledge your report.
-- We will work with you to agree on a disclosure date that is as early as
-  possible while protecting users.
-- If the vulnerability is actively being exploited, we reserve the right to
-  accelerate disclosure and deployment.
-- We will credit all eligible reporters in our public post-mortem unless
-  anonymity is requested.
+NeuroWealth adheres to a **90-day Coordinated Disclosure** policy:
+- Researchers agree not to publicly disclose vulnerability details, exploit code, or proof-of-concept material until 90 days after initial report acknowledgment, or until an official patch has been deployed to mainnet and mutual consent is reached.
+- In scenarios involving active, in-the-wild exploitation, the security team may accelerate disclosure and deployment timelines to protect users.
+- Public post-mortems will acknowledge the researcher's contribution while detailing the root cause and mitigation strategy.
 
 ---
 
-*This policy is subject to change. Material changes will be announced via the
-repository changelog and the `security@neurowealth.io` mailing list.*
-
-*See also: [`SECURITY.md`](../SECURITY.md) for the full trust model, threat
-analysis, and owner-compromise runbook.*
+*This policy is maintained by the NeuroWealth Security Team. For threat modeling and contract security specifications, refer to [`SECURITY.md`](../SECURITY.md).*

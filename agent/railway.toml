@@ -1,0 +1,23 @@
+# Railway deployment configuration for NeuroWealth AI Agent (#114).
+# https://docs.railway.app/reference/config-as-code
+
+[build]
+# Build using the Dockerfile in the agent/ subdirectory.
+builder = "DOCKERFILE"
+dockerfilePath = "agent/Dockerfile"
+watchPatterns = ["agent/**"]
+
+[deploy]
+# Start command — matches the Procfile and npm start:prod script.
+startCommand = "npm run start:prod"
+
+# Health check: Railway polls this path every 10 s after deploy.
+# If the endpoint does not return HTTP 200 within the timeout, the deploy
+# is marked as failed and Railway rolls back automatically.
+healthcheckPath = "/health/ready"
+healthcheckTimeout = 10
+
+# Restart policy: restart up to 3 times on failure before marking the
+# deployment as unhealthy.
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3

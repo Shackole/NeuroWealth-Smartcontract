@@ -30,12 +30,12 @@ jobs:
       contents: read
     steps:
       - name: Checkout (full history)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       - name: Run gitleaks
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_CONFIG: .gitleaks.toml
@@ -80,7 +80,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Read Stellar CLI version
         id: cli-version
@@ -272,7 +272,7 @@ jobs:
     timeout-minutes: 45
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Run Kani proofs
         uses: model-checking/kani-github-action@v1.1
         with:
@@ -289,7 +289,7 @@ jobs:
       issues: write
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Run cargo-deny
         uses: EmbarkStudios/cargo-deny-action@v2
@@ -308,7 +308,7 @@ jobs:
         # already visible on the PR itself, while a scheduled failure has no
         # PR to surface it and would otherwise go unnoticed.
         if: failure() && github.event_name == 'schedule'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const title = 'Scheduled cargo-deny audit is failing (dependency advisory drift)';
@@ -364,7 +364,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -384,7 +384,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Validate README
         run: bash scripts/check-readme.sh .
@@ -394,7 +394,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Verify access control table accuracy (spec)
         run: bash scripts/check-access-control.sh
@@ -416,9 +416,9 @@ jobs:
       vault_src: ${{ steps.filter.outputs.vault_src }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Check for contract changes
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@v4
         id: filter
         with:
           filters: |
@@ -446,7 +446,7 @@ jobs:
           - agent_update_timelock
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Rust nightly
         uses: dtolnay/rust-toolchain@nightly
@@ -492,7 +492,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Read Stellar CLI version
         id: cli-version
@@ -613,7 +613,7 @@ jobs:
     name: Arithmetic overflow guard
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -644,3 +644,43 @@ jobs:
         run: bash scripts/check_arithmetic.sh
 
       # Summary is written to the GitHub Actions step summary by the script.
+
+  a11y-playwright:
+    name: Accessibility Automated Tests (axe-core via Playwright)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Install Playwright Chromium with system dependencies
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: Build Next.js application
+        working-directory: frontend
+        run: npm run build
+
+      - name: Run axe-core accessibility tests
+        working-directory: frontend
+        run: npm run test:a11y
+
+      - name: Upload Accessibility Report Artifacts (HTML + JSON)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: accessibility-reports
+          path: frontend/accessibility-reports/
+          retention-days: 14
+

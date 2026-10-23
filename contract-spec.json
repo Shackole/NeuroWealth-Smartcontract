@@ -304,11 +304,13 @@
       "requires_auth": true,
       "state_changing": true,
       "events": [
-        "RebalanceEvent"
+        "RebalanceEvent",
+        "RebalancedEvent"
       ],
       "security": "Only authorized agent keypair can call this function",
       "supported_protocols": [
         "blend",
+        "dex",
         "none"
       ],
       "authorized_caller": "agent",
@@ -2171,6 +2173,33 @@
       ]
     },
     {
+      "name": "RebalancedEvent",
+      "topic": "rebal",
+      "description": "Emitted after a completed rebalance call.",
+      "fields": [
+        {
+          "name": "from",
+          "type": "Symbol",
+          "description": "Protocol held before the call"
+        },
+        {
+          "name": "to",
+          "type": "Symbol",
+          "description": "Requested destination protocol"
+        },
+        {
+          "name": "amount",
+          "type": "i128",
+          "description": "Total amount moved during the rebalance"
+        },
+        {
+          "name": "min_out",
+          "type": "i128",
+          "description": "Minimum accepted amount for each protocol leg"
+        }
+      ]
+    },
+    {
       "name": "CompoundEvent",
       "topic": "compound",
       "description": "Emitted by the contract.",
@@ -3423,6 +3452,10 @@
     "VaultError::BatchSizeExceeded": {
       "code": 80,
       "description": "A batch contains more entries than the configured maximum."
+    },
+    "VaultError::OwnerAndAgentMustDiffer": {
+      "code": 83,
+      "description": "Owner and agent must be separate authorities at initialization."
     },
     "ValidationError": {
       "code": 100,

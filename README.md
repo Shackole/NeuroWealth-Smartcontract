@@ -2,6 +2,8 @@ NeuroWealth 💰
 
 AI-Powered DeFi Yield Platform on Stellar
 
+[![Coverage](https://img.shields.io/badge/coverage-80%25-brightgreen)](https://github.com/Shackole/NeuroWealth-Smartcontract/actions/workflows/coverage.yml)
+
 NeuroWealth is an autonomous AI investment agent that automatically manages and grows your crypto assets on the Stellar blockchain. Deposit once, let the AI find the best yield opportunities across Stellar's DeFi ecosystem — and withdraw anytime with no lock-ups.
 
 ## Overview
@@ -18,12 +20,12 @@ Traditional savings accounts offer near-zero interest. Traditional DeFi is too c
 ## Features
 | Feature | Description |
 |---------|------------|
-| 🤖 AI Agent | Autonomous 24/7 yield optimization across Stellar DeFi |
+| 🤖 Agent service | Node.js service scaffolding for vault monitoring, yield evaluation, and transaction workflows; production integrations must be configured and verified per deployment |
 | 💬 Natural Language | Chat to deposit, withdraw, and check balances |
 | 📈 Auto-Rebalancing | Agent shifts funds to best opportunities automatically |
-| 🔐 Non-Custodial | Your funds live in audited Soroban smart contracts |
+| 🔐 Wallet options | The web app uses a non-custodial Freighter wallet; the WhatsApp prototype is custodial and keeps signing keys server-side |
 | ⚡ Instant Withdrawals | No lock-ups, no penalties, withdraw anytime |
-| 📱 WhatsApp Ready | Full functionality through WhatsApp chat interface |
+| 📱 WhatsApp prototype | Webhook and chat flow are present; custodial wallet storage is currently in memory and is not production-durable |
 | 🌍 Global Access | No geographic restrictions, no bank account required |
 | 🛡️ Security First | Soroban contracts protected by strict CEI ordering and access controls |
 
@@ -41,11 +43,13 @@ Conservative — Stablecoin lending on Blend. Low risk, steady 3–6% APY.
 Balanced — Mix of lending + DEX liquidity provision. Medium risk, 6–10% APY.
 Growth — Aggressive multi-protocol deployment. Higher risk, 10–15% APY.
 
-> **Note:** A user's strategy preference (`set_user_strategy` / `get_user_strategy`) is
-> **storage-only** — it has no on-chain effect on `rebalance()` or `deposit()` targeting.
-> The vault pools all funds to a single `CurrentProtocol`. The off-chain AI agent reads
-> the preference and uses it when deciding yield allocation. A user's chosen strategy can
-> therefore diverge from where their share of the pooled funds is actually deployed.
+> **Note:** A user's strategy preference (`set_user_strategy` /
+> `get_user_strategy`) is stored per user but does not direct contract execution.
+> The agent-only `rebalance()` chooses a single protocol for pooled vault funds;
+> when multi-protocol mode is enabled, `rebalance_multi(blend_bps, dex_bps, ..)`
+> takes an explicit vault-wide split. Neither path reads individual user
+> preferences, so a user's preference does not promise a corresponding
+> allocation or segregated position. See [Multi-Protocol Allocation](ARCHITECTURE.md#multi-protocol-allocation-model-phase-2).
 
 
 ## Tech Stack
@@ -147,17 +151,16 @@ NeuroWealth-Smartcontract/
 └── README.md
 ```
 
-### Planned Components
+### Components and implementation status
 
-The following are not yet in this repository and will be added as separate
-directories once development begins:
-
-| Component | Directory | Status |
-|-----------|-----------|--------|
-| AI agent backend (Node.js / Python) | `agent/` | Planned |
-| Next.js web frontend | `frontend/` | Completed (#471, #472) |
-| WhatsApp bot handler | `whatsapp/` | Completed (#469) |
-| PostgreSQL / Supabase schema | `db/` / `supabase/` | Completed (#470) |
+| Component | Location | Current status |
+|-----------|----------|----------------|
+| Soroban vault contract | `neurowealth-vault/contracts/vault/` | Rust workspace and contract implementation; use the deployment and security documentation to distinguish local builds from deployed contracts. |
+| Node.js agent | `agent/` | TypeScript service with API, event listener, queue, and yield modules. External services and network credentials are deployment configuration; some integrations have mock or prototype paths. |
+| Web application | `frontend/` | Next.js application with Freighter wallet connection and Soroban client code. Browser wallet signing is non-custodial. |
+| WhatsApp service | `whatsapp/` | TypeScript webhook and conversation prototype. Wallet records are currently held in process memory, so this is not durable production custody. |
+| Database | `db/schema.sql`, `agent/prisma/`, `supabase/` | SQL schema, Prisma models/migrations, and Supabase assets exist. They are distinct integration paths; review the selected deployment path before applying schema changes. |
+| Shared packages | `packages/` | Vault client, monitoring, admin, bridge, and UI packages. Package presence does not by itself mean the service is deployed or production-integrated. |
 
 ## Getting Started
 
@@ -177,10 +180,13 @@ cargo install --locked stellar-cli --version "$STELLAR_VERSION" --features opt
 
 ### Environment Variables
 
-Copy the template and add your secret key:
+Use the template for the service you are running. Never commit populated
+environment files. See [`docs/ENVIRONMENT_VARIABLES.md`](docs/ENVIRONMENT_VARIABLES.md)
+for names, defaults, secret classifications, and service ownership.
+
 ```bash
 cp .env.devnet.template .env.devnet
-# Edit .env.devnet and set SOROBAN_SECRET_KEY
+# Set a disposable devnet key only when deploying to devnet.
 ```
 
 ### Build the Contract
@@ -207,7 +213,7 @@ cargo test
 
 See [`scripts/README-E2E.md`](scripts/README-E2E.md) for end-to-end devnet validation.
 
-> For the AI agent, frontend, and WhatsApp bot — see [Planned Components](#planned-components) above.
+> For local setup instructions, see [`docs/LOCAL_DEVELOPMENT.md`](docs/LOCAL_DEVELOPMENT.md).
 
 ## Further Reading
 
@@ -215,21 +221,27 @@ See [`scripts/README-E2E.md`](scripts/README-E2E.md) for end-to-end devnet valid
 |----------|---------|
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | Storage layout, share accounting math, asset flow diagrams |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | Development setup, CI requirements, PR process |
+| [`docs/LOCAL_DEVELOPMENT.md`](docs/LOCAL_DEVELOPMENT.md) | Clean-checkout install, local services, ports, build, and teardown |
+| [`docs/ENVIRONMENT_VARIABLES.md`](docs/ENVIRONMENT_VARIABLES.md) | Service-owned environment variables, defaults, and secret handling |
 | [`scripts/README-E2E.md`](scripts/README-E2E.md) | End-to-end devnet test guide |
 | [`SECURITY.md`](SECURITY.md) | Trust model, threat analysis, pause-semantics matrix, and owner-compromise runbook |
 | [`docs/BUG_BOUNTY.md`](docs/BUG_BOUNTY.md) | Bug bounty scope, severity rubric, safe-harbor terms, and payout process |
 | [`docs/MAINNET_CHECKLIST.md`](docs/MAINNET_CHECKLIST.md) | Pre-mainnet deployment checklist |
 | [`docs/DEX_INTEGRATION.md`](docs/DEX_INTEGRATION.md) | DEX strategy behaviour, integration assumptions, and liquidity routing |
 | [`docs/BLEND_INTEGRATION_RESEARCH.md`](docs/BLEND_INTEGRATION_RESEARCH.md) | Blend protocol supply/withdraw design and cross-contract call patterns |
+| [`docs/WITHDRAWAL_LIFECYCLE.md`](docs/WITHDRAWAL_LIFECYCLE.md) | Normal, partial, failed, and emergency withdrawal behavior under low liquidity |
+| [`db/README.md`](db/README.md) | Database migration ownership, ordering, and recovery policy |
 | [`docs/LEAST_PRIVILEGE_AGENT.md`](docs/LEAST_PRIVILEGE_AGENT.md) | Least-privilege evaluation: separate rebalancer vs reporter agent roles (Issue #606) |
 | [`docs/GUARDIAN_KEY_DESIGN.md`](docs/GUARDIAN_KEY_DESIGN.md) | Guardian-key design: second signature for `execute_upgrade` (Issue #607) |
 
 | [`docs/FORMAL_VERIFICATION.md`](docs/FORMAL_VERIFICATION.md) | Kani proofs and share-accounting properties (Issue #672) |
 | [`docs/ACCESSIBILITY.md`](docs/ACCESSIBILITY.md) | WCAG 2.1 AA statement, axe-core CI, and screen-reader checklist (Issue #668) |
 | [`docs/NOTIFICATIONS.md`](docs/NOTIFICATIONS.md) | Web Push, email fallback, and notification preferences (Issue #669) |
+| [`docs/WHATSAPP_USER_GUIDE.md`](docs/WHATSAPP_USER_GUIDE.md) | WhatsApp bot command reference, onboarding flow, example conversations, and FAQ (Issue #71) |
 | [`docs/ERC4626_CONFORMANCE_CHECKLIST.md`](docs/ERC4626_CONFORMANCE_CHECKLIST.md) | ERC-4626 conformance checklist: function-by-function diff against the spec (Issue #602) |
 | [`docs/ISSUER_FREEZE_CONTINGENCY.md`](docs/ISSUER_FREEZE_CONTINGENCY.md) | Operational plan if the vault's USDC or agent wallet is frozen by the issuer (Issue #604) |
 | [`docs/SECRETS_HYGIENE.md`](docs/SECRETS_HYGIENE.md) | Full-history secret scan results and pre-commit/CI enforcement (Issue #605) |
+| [`docs/ROADMAP.md`](docs/ROADMAP.md) | Detailed Phase 2 and Phase 3 product & technical roadmap specifications (Issue #80) |
 
 
 ## Smart Contract
@@ -426,14 +438,19 @@ what is my APY
 
 ## WhatsApp Integration
 
-NeuroWealth is designed to be fully operable through WhatsApp, making it accessible to anyone with a smartphone — no wallet app or browser extension needed.
+The repository includes a WhatsApp webhook and chat-flow prototype. It does not
+currently provide durable custodial wallet storage, so it is not ready to hold
+real user funds. See the custody boundaries in [`SECURITY.md`](SECURITY.md) and
+the [WhatsApp guide](docs/WHATSAPP_USER_GUIDE.md).
 
 ### User Flow
 1. User sends "hi" to NeuroWealth WhatsApp number
 2. Bot introduces itself and asks for phone number verification (OTP)
-3. OTP verified → agent creates a Stellar keypair for this user (custodial)
+3. OTP verified → prototype creates a server-managed Stellar keypair (custodial)
 4. User can now deposit, withdraw, and check balance entirely through chat
-5. Funds are secured in the Soroban vault contract under their wallet address
+5. The intended flow uses the wallet address with the Soroban vault. Do not use
+   the current in-memory prototype for real funds or treat the wallet record as
+   recoverable across service restarts.
 
 ### Setting Up the Webhook
 bash# Your webhook endpoint receives WhatsApp messages
@@ -443,6 +460,10 @@ POST /api/whatsapp/webhook
 # ngrok http 3000  ← for local testing
 
 ### Example Conversation
+
+The following is illustrative product copy, not evidence that the current
+prototype has completed a live transaction or achieved the displayed APY.
+
 User:    deposit 100 USDC
 Agent:   Got it! Depositing 100 USDC into your Balanced strategy.
          This should take about 5 seconds on Stellar... ✅ Done!
@@ -551,6 +572,8 @@ Webhook: Same server as agent, or a separate serverless function
 
 ## Roadmap
 
+> For detailed feature specifications, acceptance criteria, dependencies, and timeline estimates, see [`docs/ROADMAP.md`](docs/ROADMAP.md).
+
 ### Phase 1 — Foundation (Current)
 
  Soroban vault contract (deposit, withdraw, rebalance)
@@ -599,3 +622,11 @@ buckets. `batch_deposit` is also bounded by `set_max_batch_size` (default 50
 entries). See [`ARCHITECTURE.md`](ARCHITECTURE.md) and
 [`SECURITY.md`](SECURITY.md) for defaults, storage, events, and operational
 guidance.
+
+## Handsoff notes
+
+<!-- handsoff-issue-431 -->
+- #431: [Smart contract] Define safe removal rules for assets with outstanding positions
+
+<!-- handsoff-issue-432 -->
+- #432: [Smart contract] Review migration target validation and user authorization

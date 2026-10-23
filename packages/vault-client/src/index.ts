@@ -21,6 +21,9 @@ export {
   type RateLimitConfig,
   type RateLimitState,
 
+  // Asset breakdown (Issue #59) — single-call optimisation
+  type AssetBreakdown,
+
   // Event payload interfaces
   type VaultInitializedEvent,
   type InitFailedEvent,
@@ -75,3 +78,12 @@ export {
 // Event listener
 export { VaultEventListener } from './event-listener';
 export type { EventListenerOptions, EventHandler } from './event-listener';
+export {
+  AMOUNT_DECIMALS,
+  AMOUNT_SCALE,
+  MAX_I128,
+  AmountCodecError,
+  parseAmountToUnits,
+  formatUnitsToAmount,
+} from './amount';
+export type { AmountErrorCode } from './amount';

@@ -1,9 +1,10 @@
 'use client';
 
 import React from 'react';
-import { Bot, Sparkles } from 'lucide-react';
+import { Bot, Sparkles, BarChart3 } from 'lucide-react';
 import { WalletConnect } from './WalletConnect';
 import { LanguageSwitcher } from './LanguageSwitcher';
+import Link from 'next/link';
 
 interface HeaderProps {
   publicKey: string | null;
@@ -41,6 +42,13 @@ export const Header: React.FC<HeaderProps> = ({ publicKey, onConnect, onDisconne
           <a href="#strategies" className="hover:text-emerald-400 transition-colors">Strategies</a>
           <a href="#history" className="hover:text-emerald-400 transition-colors">Transactions</a>
           <a href="#whatsapp" className="hover:text-emerald-400 transition-colors">WhatsApp Bot</a>
+          <Link
+            href="/stats"
+            className="flex items-center gap-1.5 hover:text-emerald-400 transition-colors"
+          >
+            <BarChart3 size={14} />
+            Vault Stats
+          </Link>
         </nav>
 
         {/* Wallet Connection & Language */}

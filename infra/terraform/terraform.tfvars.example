@@ -1,0 +1,24 @@
+# Example variable values — copy to terraform.tfvars and fill in real values.
+# terraform.tfvars is gitignored; never commit real credentials.
+
+aws_region   = "us-east-1"
+environment  = "production"
+project_name = "neurowealth"
+
+# Railway
+railway_token    = "REPLACE_WITH_RAILWAY_API_TOKEN"
+railway_repo_url = "https://github.com/julianajohn7202-stack/NeuroWealth-Smartcontract"
+
+# S3 backup bucket — must be globally unique
+backup_bucket_name    = "neurowealth-db-backups"
+backup_retention_days = 365
+
+# KMS key for custodial Stellar keypairs
+kms_key_alias               = "neurowealth-custodial-keys"
+kms_deletion_window_in_days = 30
+
+# CloudWatch alarm notifications
+alert_email = "ops@example.com"
+
+# Terraform state backend
+tf_lock_table = "neurowealth-tf-lock"

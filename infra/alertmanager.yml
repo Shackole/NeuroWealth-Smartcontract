@@ -1,0 +1,75 @@
+# NeuroWealth — Alertmanager Configuration
+#
+# Referenced by infra/docker-compose.monitoring.yml
+#
+# Configure your notification receivers below. Replace the placeholder
+# webhook/Slack/PagerDuty values with real endpoints before deploying to
+# production. Secrets should be injected via environment variables or a
+# secrets manager, not committed to version control.
+
+global:
+  resolve_timeout: 5m
+  # smtp_smarthost: 'smtp.example.com:587'
+  # smtp_from: 'alerts@neurowealth.io'
+
+route:
+  receiver: "default"
+  group_by: ["alertname", "severity"]
+  group_wait:      30s
+  group_interval:  5m
+  repeat_interval: 4h
+
+  routes:
+    # Critical alerts page immediately with a short repeat interval
+    - matchers:
+        - severity = critical
+      receiver: "critical"
+      group_wait: 10s
+      repeat_interval: 30m
+
+    # Warning alerts go to the general channel
+    - matchers:
+        - severity = warning
+      receiver: "warning"
+      repeat_interval: 2h
+
+receivers:
+
+  - name: "default"
+    webhook_configs:
+      - url: "${ALERT_WEBHOOK_URL:-http://localhost:9999/webhook}"
+        send_resolved: true
+
+  - name: "critical"
+    webhook_configs:
+      - url: "${CRITICAL_WEBHOOK_URL:-http://localhost:9999/critical}"
+        send_resolved: true
+    # Uncomment and configure for Slack:
+    # slack_configs:
+    #   - api_url: "${SLACK_WEBHOOK_URL}"
+    #     channel: "#neurowealth-alerts-critical"
+    #     title: '[{{ .Status | toUpper }}] {{ .CommonLabels.alertname }}'
+    #     text: '{{ range .Alerts }}{{ .Annotations.description }}{{ end }}'
+    #     send_resolved: true
+    # Uncomment and configure for PagerDuty:
+    # pagerduty_configs:
+    #   - routing_key: "${PAGERDUTY_ROUTING_KEY}"
+    #     description: '{{ .CommonAnnotations.summary }}'
+
+  - name: "warning"
+    webhook_configs:
+      - url: "${WARNING_WEBHOOK_URL:-http://localhost:9999/warning}"
+        send_resolved: true
+    # slack_configs:
+    #   - api_url: "${SLACK_WEBHOOK_URL}"
+    #     channel: "#neurowealth-alerts"
+    #     send_resolved: true
+
+inhibit_rules:
+  # Suppress warning-level alerts when a critical alert for the same
+  # service is already firing
+  - source_matchers:
+      - severity = critical
+    target_matchers:
+      - severity = warning
+    equal: ["alertname"]

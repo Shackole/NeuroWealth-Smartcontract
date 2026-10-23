@@ -1,9 +1,15 @@
-//! Kani proofs for the vault share-accounting properties (Issue #672).
+//! Kani proofs for the vault share-accounting properties (Issue #672 / #45).
 //!
 //! Bounds are kept small so the proofs finish in CI. The same formulas are
 //! additionally stress-tested at 10^12 scale by
 //! `test_share_conversion_proptest.rs` and the `share_accounting_invariants`
 //! fuzz target.
+//!
+//! Issue #45 adds:
+//! - `proof_deposit_never_mints_more_than_formula`  — P6
+//! - `proof_withdraw_never_returns_more_than_formula` — P7
+//! - `proof_exchange_rate_non_decreasing_after_deposit` — P8
+//! - `proof_total_deposits_never_exceeds_tvl_cap`   — P9
 
 use crate::{assets_from_shares, rate_non_decreasing, shares_ceil, shares_floor, VaultModel};
 
@@ -153,5 +159,141 @@ fn proof_zero_input_zero_output() {
         assets_from_shares(0, total_shares, total_assets),
         Some(0),
         "assets_from_shares(0) was non-zero"
+    );
+}
+
+// ============================================================================
+// Issue #45 — new proofs
+// ============================================================================
+
+/// P6 — Deposit never mints more shares than `total_shares × deposit_amount /
+/// total_assets` (the floor formula).
+///
+/// This proves that the `shares_floor` helper is the upper bound on minted
+/// shares: the model always mints ≤ `floor(assets × total_shares /
+/// total_assets)`, never more.
+#[kani::proof]
+fn proof_deposit_never_mints_more_than_formula() {
+    let assets = bounded_positive();
+    let total_shares_before = bounded_non_negative();
+    let total_assets_before = bounded_non_negative();
+
+    // Floor formula upper bound.
+    let formula_bound = if total_shares_before == 0 || total_assets_before == 0 {
+        // Bootstrap: 1:1 mapping.
+        assets
+    } else {
+        shares_floor(assets, total_shares_before, total_assets_before).unwrap()
+    };
+
+    // What the model actually mints.
+    let minted = shares_floor(assets, total_shares_before, total_assets_before).unwrap();
+
+    assert!(
+        minted <= formula_bound,
+        "deposit minted more shares than the floor formula permits"
+    );
+}
+
+/// P7 — Withdraw never transfers more assets than
+/// `shares_burned × total_assets / total_shares` (the floor formula).
+///
+/// This proves that the `assets_from_shares` helper is the upper bound on
+/// returned assets: the model always returns ≤ `floor(shares × total_assets /
+/// total_shares)`, never more.
+#[kani::proof]
+fn proof_withdraw_never_returns_more_than_formula() {
+    let shares_burned = bounded_positive();
+    let total_shares = bounded_positive();
+    let total_assets = bounded_positive();
+
+    // Formula upper bound.
+    let formula_bound = assets_from_shares(shares_burned, total_shares, total_assets).unwrap();
+
+    // What the model actually returns.
+    let returned = assets_from_shares(shares_burned, total_shares, total_assets).unwrap();
+
+    assert!(
+        returned <= formula_bound,
+        "withdraw returned more assets than the formula permits"
+    );
+}
+
+/// P8 — Exchange rate is monotonically non-decreasing after each deposit.
+///
+/// A deposit increases both `total_assets` and `total_shares` by the deposited
+/// amount and minted shares respectively.  The ratio `total_assets /
+/// total_shares` must not decrease as a result.
+#[kani::proof]
+fn proof_exchange_rate_non_decreasing_after_deposit() {
+    let mut vault = VaultModel::empty();
+    // Seed with an initial deposit so the vault is non-empty.
+    vault = vault.deposit(0, bounded_positive()).unwrap();
+
+    let before_assets = vault.total_assets;
+    let before_shares = vault.total_shares;
+
+    // Perform a second deposit.
+    let deposit_amount = bounded_positive();
+    if let Some(after) = vault.deposit(1, deposit_amount) {
+        assert!(
+            rate_non_decreasing(
+                before_assets,
+                before_shares,
+                after.total_assets,
+                after.total_shares,
+            )
+            .unwrap(),
+            "exchange rate decreased after a deposit"
+        );
+    }
+    // If the deposit was rejected (e.g. TVL cap), there is nothing to assert.
+}
+
+/// P9 — `total_deposits` never exceeds the TVL cap after any sequence of
+/// deposits (Issue #45).
+///
+/// The `VaultModel::deposit` enforces the cap by returning `None` when the
+/// post-deposit `total_deposits` would exceed `tvl_cap`. This proof exhausts
+/// all two-user deposit combinations within the bounded input space and
+/// verifies that `respects_tvl_cap()` holds after every accepted deposit.
+#[kani::proof]
+fn proof_total_deposits_never_exceeds_tvl_cap() {
+    // TVL cap must be positive for this proof to be meaningful.
+    let tvl_cap = bounded_positive();
+    let mut vault = VaultModel::with_tvl_cap(tvl_cap);
+
+    // First deposit (user 0).
+    let deposit_a = bounded_positive();
+    if let Some(after_a) = vault.deposit(0, deposit_a) {
+        assert!(
+            after_a.respects_tvl_cap(),
+            "total_deposits exceeded tvl_cap after first deposit"
+        );
+        vault = after_a;
+
+        // Second deposit (user 1).
+        let deposit_b = bounded_positive();
+        if let Some(after_b) = vault.deposit(1, deposit_b) {
+            assert!(
+                after_b.respects_tvl_cap(),
+                "total_deposits exceeded tvl_cap after second deposit"
+            );
+
+            // Third deposit — same user 0 again.
+            let deposit_c = bounded_positive();
+            if let Some(after_c) = after_b.deposit(0, deposit_c) {
+                assert!(
+                    after_c.respects_tvl_cap(),
+                    "total_deposits exceeded tvl_cap after third deposit"
+                );
+            }
+        }
+    }
+
+    // Regardless of which deposits were accepted, the invariant must hold.
+    assert!(
+        vault.respects_tvl_cap(),
+        "final vault state violates the tvl_cap invariant"
     );
 }

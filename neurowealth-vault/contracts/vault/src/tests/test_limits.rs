@@ -222,6 +222,40 @@ fn test_deposit_enforces_user_cap() {
 }
 
 #[test]
+fn test_batch_deposit_enforces_user_cap_across_entries() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (contract_id, _agent, _owner, usdc_token) = setup_vault_with_token(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+    let token = TestTokenClient::new(&env, &usdc_token);
+    let cap = 10_000_000_i128;
+    let user = Address::generate(&env);
+    client.set_user_deposit_cap(&cap);
+    token.mint(&user, &11_000_000_i128);
+
+    let mut entries = soroban_sdk::Vec::new(&env);
+    entries.push_back((usdc_token.clone(), 3_000_000_i128));
+    entries.push_back((usdc_token.clone(), 3_000_000_i128));
+    client.batch_deposit(&user, &entries);
+    assert_eq!(client.get_total_assets(), 6_000_000_i128);
+    assert_eq!(client.get_shares(&user), 6_000_000_i128);
+
+    let mut over_cap_entries = soroban_sdk::Vec::new(&env);
+    over_cap_entries.push_back((usdc_token.clone(), 2_500_000_i128));
+    over_cap_entries.push_back((usdc_token, 2_500_000_i128));
+
+    let result = client.try_batch_deposit(&user, &over_cap_entries);
+    assert_eq!(
+        result,
+        Err(Ok(soroban_sdk::Error::from_contract_error(40))),
+        "multiple individually-small entries must not exceed the user cap"
+    );
+    assert_eq!(client.get_shares(&user), 6_000_000_i128);
+    assert_eq!(token.balance(&contract_id), 6_000_000_i128);
+}
+
+#[test]
 fn test_tvl_cap_zero_means_unlimited() {
     let env = Env::default();
     env.mock_all_auths();

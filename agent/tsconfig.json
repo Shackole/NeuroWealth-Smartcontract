@@ -4,11 +4,12 @@
     "module": "commonjs",
     "rootDir": "./src",
     "outDir": "./dist",
-    "types": ["node", "mocha"],
+    "types": ["node", "mocha", "jest"],
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "strict": true,
     "skipLibCheck": true
   },
-  "include": ["src/**/*"]
+  "include": ["src/**/*"],
+  "exclude": ["src/**/*.test.ts", "src/**/*.spec.ts"]
 }

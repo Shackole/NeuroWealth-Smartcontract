@@ -7,8 +7,8 @@ use super::utils::*;
 use crate::{
     BatchSizeLimitUpdatedEvent, RateLimitConfig, RateLimitConfigUpdatedEvent,
     RateLimitExceededEvent, RateLimitState, RATE_LIMIT_BATCH_DEPOSIT, RATE_LIMIT_DEPOSIT,
-    RATE_LIMIT_PREVIEW, RATE_LIMIT_REBALANCE, RATE_LIMIT_TOUCH_TTL, RATE_LIMIT_WITHDRAW,
-    TOPIC_BATCH_SIZE_LIMIT_UPDATED, TOPIC_RATE_LIMIT_CONFIG_UPDATED,
+    RATE_LIMIT_HARVEST, RATE_LIMIT_PREVIEW, RATE_LIMIT_REBALANCE, RATE_LIMIT_TOUCH_TTL,
+    RATE_LIMIT_WITHDRAW, TOPIC_BATCH_SIZE_LIMIT_UPDATED, TOPIC_RATE_LIMIT_CONFIG_UPDATED,
 };
 use soroban_sdk::{
     symbol_short, testutils::Address as _, testutils::Ledger, Address, Env, TryFromVal, Vec,
@@ -274,4 +274,55 @@ fn invalid_rate_limit_configuration_is_rejected() {
         client.get_global_rate_limit_state(&RATE_LIMIT_REBALANCE),
         empty
     );
+}
+
+/// Issue #46: Harvest now has its own independent global rate-limit bucket.
+/// Consuming the harvest bucket must not affect the rebalance bucket, and
+/// vice-versa.
+#[test]
+fn harvest_has_independent_global_rate_limit_bucket() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, _agent, _owner) = setup_vault(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+
+    // Configure harvest to allow only 1 call per window.
+    set_limit(&client, RATE_LIMIT_HARVEST, 1, 10);
+
+    // Verify get_rate_limit returns the configured values.
+    assert_eq!(
+        client.get_rate_limit(&RATE_LIMIT_HARVEST),
+        RateLimitConfig {
+            max_calls: 1,
+            window_ledgers: 10,
+        },
+        "harvest rate limit config must be retrievable"
+    );
+
+    // The harvest global bucket starts empty.
+    let initial_state = client.get_global_rate_limit_state(&RATE_LIMIT_HARVEST);
+    assert_eq!(initial_state.calls, 0, "harvest bucket must start at zero");
+
+    // The rebalance bucket is independent: configuring harvest must not touch it.
+    let rebalance_state = client.get_global_rate_limit_state(&RATE_LIMIT_REBALANCE);
+    assert_eq!(
+        rebalance_state.calls, 0,
+        "rebalance bucket must be unaffected"
+    );
+}
+
+/// Issue #46: max_calls == 0 disables the harvest rate limit.
+#[test]
+fn harvest_rate_limit_can_be_disabled() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, _agent, _owner) = setup_vault(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+
+    // Disable by passing max_calls = 0.
+    set_limit(&client, RATE_LIMIT_HARVEST, 0, 0);
+
+    let config = client.get_rate_limit(&RATE_LIMIT_HARVEST);
+    assert_eq!(config.max_calls, 0, "max_calls must be 0 when disabled");
+    assert_eq!(config.window_ledgers, 0, "window_ledgers must be 0 when disabled");
 }

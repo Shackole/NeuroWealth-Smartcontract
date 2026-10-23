@@ -449,3 +449,312 @@ fn test_blend_and_shared_ttl_setters_share_audit_trail() {
     assert_eq!(event.old_ttl, 50_000);
     assert_eq!(event.new_ttl, 20_000);
 }
+
+// ─── Near-expiry renewal (#57) ────────────────────────────────────────────────
+//
+// Approvals must be renewed before rebalance/harvest when the existing
+// approval is within APPROVAL_RENEWAL_THRESHOLD (1 000) ledgers of expiry.
+
+use crate::APPROVAL_RENEWAL_THRESHOLD;
+
+/// When the stored Blend approval is within the renewal threshold, a call to
+/// `rebalance("blend", ...)` must refresh the approval to a full TTL window
+/// before the supply call executes.
+#[test]
+fn test_blend_approval_renewed_near_expiry_on_rebalance() {
+    let env = Env::default();
+    let configured_ttl = 5_000_u32;
+    let (contract_id, _usdc_token, blend_pool, client, token_client) =
+        setup_blend_position(&env, Some(configured_ttl));
+
+    // Issue the first approval via rebalance.
+    let seq0 = env.ledger().sequence();
+    client.rebalance(&symbol_short!("blend"), &700_i128, &0_i128);
+    let expiry_after_first = token_client.allowance_expiration(&contract_id, &blend_pool);
+    assert_eq!(expiry_after_first, seq0 + configured_ttl, "first approval set");
+
+    // Advance to just within the renewal threshold (expiry - threshold + 1).
+    let near_expiry_ledger = expiry_after_first - APPROVAL_RENEWAL_THRESHOLD + 1;
+    env.ledger().set_sequence_number(near_expiry_ledger);
+
+    // A rebalance at this point must renew the approval.
+    client.rebalance(&symbol_short!("blend"), &700_i128, &0_i128);
+
+    let expiry_after_renewal = token_client.allowance_expiration(&contract_id, &blend_pool);
+    // The renewed expiry must be at least near_expiry_ledger + configured_ttl.
+    assert!(
+        expiry_after_renewal >= near_expiry_ledger + configured_ttl,
+        "approval must be renewed to a full TTL window; got expiry {} at ledger {}",
+        expiry_after_renewal,
+        near_expiry_ledger
+    );
+}
+
+/// When the stored Blend approval still has more than APPROVAL_RENEWAL_THRESHOLD
+/// ledgers remaining, rebalance must NOT issue a fresh approval (the existing
+/// approval already covers the window).
+#[test]
+fn test_blend_approval_not_renewed_when_still_valid() {
+    let env = Env::default();
+    let configured_ttl = 50_000_u32;
+    let (contract_id, _usdc_token, blend_pool, client, token_client) =
+        setup_blend_position(&env, Some(configured_ttl));
+
+    // Issue the first approval.
+    let seq0 = env.ledger().sequence();
+    client.rebalance(&symbol_short!("blend"), &700_i128, &0_i128);
+    let expiry_after_first = token_client.allowance_expiration(&contract_id, &blend_pool);
+    assert_eq!(expiry_after_first, seq0 + configured_ttl);
+
+    // Advance to well before the renewal threshold.
+    let safe_ledger = expiry_after_first - APPROVAL_RENEWAL_THRESHOLD - 1_000;
+    env.ledger().set_sequence_number(safe_ledger);
+
+    // Rebalance — renewal guard should NOT fire.
+    client.rebalance(&symbol_short!("blend"), &700_i128, &0_i128);
+
+    // The supply_to_blend call always refreshes the approval, but the renewal
+    // guard itself should not have fired an independent approval at this point.
+    // The post-rebalance expiry will be safe_ledger + configured_ttl (from
+    // supply_to_blend's own approve call).
+    let expiry_after = token_client.allowance_expiration(&contract_id, &blend_pool);
+    assert_eq!(
+        expiry_after,
+        safe_ledger + configured_ttl,
+        "expiry should be set by supply_to_blend's own approve call"
+    );
+}
+
+/// When the stored DEX approval is within the renewal threshold, a call to
+/// `rebalance("dex", ...)` must refresh the approval to a full TTL window.
+#[test]
+fn test_dex_approval_renewed_near_expiry_on_rebalance() {
+    let env = Env::default();
+    let configured_ttl = 5_000_u32;
+    let (contract_id, _usdc_token, dex_pool, client, token_client) =
+        setup_dex_position(&env, Some(configured_ttl));
+
+    // Issue first approval.
+    let seq0 = env.ledger().sequence();
+    client.rebalance(&symbol_short!("dex"), &700_i128, &0_i128);
+    let expiry_after_first = token_client.allowance_expiration(&contract_id, &dex_pool);
+    assert_eq!(expiry_after_first, seq0 + configured_ttl);
+
+    // Advance to just within the renewal threshold.
+    let near_expiry_ledger = expiry_after_first - APPROVAL_RENEWAL_THRESHOLD + 1;
+    env.ledger().set_sequence_number(near_expiry_ledger);
+
+    client.rebalance(&symbol_short!("dex"), &700_i128, &0_i128);
+
+    let expiry_after_renewal = token_client.allowance_expiration(&contract_id, &dex_pool);
+    assert!(
+        expiry_after_renewal >= near_expiry_ledger + configured_ttl,
+        "DEX approval must be renewed near expiry; got expiry {} at ledger {}",
+        expiry_after_renewal,
+        near_expiry_ledger
+    );
+}
+
+/// harvest() with an active Blend position must also trigger a near-expiry
+/// renewal when the approval is within the threshold.
+#[test]
+fn test_blend_approval_renewed_near_expiry_on_harvest() {
+    let env = Env::default();
+    let configured_ttl = 5_000_u32;
+    let (contract_id, _usdc_token, blend_pool, client, token_client) =
+        setup_blend_position(&env, Some(configured_ttl));
+
+    // Deploy funds via rebalance to set up a Blend position.
+    let seq0 = env.ledger().sequence();
+    client.rebalance(&symbol_short!("blend"), &700_i128, &0_i128);
+    let expiry_after_rebalance = token_client.allowance_expiration(&contract_id, &blend_pool);
+    assert_eq!(expiry_after_rebalance, seq0 + configured_ttl);
+
+    // Advance to just within the renewal threshold.
+    let near_expiry_ledger = expiry_after_rebalance - APPROVAL_RENEWAL_THRESHOLD + 1;
+    env.ledger().set_sequence_number(near_expiry_ledger);
+
+    // harvest() must trigger the renewal.
+    client.harvest(&0_i128);
+
+    let expiry_after_harvest = token_client.allowance_expiration(&contract_id, &blend_pool);
+    assert!(
+        expiry_after_harvest >= near_expiry_ledger + configured_ttl,
+        "Blend approval must be renewed by harvest near expiry; got expiry {} at ledger {}",
+        expiry_after_harvest,
+        near_expiry_ledger
+    );
+}
+
+#[test]
+fn test_legacy_approval_ttl_rejects_values_above_maximum() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, _agent, owner) = setup_vault(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+
+    assert_eq!(
+        client.try_set_blend_approval_ttl(&owner, &500_001_u32),
+        Err(Ok(soroban_sdk::Error::from_contract_error(45))),
+        "legacy TTL setter must enforce the same maximum as the shared setter"
+    );
+}
+
+#[test]
+fn test_partial_blend_supply_clears_unspent_allowance() {
+    let env = Env::default();
+    let ttl = 2_000_u32;
+    let (contract_id, _usdc_token, blend_pool, client, token_client) =
+        setup_blend_position(&env, Some(ttl));
+    MockBlendPoolClient::new(&env, &blend_pool).set_max_supply_limit(&2_000_000_i128);
+
+    let sequence = env.ledger().sequence();
+    client.rebalance(&symbol_short!("blend"), &700_i128, &0_i128);
+
+    assert_eq!(
+        token_client.allowance(&contract_id, &blend_pool),
+        0,
+        "unused allowance from a partial Blend supply must be cleared"
+    );
+    assert_eq!(
+        token_client.allowance_expiration(&contract_id, &blend_pool),
+        sequence + ttl,
+        "the recorded expiration must remain the bounded configured ledger"
+    );
+}
+
+#[test]
+fn test_partial_dex_supply_clears_unspent_allowance() {
+    let env = Env::default();
+    let ttl = 2_000_u32;
+    let (contract_id, _usdc_token, dex_pool, client, token_client) =
+        setup_dex_position(&env, Some(ttl));
+    MockDexPoolClient::new(&env, &dex_pool).set_max_supply_limit(&2_000_000_i128);
+
+    let sequence = env.ledger().sequence();
+    client.rebalance(&symbol_short!("dex"), &700_i128, &0_i128);
+
+    assert_eq!(
+        token_client.allowance(&contract_id, &dex_pool),
+        0,
+        "unused allowance from a partial DEX supply must be cleared"
+    );
+    assert_eq!(
+        token_client.allowance_expiration(&contract_id, &dex_pool),
+        sequence + ttl,
+        "the recorded expiration must remain the bounded configured ledger"
+    );
+}
+
+#[test]
+fn test_failed_blend_supply_rolls_back_allowance_and_funds() {
+    let env = Env::default();
+    let (contract_id, usdc_token, blend_pool, client, token_client) =
+        setup_blend_position(&env, Some(2_000_u32));
+    let pool_client = MockBlendPoolClient::new(&env, &blend_pool);
+    pool_client.set_max_supply_limit(&2_000_000_i128);
+
+    let result = client.try_rebalance(&symbol_short!("blend"), &700_i128, &5_000_000_i128);
+
+    assert_eq!(
+        result,
+        Err(Ok(soroban_sdk::Error::from_contract_error(42))),
+        "a Blend supply below min_out must fail"
+    );
+    assert_eq!(token_client.allowance(&contract_id, &blend_pool), 0);
+    assert_eq!(token_client.balance(&contract_id), 10_000_000_i128);
+    assert_eq!(pool_client.supplied(&usdc_token), 0);
+}
+
+#[test]
+fn test_failed_dex_supply_rolls_back_allowance_and_funds() {
+    let env = Env::default();
+    let (contract_id, usdc_token, dex_pool, client, token_client) =
+        setup_dex_position(&env, Some(2_000_u32));
+    let pool_client = MockDexPoolClient::new(&env, &dex_pool);
+    pool_client.set_max_supply_limit(&2_000_000_i128);
+
+    let result = client.try_rebalance(&symbol_short!("dex"), &700_i128, &5_000_000_i128);
+
+    assert_eq!(
+        result,
+        Err(Ok(soroban_sdk::Error::from_contract_error(42))),
+        "a DEX supply below min_out must fail"
+    );
+    assert_eq!(token_client.allowance(&contract_id, &dex_pool), 0);
+    assert_eq!(token_client.balance(&contract_id), 10_000_000_i128);
+    assert_eq!(pool_client.balance(&usdc_token, &contract_id), 0);
+}
+
+#[test]
+fn test_blend_pool_replacement_revokes_retired_pool_allowance() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, _agent, owner, usdc_token, old_pool) =
+        setup_vault_with_token_and_blend(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+    let token_client = TestTokenClient::new(&env, &usdc_token);
+    client.set_blend_pool(&owner, &old_pool);
+
+    token_client.approve(
+        &contract_id,
+        &old_pool,
+        &1_000_000_i128,
+        &env.ledger().sequence().saturating_add(10_000),
+    );
+    let new_pool = env.register_contract(None, MockBlendPool);
+    client.set_blend_pool(&owner, &new_pool);
+
+    assert_eq!(token_client.allowance(&contract_id, &old_pool), 0);
+}
+
+#[test]
+fn test_dex_pool_replacement_revokes_retired_pool_allowance() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, _agent, owner, usdc_token, old_pool) =
+        setup_vault_with_token_and_dex(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+    let token_client = TestTokenClient::new(&env, &usdc_token);
+    client.set_dex_pool(&owner, &old_pool);
+
+    token_client.approve(
+        &contract_id,
+        &old_pool,
+        &1_000_000_i128,
+        &env.ledger().sequence().saturating_add(10_000),
+    );
+    let new_pool = env.register_contract(None, MockDexPool);
+    client.set_dex_pool(&owner, &new_pool);
+
+    assert_eq!(token_client.allowance(&contract_id, &old_pool), 0);
+}
+
+#[test]
+fn test_emergency_withdraw_revokes_pool_allowances() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, _agent, owner, usdc_token, blend_pool) =
+        setup_vault_with_token_and_blend(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+    let token_client = TestTokenClient::new(&env, &usdc_token);
+    client.set_blend_pool(&owner, &blend_pool);
+
+    let user = Address::generate(&env);
+    mint_and_deposit(&env, &client, &usdc_token, &user, 5_000_000_i128);
+    token_client.approve(
+        &contract_id,
+        &blend_pool,
+        &1_000_000_i128,
+        &env.ledger().sequence().saturating_add(10_000),
+    );
+
+    client.pause(&owner);
+    client.emergency_withdraw(&user, &1_000_000_i128);
+
+    assert_eq!(
+        token_client.allowance(&contract_id, &blend_pool),
+        0,
+        "emergency exit must revoke lingering pool spend authority"
+    );
+}

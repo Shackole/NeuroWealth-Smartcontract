@@ -1,5 +1,11 @@
 # NeuroWealth Vault Error Message Style Guide
 
+> **Full error-code reference**: [`docs/ERROR_CODES.md`](docs/ERROR_CODES.md)
+> contains every `VaultError` variant with its numeric code, category
+> (User / Agent / Owner / System), description, trigger conditions, and
+> resolution steps, plus a copy-ready TypeScript `VAULT_ERROR_MAP` for
+> frontend consumers (Issue #13).
+
 This document defines the standardized error codes and legacy wording for
 failures in the NeuroWealth Vault contract.
 
@@ -90,6 +96,7 @@ Where:
 | 64 | `AgentCannotBeZeroAddress` | `vault: agent cannot be zero address` |
 | 65 | `UsdcTokenCannotBeZeroAddress` | `vault: usdc token cannot be zero address` |
 | 66 | `MaximumDepositExceedsCeiling` | `vault: maximum deposit exceeds ceiling` |
+| 83 | `OwnerAndAgentMustDiffer` | `vault: owner and agent must be separate authorities` |
 
 ## Error Categories
 
