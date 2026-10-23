@@ -12,6 +12,44 @@ export const server = getRpcServer();
 
 const VAULT_CONTRACT_ID = process.env.VAULT_CONTRACT_ID || '';
 
+/**
+ * How far back to look when no durable checkpoint exists yet. Soroban RPC
+ * retains events for a limited window; if the persisted cursor is older than
+ * the oldest ledger the RPC still serves, we fall back to this window and log
+ * an explicit recovery warning instead of silently skipping events.
+ */
+const DEFAULT_LOOKBACK_LEDGERS = Number(process.env.EVENT_LOOKBACK_LEDGERS || 1000);
+
+/** Page size requested from Soroban RPC `getEvents`. */
+const EVENT_PAGE_LIMIT = 100;
+
+/**
+ * Safety bound on pages drained per poll so a single tick cannot loop
+ * unboundedly if the RPC keeps returning a cursor. Each page is committed
+ * before the next is fetched, so a stop here resumes from the last cursor.
+ */
+const MAX_PAGES_PER_POLL = Number(process.env.EVENT_MAX_PAGES_PER_POLL || 1000);
+
+/**
+ * Schema version this listener understands. Soroban vault events carry a
+ * versioned topic so the ingestion path can reject payloads it cannot decode
+ * instead of guessing at their shape.
+ */
+const SUPPORTED_EVENT_SCHEMA_VERSION = 1;
+
+/**
+ * Decoded vault event. `amount` is expressed in the asset's smallest unit
+ * (stroops for XLM, base units for issued assets) exactly as emitted on-chain;
+ * `address` is the depositor/withdrawer account or contract address.
+ */
+export interface DecodedVaultEvent {
+  type: 'deposit' | 'withdraw';
+  schemaVersion: number;
+  address: string;
+  amount: bigint;
+  asset: string;
+}
+
 let eventInterval: ReturnType<typeof setInterval> | null = null;
 
 export function stopEventListener() {
@@ -25,6 +63,10 @@ export function stopEventListener() {
 /**
  * Listens for on-chain deposit and withdraw events from the vault contract.
  * Detects new deposits within 5 seconds and triggers yield deployment.
+ *
+ * The last committed cursor is persisted so restarts resume ingestion from
+ * where they left off rather than only from the newest ledger. Each poll
+ * drains every result page for the window before advancing the checkpoint.
  */
 export async function startEventListener() {
   if (!VAULT_CONTRACT_ID) {
@@ -34,61 +76,17 @@ export async function startEventListener() {
 
   try {
     const latestLedgerResponse = await withRetry(
-      () => rpcCall((s) => s.getLatestLedger(), { retryOnFallback: true }),
+      () => rpcCall((s) => s.getLatestLedger()),
       'getLatestLedger',
     );
-    let startLedger = latestLedgerResponse.sequence;
-    logger.info({ startLedger }, 'Starting event listener');
+    const latestLedger = latestLedgerResponse.sequence;
+
+    let startLedger = await resolveStartLedger(latestLedger);
+    logger.info({ startLedger, latestLedger }, 'Starting event listener');
 
     eventInterval = setInterval(async () => {
       try {
-        const response = await withRetry(
-          () => rpcCall((s) => s.getEvents({
-            startLedger,
-            filters: [
-              {
-                type: 'contract',
-                contractIds: [VAULT_CONTRACT_ID],
-              }
-            ],
-            limit: 100,
-          }), { retryOnFallback: true }),
-          'getEvents',
-        );
-
-        for (const event of response.events) {
-          const topics = event.topic.map(t => t.toString());
-          let eventType = '';
-
-          if (topics.some(t => t.includes('deposit'))) {
-            eventType = 'deposit';
-          } else if (topics.some(t => t.includes('withdraw'))) {
-            eventType = 'withdraw';
-          }
-
-          if (!eventType) continue;
-
-          logger.info({ eventType, ledger: event.ledger }, 'Detected event');
-
-          await logEventToDb(eventType, event.id, event.ledger);
-
-          if (eventType === 'deposit') {
-            logger.info('New deposit detected, evaluating yield');
-            const userStrategy = 'balanced';
-            const currentProtocol = 'none';
-
-            const decision = await evaluateYield(userStrategy, currentProtocol, 0);
-
-            if (decision.shouldRebalance) {
-              logger.info({ targetProtocol: decision.targetProtocol }, 'Rebalance needed');
-            }
-          }
-
-          const alertPayload = { type: eventType, amount: 150000 };
-          await processEventForAlerts(alertPayload);
-
-          startLedger = Math.max(startLedger, event.ledger + 1);
-        }
+        startLedger = await drainEventPages(startLedger);
       } catch (error) {
         logger.error({ error: error instanceof Error ? error.message : error }, 'Error polling Soroban events');
       }
@@ -99,15 +97,301 @@ export async function startEventListener() {
   }
 }
 
+/**
+ * Fetch and process every result page for the current ledger window.
+ *
+ * Soroban RPC caps `getEvents` at `limit` results per call and returns a
+ * `cursor` for the next page. We follow that cursor until the RPC reports no
+ * more pages, processing each event exactly once (deduped by event id) and
+ * advancing the persisted checkpoint only after the whole window is drained.
+ * If a page fails, the checkpoint stays at the last committed cursor so the
+ * next poll resumes from there.
+ *
+ * Returns the ledger to resume from on the next poll.
+ */
+async function drainEventPages(startLedger: number): Promise<number> {
+  let cursor: string | undefined;
+  let nextLedger = startLedger;
+  const seenEventIds = new Set<string>();
+
+  for (let page = 0; page < MAX_PAGES_PER_POLL; page++) {
+    const response = await withRetry(
+      () => rpcCall((s) => s.getEvents({
+        startLedger,
+        ...(cursor ? { cursor } : {}),
+        filters: [
+          {
+            type: 'contract',
+            contractIds: [VAULT_CONTRACT_ID],
+          }
+        ],
+        limit: EVENT_PAGE_LIMIT,
+      })),
+      'getEvents',
+    );
+
+    for (const event of response.events) {
+      // Dedupe across pages so an event is processed once logically even if
+      // the RPC re-serves it while paginating.
+      if (seenEventIds.has(event.id)) continue;
+      seenEventIds.add(event.id);
+
+      // Decode the typed topics/values against the vault event schema. A
+      // malformed or unsupported event is isolated to this event: it is
+      // logged and skipped so it cannot crash ingestion or corrupt other
+      // alerts, and the checkpoint still advances past it.
+      let decoded: DecodedVaultEvent | null;
+      try {
+        decoded = decodeVaultEvent(event);
+      } catch (error) {
+        logger.warn(
+          { eventId: event.id, ledger: event.ledger, error: error instanceof Error ? error.message : error },
+          'Skipping malformed vault event',
+        );
+        nextLedger = Math.max(nextLedger, event.ledger + 1);
+        continue;
+      }
+
+      if (!decoded) {
+        nextLedger = Math.max(nextLedger, event.ledger + 1);
+        continue;
+      }
+
+      const { type: eventType, amount, address, asset } = decoded;
+
+      logger.info({ eventType, ledger: event.ledger, address, asset }, 'Detected event');
+
+      await logEventToDb(eventType, event.id, event.ledger);
+
+      if (eventType === 'deposit') {
+        logger.info('New deposit detected, evaluating yield');
+        const userStrategy = 'balanced';
+        const currentProtocol = 'none';
+
+        const decision = await evaluateYield(userStrategy, currentProtocol, 0);
+
+        if (decision.shouldRebalance) {
+          logger.info({ targetProtocol: decision.targetProtocol }, 'Rebalance needed');
+        }
+      }
+
+      // Alert with the actual on-chain amount and address rather than a
+      // placeholder. `amount` is a bigint in the asset's smallest unit; it is
+      // serialized as a decimal string so no precision is lost in transit.
+      const alertPayload = {
+        type: eventType,
+        amount: amount.toString(),
+        address,
+        asset,
+      };
+      await processEventForAlerts(alertPayload);
+
+      nextLedger = Math.max(nextLedger, event.ledger + 1);
+    }
+
+    // Advance the checkpoint only after this page has been fully processed.
+    if (nextLedger !== startLedger) {
+      await persistCheckpoint(nextLedger);
+    }
+
+    // No further pages for this window.
+    if (!response.cursor || response.events.length < EVENT_PAGE_LIMIT) {
+      break;
+    }
+
+    cursor = response.cursor;
+  }
+
+  return nextLedger;
+}
+
+/**
+ * Decode a raw Soroban event into a typed vault event using the vault event
+ * schema.
+ *
+ * Expected topic layout: `[eventName, schemaVersion]` where `eventName` is
+ * `deposit` or `withdraw` and `schemaVersion` is a u32. The event value is a
+ * map with `address` (string), `amount` (i128, smallest unit) and `asset`
+ * (string).
+ *
+ * Returns `null` for events that are not vault deposit/withdraw events (so
+ * unrelated contract events are ignored). Throws for events that look like
+ * vault events but cannot be decoded, so the caller can isolate them.
+ */
+export function decodeVaultEvent(event: {
+  topic: Array<{ toString(): string }>;
+  value: { toString(): string };
+}): DecodedVaultEvent | null {
+  const topics = event.topic.map((t) => t.toString());
+
+  let type: 'deposit' | 'withdraw' | null = null;
+  if (topics.some((t) => t.includes('deposit'))) {
+    type = 'deposit';
+  } else if (topics.some((t) => t.includes('withdraw'))) {
+    type = 'withdraw';
+  }
+
+  if (!type) return null;
+
+  const schemaVersion = parseSchemaVersion(topics);
+  if (schemaVersion === null) {
+    throw new Error('Vault event is missing a schema version topic');
+  }
+  if (schemaVersion !== SUPPORTED_EVENT_SCHEMA_VERSION) {
+    // Unsupported schema versions are surfaced explicitly so operators can
+    // see them in logs rather than silently dropping the event.
+    logger.warn(
+      { schemaVersion, supported: SUPPORTED_EVENT_SCHEMA_VERSION, topics },
+      'Unsupported vault event schema version',
+    );
+    throw new Error(`Unsupported vault event schema version: ${schemaVersion}`);
+  }
+
+  const value = parseEventValue(event.value.toString());
+
+  const address = value.address;
+  if (typeof address !== 'string' || address.length === 0) {
+    throw new Error('Vault event is missing a valid address');
+  }
+
+  const asset = value.asset;
+  if (typeof asset !== 'string' || asset.length === 0) {
+    throw new Error('Vault event is missing a valid asset');
+  }
+
+  const amount = parseAmount(value.amount);
+  if (amount === null || amount < 0n) {
+    throw new Error('Vault event is missing a valid amount');
+  }
+
+  return { type, schemaVersion, address, amount, asset };
+}
+
+/** Extract the numeric schema version from the event topics, if present. */
+function parseSchemaVersion(topics: string[]): number | null {
+  for (const topic of topics) {
+    const match = topic.match(/schema[_-]?version["':=\s]*(\d+)/i);
+    if (match) return Number(match[1]);
+  }
+  // Fall back to a bare numeric topic (e.g. `1`) as the schema version.
+  for (const topic of topics) {
+    if (/^\d+$/.test(topic.trim())) return Number(topic.trim());
+  }
+  return null;
+}
+
+/**
+ * Parse the event value into a plain object. Soroban RPC returns the value as
+ * a stringified ScVal; we accept a JSON object or a `key:value` map string.
+ */
+function parseEventValue(raw: string): Record<string, unknown> {
+  const trimmed = raw.trim();
+  if (trimmed.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed && typeof parsed === 'object') return parsed as Record<string, unknown>;
+    } catch {
+      // fall through to map parsing
+    }
+  }
+
+  const result: Record<string, unknown> = {};
+  for (const pair of trimmed.split(/[,\n]/)) {
+    const idx = pair.indexOf(':');
+    if (idx === -1) continue;
+    const key = pair.slice(0, idx).trim().replace(/^["']|["']$/g, '');
+    const val = pair.slice(idx + 1).trim().replace(/^["']|["']$/g, '');
+    if (key) result[key] = val;
+  }
+  return result;
+}
+
+/** Parse an amount (string or number) into a bigint in smallest units. */
+function parseAmount(raw: unknown): bigint | null {
+  if (typeof raw === 'bigint') return raw;
+  if (typeof raw === 'number') {
+    return Number.isFinite(raw) && Number.isInteger(raw) ? BigInt(raw) : null;
+  }
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim();
+    if (!/^-?\d+$/.test(trimmed)) return null;
+    try {
+      return BigInt(trimmed);
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+/**
+ * Resolve the ledger to resume ingestion from. Prefers the persisted
+ * checkpoint; falls back to a bounded lookback window when no checkpoint
+ * exists or the stored cursor is older than the RPC retention window.
+ */
+async function resolveStartLedger(latestLedger: number): Promise<number> {
+  const checkpoint = await loadCheckpoint();
+
+  if (checkpoint === null) {
+    const fallback = Math.max(1, latestLedger - DEFAULT_LOOKBACK_LEDGERS);
+    logger.warn(
+      { startLedger: fallback, latestLedger },
+      'No event ingestion checkpoint found; recovering with bounded lookback window',
+    );
+    return fallback;
+  }
+
+  if (checkpoint > latestLedger) {
+    logger.warn(
+      { checkpoint, latestLedger },
+      'Persisted checkpoint is ahead of latest ledger; resetting to latest ledger',
+    );
+    return latestLedger;
+  }
+
+  if (checkpoint < latestLedger - DEFAULT_LOOKBACK_LEDGERS) {
+    const fallback = Math.max(1, latestLedger - DEFAULT_LOOKBACK_LEDGERS);
+    logger.warn(
+      { checkpoint, startLedger: fallback, latestLedger },
+      'Persisted checkpoint is older than the RPC retention window; recovering with bounded lookback',
+    );
+    return fallback;
+  }
+
+  return checkpoint;
+}
+
+async function loadCheckpoint(): Promise<number | null> {
+  if (!process.env.DATABASE_URL) return null;
+  try {
+    const result = await pool.query(
+      'SELECT last_ledger FROM event_ingestion_checkpoint WHERE id = $1',
+      ['vault'],
+    );
+    if (result.rows.length === 0) return null;
+    const value = Number(result.rows[0].last_ledger);
+    return Number.isFinite(value) ? value : null;
+  } catch (error) {
+    logger.error({ error: error instanceof Error ? error.message : error }, 'Failed to load event ingestion checkpoint');
+    return null;
+  }
+}
+
+async function persistCheckpoint(lastLedger: number) {
+  if (!process.env.DATABASE_URL) return;
+  try {
+    await pool.query(
+      'INSERT INTO event_ingestion_checkpoint (id, last_ledger, updated_at) VALUES ($1, $2, NOW()) ON CONFLICT (id) DO UPDATE SET last_ledger = EXCLUDED.last_ledger, updated_at = NOW()',
+      ['vault', lastLedger],
+    );
+  } catch (error) {
+    logger.error({ error: error instanceof Error ? error.message : error }, 'Failed to persist event ingestion checkpoint');
+  }
+}
+
 async function logEventToDb(type: string, eventId: string, ledger: number) {
   try {
     if (process.env.DATABASE_URL) {
-      await pool.query(
-        'INSERT INTO vault_events (event_id, event_type, ledger_sequence, created_at) VALUES ($1, $2, $3, NOW()) ON CONFLICT DO NOTHING',
-        [eventId, type, ledger]
-      );
-    }
-  } catch (error) {
-    logger.error({ error: error instanceof Error ? error.message : error }, 'Database logging failed');
-  }
-}
+      awa
+
+/* … truncated 330 chars — edit only what you need near the top … */
