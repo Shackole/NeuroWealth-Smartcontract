@@ -19,13 +19,8 @@
 
 version: "3.9"
 
-x-monitoring-service: &monitoring-service
+x-restart: &restart-policy
   restart: unless-stopped
-  logging:
-    driver: json-file
-    options:
-      max-size: "10m"
-      max-file: "3"
 
 networks:
   monitoring:
@@ -33,14 +28,30 @@ networks:
 
 volumes:
   prometheus_data: {}
+  alertmanager_data: {}
   grafana_data: {}
+
+x-bounded-logging: &bounded-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
 
 services:
 
   # ── Prometheus ─────────────────────────────────────────────────────────────
   prometheus:
     image: prom/prometheus:v2.51.0
-    <<: *monitoring-service
+    <<: *restart-policy
+    logging: *bounded-logging
+    cpus: "1.0"
+    mem_limit: 512m
+    pids_limit: 256
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
     networks: [monitoring]
     ports:
       - "9090:9090"
@@ -57,6 +68,11 @@ services:
       - "--storage.tsdb.retention.time=30d"
       - "--web.enable-lifecycle"
       - "--web.enable-remote-write-receiver"
+    environment:
+      # These are substituted into prometheus.yml via envsubst or directly
+      # if you use --enable-feature=expand-external-labels
+      AGENT_HOST: "${AGENT_HOST:-host.docker.internal}"
+      AGENT_PORT: "${AGENT_PORT:-3000}"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
@@ -68,15 +84,26 @@ services:
   # ── Alertmanager ───────────────────────────────────────────────────────────
   alertmanager:
     image: prom/alertmanager:v0.27.0
-    <<: *monitoring-service
+    <<: *restart-policy
+    logging: *bounded-logging
+    cpus: "0.5"
+    mem_limit: 128m
+    pids_limit: 128
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 128M
     networks: [monitoring]
     ports:
       - "9093:9093"
     volumes:
       - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
     command:
       - "--config.file=/etc/alertmanager/alertmanager.yml"
       - "--storage.path=/alertmanager"
+      - "--data.retention=120h"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:9093/-/healthy"]
       interval: 30s
@@ -86,7 +113,16 @@ services:
   # ── Grafana ────────────────────────────────────────────────────────────────
   grafana:
     image: grafana/grafana:10.4.2
-    <<: *monitoring-service
+    <<: *restart-policy
+    logging: *bounded-logging
+    cpus: "0.5"
+    mem_limit: 256m
+    pids_limit: 256
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
     networks: [monitoring]
     ports:
       - "3030:3000"
@@ -99,7 +135,7 @@ services:
       - grafana_data:/var/lib/grafana
     environment:
       GF_SECURITY_ADMIN_USER: "${GRAFANA_ADMIN_USER:-admin}"
-      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD:?Set GRAFANA_ADMIN_PASSWORD before starting Grafana}"
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD:-changeme}"
       GF_SERVER_ROOT_URL: "${GRAFANA_ROOT_URL:-http://localhost:3030}"
       GF_ANALYTICS_REPORTING_ENABLED: "false"
       GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
