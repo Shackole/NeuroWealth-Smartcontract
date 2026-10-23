@@ -47,23 +47,53 @@ export interface AuthTokenPair {
   expiresIn: number;
 }
 
+/**
+ * A server-issued, single-use challenge.  The exact `message` is persisted so
+ * the server verifies the signature against the same bytes it handed out
+ * (including the issued-at timestamp), preventing message-mutation attacks.
+ */
+export interface Challenge {
+  address: string;
+  nonce: string;
+  message: string;
+  issuedAt: number; // epoch ms
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
-// Nonce management
+// Nonce / challenge management
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Generate a cryptographically random nonce, store it in Redis tied to
- * `address`, and return the nonce string.
+ * Generate a cryptographically random nonce, store the full challenge in
+ * Redis tied to `address`, and return the challenge the client must sign.
  */
 export async function issueNonce(redis: Redis, address: string): Promise<string> {
-  const nonce = crypto.randomBytes(32).toString('hex');
-  await redis.set(`${NONCE_PREFIX}${address}`, nonce, 'EX', NONCE_TTL_S);
-  return nonce;
+  const challenge = await issueChallenge(redis, address);
+  return challenge.nonce;
 }
 
 /**
- * Retrieve and immediately delete the nonce for an address.
- * Returns `null` if the nonce has expired or does not exist.
+ * Issue a single-use challenge for `address`.  The challenge (nonce + exact
+ * message) is stored in Redis with a 5-minute TTL.  Issuing a new challenge
+ * for the same address replaces any previous one.
+ */
+export async function issueChallenge(redis: Redis, address: string): Promise<Challenge> {
+  const nonce = crypto.randomBytes(32).toString('hex');
+  const issuedAt = Date.now();
+  const message = buildChallengeMessage(address, nonce, issuedAt);
+  const challenge: Challenge = { address, nonce, message, issuedAt };
+  await redis.set(
+    `${NONCE_PREFIX}${address}`,
+    JSON.stringify(challenge),
+    'EX',
+    NONCE_TTL_S,
+  );
+  return challenge;
+}
+
+/**
+ * Retrieve and immediately delete the challenge for an address.
+ * Returns `null` if the challenge has expired or does not exist.
  * Single-use: calling this twice for the same address always returns null
  * on the second call.
  */
@@ -71,10 +101,28 @@ export async function consumeNonce(
   redis: Redis,
   address: string,
 ): Promise<string | null> {
+  const challenge = await consumeChallenge(redis, address);
+  return challenge ? challenge.nonce : null;
+}
+
+/**
+ * Atomically fetch-and-delete the stored challenge for `address`.
+ * Returns `null` when the challenge is missing, expired, or already consumed.
+ */
+export async function consumeChallenge(
+  redis: Redis,
+  address: string,
+): Promise<Challenge | null> {
   const key = `${NONCE_PREFIX}${address}`;
   // Atomic GET-and-DELETE via pipeline
   const [nonce] = await redis.pipeline().get(key).del(key).exec() as [[null, string | null], [null, number]];
-  return nonce[1];
+  const raw = nonce[1];
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as Challenge;
+  } catch {
+    return null;
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -84,14 +132,18 @@ export async function consumeNonce(
 /**
  * Returns the deterministic message that the client must sign with their
  * Stellar keypair.  Both client and server build the same string from the
- * nonce so the content is unambiguous.
+ * nonce and issued-at timestamp so the content is unambiguous.
  */
-export function buildChallengeMessage(address: string, nonce: string): string {
+export function buildChallengeMessage(
+  address: string,
+  nonce: string,
+  issuedAt: number = Date.now(),
+): string {
   return [
     'NeuroWealth Authentication',
     `Address: ${address}`,
     `Nonce: ${nonce}`,
-    `Issued: ${new Date().toUTCString()}`,
+    `Issued: ${new Date(issuedAt).toUTCString()}`,
     'Sign this message to prove ownership of your Stellar wallet.',
   ].join('\n');
 }
@@ -123,6 +175,31 @@ export function verifyStellarSignature(
   } catch {
     return false;
   }
+}
+
+/**
+ * Full wallet-proof verification: consume the single-use challenge for
+ * `address`, confirm it has not expired, and verify the Ed25519 signature
+ * over the exact stored message.  Returns the verified address on success,
+ * or `null` on any failure (missing/expired/replayed challenge, bad sig).
+ */
+export async function verifyChallenge(
+  redis: Redis,
+  address: string,
+  signatureBase64: string,
+): Promise<string | null> {
+  const challenge = await consumeChallenge(redis, address);
+  if (!challenge) return null;
+
+  // Defence-in-depth: reject challenges past their TTL even if Redis has not
+  // yet evicted the key.
+  if (Date.now() - challenge.issuedAt > NONCE_TTL_S * 1000) return null;
+
+  if (!verifyStellarSignature(challenge.address, challenge.message, signatureBase64)) {
+    return null;
+  }
+
+  return challenge.address;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
