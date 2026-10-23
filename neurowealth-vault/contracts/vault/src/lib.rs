@@ -7937,15 +7937,51 @@ impl NeuroWealthVault {
         }
     }
 
-    /// Extends the persistent TTL for a user's `Shares` entry when it exists.
-    fn extend_user_shares_ttl(env: &Env, user: &Address) {
-        let shares_key = DataKey::Shares(user.clone());
-        if env.storage().persistent().has(&shares_key) {
+    /// Extends the persistent TTL for all user-owned state that must remain
+    /// live for indexers, keeper jobs, and migration/lock bookkeeping.
+    fn extend_user_state_ttl(env: &Env, user: &Address) {
+        let user_shares = DataKey::Shares(user.clone());
+        if env.storage().persistent().has(&user_shares) {
             env.storage().persistent().extend_ttl(
-                &shares_key,
+                &user_shares,
                 USER_SHARES_TTL_THRESHOLD,
                 USER_SHARES_TTL_EXTEND_TO,
             );
+        }
+
+        let locked_key = DataKey::LockedShares(user.clone());
+        if env.storage().persistent().has(&locked_key) {
+            env.storage().persistent().extend_ttl(
+                &locked_key,
+                USER_SHARES_TTL_THRESHOLD,
+                USER_SHARES_TTL_EXTEND_TO,
+            );
+        }
+
+        let strategy_key = DataKey::UserStrategy(user.clone());
+        if env.storage().persistent().has(&strategy_key) {
+            env.storage().persistent().extend_ttl(
+                &strategy_key,
+                USER_SHARES_TTL_THRESHOLD,
+                USER_SHARES_TTL_EXTEND_TO,
+            );
+        }
+
+        if let Some(supported) = env
+            .storage()
+            .instance()
+            .get::<MultiAssetKey, Vec<Symbol>>(&MultiAssetKey::SupportedAssets)
+        {
+            for asset in supported.iter() {
+                let asset_shares_key = MultiAssetKey::Shares(user.clone(), asset.clone());
+                if env.storage().persistent().has(&asset_shares_key) {
+                    env.storage().persistent().extend_ttl(
+                        &asset_shares_key,
+                        USER_SHARES_TTL_THRESHOLD,
+                        USER_SHARES_TTL_EXTEND_TO,
+                    );
+                }
+            }
         }
     }
 
@@ -8267,14 +8303,35 @@ impl NeuroWealthVault {
         // Count maintenance attempts even when the requested entry is absent;
         // otherwise an attacker could use missing-user probes as a cheap DoS.
         Self::enforce_user_rate_limit(&env, &user, RATE_LIMIT_TOUCH_TTL);
-        if !env
+        let has_legacy_shares = env
             .storage()
             .persistent()
-            .has(&DataKey::Shares(user.clone()))
-        {
+            .has(&DataKey::Shares(user.clone()));
+        let has_locked = env
+            .storage()
+            .persistent()
+            .has(&DataKey::LockedShares(user.clone()));
+        let has_strategy = env
+            .storage()
+            .persistent()
+            .has(&DataKey::UserStrategy(user.clone()));
+
+        let supported_assets = env
+            .storage()
+            .instance()
+            .get::<MultiAssetKey, Vec<Symbol>>(&MultiAssetKey::SupportedAssets)
+            .unwrap_or_else(|| Vec::new(&env));
+        let has_asset_shares = supported_assets.iter().any(|asset| {
+            env.storage()
+                .persistent()
+                .has(&MultiAssetKey::Shares(user.clone(), asset.clone()))
+        });
+
+        if !(has_legacy_shares || has_locked || has_strategy || has_asset_shares) {
             return false;
         }
-        Self::extend_user_shares_ttl(&env, &user);
+
+        Self::extend_user_state_ttl(&env, &user);
         true
     }
 
@@ -8323,12 +8380,31 @@ impl NeuroWealthVault {
             // Enforce per-user rate limit (same bucket as single touch_user_ttl).
             // Count every probe, even for missing entries, to prevent DoS via probing.
             Self::enforce_user_rate_limit(&env, &user, RATE_LIMIT_TOUCH_TTL);
-            if env
+            let has_legacy_shares = env
                 .storage()
                 .persistent()
-                .has(&DataKey::Shares(user.clone()))
-            {
-                Self::extend_user_shares_ttl(&env, &user);
+                .has(&DataKey::Shares(user.clone()));
+            let has_locked = env
+                .storage()
+                .persistent()
+                .has(&DataKey::LockedShares(user.clone()));
+            let has_strategy = env
+                .storage()
+                .persistent()
+                .has(&DataKey::UserStrategy(user.clone()));
+            let supported_assets = env
+                .storage()
+                .instance()
+                .get::<MultiAssetKey, Vec<Symbol>>(&MultiAssetKey::SupportedAssets)
+                .unwrap_or_else(|| Vec::new(&env));
+            let has_asset_shares = supported_assets.iter().any(|asset| {
+                env.storage()
+                    .persistent()
+                    .has(&MultiAssetKey::Shares(user.clone(), asset.clone()))
+            });
+
+            if has_legacy_shares || has_locked || has_strategy || has_asset_shares {
+                Self::extend_user_state_ttl(&env, &user);
                 results.push_back(true);
                 users_extended = users_extended.saturating_add(1);
             } else {
