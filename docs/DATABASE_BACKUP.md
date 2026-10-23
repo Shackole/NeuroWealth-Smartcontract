@@ -218,6 +218,35 @@ successful backup run. The beacon contains:
 If the beacon is absent or older than `MAX_BACKUP_AGE_HOURS` (default: 25 h),
 a critical PagerDuty incident is created.
 
+### What the health beacon proves
+
+The beacon proves that the backup job reported a successful dump/upload. It
+does **not** prove that the encrypted object can be decrypted, restored, or
+used by the application. An S3 object listing and a fresh beacon are likewise
+not restore verification. Only a completed staging restore followed by data
+and application checks counts as a verified recovery point.
+
+The database dump covers PostgreSQL data only. `agent/src/stateBackup.ts`
+contains versioned state-store implementations and a 60-second-capable backup
+manager, but no production instantiation/wiring is present in `agent/src`.
+Therefore agent scheduler/metrics state backups must be treated as **not
+configured** until the deployed service proves that it calls the manager and
+identifies its store/key. If a deployment has added that wiring, back up and
+restore that store separately using its provider's snapshot/version mechanism;
+record state schema version and `savedAt` and reject incompatible state. Do not
+claim the documented agent RPO for an unwired module.
+
+Event ingestion has no durable listener cursor today: `eventListener` begins
+from the latest ledger when it starts. Record the last verified ledger from
+chain and `MAX(ledger_sequence)` from `vault_events` before recovery, then
+reconcile and backfill the gap as described in [the RPC outage runbook](INCIDENT_RUNBOOK.md#54-stellar-rpc-unavailable-p1).
+Do not infer event completeness from a database restore alone.
+
+The RPO/RTO figures in the table above are targets, not measured guarantees.
+Record actual backup age and elapsed recovery time in each drill. A successful
+drill must reconcile restored records and event coverage against the selected
+chain ledger, in addition to checking row counts.
+
 ---
 
 ## Quarterly Restore Drill
@@ -232,7 +261,12 @@ procedure. Record results using the template below.
 - [ ] Restore to a staging database (never production)
 - [ ] Verify row counts match expected production values
 - [ ] Verify application can connect and query the restored database
+- [ ] Record the latest included event ledger and compare it with chain at the selected recovery time
+- [ ] Reconcile deposit/withdraw records and transaction hashes against chain events; record any gap and backfill plan
+- [ ] Restore the agent state store separately and confirm its `lastLedger` is consistent with the database and chain
+- [ ] Verify the deployed agent actually wires `StateBackupManager`; if it does not, mark agent state backup unavailable and record the recovery impact
 - [ ] Record actual RTO (target: < 2 hours)
+- [ ] Record actual RPO (time/data loss from the incident point)
 - [ ] Note any issues or deviations from this document
 
 ### Results template
@@ -255,6 +289,9 @@ Issues encountered: (none / describe)
 Action items:       (none / describe)
 
 Result: PASS / FAIL
+Restore verification: PASS / FAIL (a listed object or fresh beacon alone is not a pass)
+Chain reconciliation: PASS / FAIL / GAP DOCUMENTED
+Agent state restore: PASS / FAIL / NOT CONFIGURED
 ```
 
 Append completed drill results to this document under a `## Drill History` section.
@@ -263,4 +300,6 @@ Append completed drill results to this document under a `## Drill History` secti
 
 ## Drill History
 
-_No drills recorded yet. First drill due Q4 2026._
+_No drills recorded yet. First drill due Q4 2026. No staging restore or chain
+reconciliation was performed while preparing this runbook; staging access was
+not available. Backup existence and the stated RTO remain unverified._

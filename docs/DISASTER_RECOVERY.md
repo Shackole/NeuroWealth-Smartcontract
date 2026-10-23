@@ -24,6 +24,13 @@ Two cooperating modules in `agent/src/`:
 
 Worst-case detection + promotion ≈ 60 s TTL + poll interval (7.5 s) ≪ 5 min.
 
+**Deployment limitation:** the repository defines these state backup and
+failover modules, but `agent/src` does not currently instantiate
+`StateBackupManager` or wire it into the service lifecycle. The RPO and restore
+behavior below are design targets until a deployed build has explicit wiring
+and an observed backup. PostgreSQL backups do not by themselves prove that
+agent state is recoverable.
+
 ## Health monitoring
 
 - `GET /health` (metrics API, `metricsApi.ts`) returns `200 {status:
