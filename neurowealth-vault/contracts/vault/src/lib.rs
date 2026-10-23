@@ -329,8 +329,6 @@ pub enum VaultError {
     ProtocolAdapterNotConfigured = 81,
     /// The requested protocol is not on the owner-managed whitelist (#656).
     ProtocolNotWhitelisted = 82,
-    /// Owner and agent must be separate authorities at initialization.
-    OwnerAndAgentMustDiffer = 83,
 
 }
 
@@ -610,15 +608,6 @@ pub enum DataKey {
     /// `update_standby_agent` and perform an instant switchover via
     /// `switch_to_standby_agent`. Appended to preserve serialized layout.
     StandbyAgent,
-
-    /// Guardian address for co-signing `execute_upgrade` (#44 / #607).
-    ///
-    /// When set, `execute_upgrade` requires **both** the owner signature and the
-    /// guardian signature. The guardian key provides defense-in-depth against a
-    /// compromised owner key: an attacker must steal both keys to execute a
-    /// malicious upgrade. Set by the owner via `set_guardian`; removed via
-    /// `remove_guardian`. Appended to preserve serialized discriminants.
-    Guardian,
 }
 
 /// Owner-configured allowance for one rate-limit category.
@@ -1846,65 +1835,6 @@ pub struct RateLimitExceededEvent {
     pub calls: u32,
 }
 
-/// Emitted after `batch_touch_ttl` completes processing the full user batch (#48).
-///
-/// # Topics
-/// - `SymbolShort("batch_ttl")` (`TOPIC_BATCH_TTL_TOUCHED`)
-#[contracttype]
-pub struct BatchTtlTouchedEvent {
-    /// Total number of users in the batch.
-    pub count: u32,
-    /// Number of users whose `Shares` entry was extended (had an existing entry).
-    pub users_extended: u32,
-}
-
-// ============================================================================
-// Batch deposit types (#42)
-// ============================================================================
-
-/// A single entry in a `batch_deposit` call.
-///
-/// The agent supplies one `BatchDepositItem` per user whose deposit should
-/// be processed in this batch transaction.
-#[contracttype]
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct BatchDepositItem {
-    /// The user whose funds are being deposited.
-    pub user: Address,
-    /// Amount of USDC to deposit for this user (7 decimal places).
-    pub amount: i128,
-}
-
-/// Emitted once after `batch_deposit` finishes processing all entries.
-///
-/// # Topics
-/// - `0`: `SymbolShort("batch_dep2")` (`TOPIC_BATCH_DEPOSITED`)
-/// - `1`: `Address` — the agent who submitted the batch (indexed topic)
-#[contracttype]
-pub struct BatchDepositedEvent {
-    /// Number of entries that were successfully processed.
-    pub count: u32,
-    /// Total USDC amount deposited across all successful entries.
-    pub total_amount: i128,
-    /// Number of entries that were skipped due to validation failures.
-    pub skipped: u32,
-}
-
-/// Emitted when the guardian key is set or cleared via `set_guardian` /
-/// `remove_guardian` (#44 / #607).
-///
-/// # Topics
-/// - `SymbolShort("guard_set")` (`TOPIC_GUARDIAN_SET`)
-#[contracttype]
-pub struct GuardianSetEvent {
-    /// Previous guardian address, or `None` if no guardian was set.
-    pub old_guardian: Option<Address>,
-    /// New guardian address, or `None` if the guardian was removed.
-    pub new_guardian: Option<Address>,
-    /// Owner address that made the change.
-    pub owner: Address,
-}
-
 // ============================================================================
 // BLEND POOL CLIENT INTERFACE
 // ============================================================================
@@ -2041,8 +1971,6 @@ use topics::{
     TOPIC_TVL_CAP_UPDATED, TOPIC_UNPAUSED, TOPIC_UPGRADED,
     TOPIC_UPGRADE_CANCELLED, TOPIC_UPGRADE_SCHEDULED, TOPIC_USER_CAP_UPDATED,
     TOPIC_USER_STRATEGY_UPDATED, TOPIC_WITHDRAW, TOPIC_YIELD_ATTRIBUTED,
-    TOPIC_BATCH_TTL_TOUCHED, TOPIC_GUARDIAN_SET,
-    TOPIC_BATCH_DEPOSITED,
     TOPIC_USER_STRATEGY_UPDATED, TOPIC_WITHDRAW,
     TOPIC_BLEND_POOL_CONFIGURED, TOPIC_BLEND_SUPPLY, TOPIC_BLEND_WITHDRAW, TOPIC_CAPS_UPDATED,
     TOPIC_DEPOSIT, TOPIC_DEPOSIT_LIMITS_UPDATED, TOPIC_DEX_POOL_CONFIGURED, TOPIC_DEX_SUPPLY,
@@ -2393,9 +2321,6 @@ impl NeuroWealthVault {
         if usdc_token == zero {
             panic!("usdc_token cannot be zero address");
         }
-        if owner == agent {
-            panic_with_error!(&env, VaultError::OwnerAndAgentMustDiffer);
-        }
 
         // Verify the deployer is the one that actually deployed the contract
         let expected_contract_address = env
@@ -2640,211 +2565,194 @@ impl NeuroWealthVault {
         );
     }
 
-    /// Processes deposits for multiple users in a single Soroban transaction.
+    /// Deposits multiple amounts in a single transaction. Each entry specifies a
+    /// token address and amount. Currently only the vault's USDC token is
+    /// accepted; other tokens will be supported when multi-asset functionality
+    /// is enabled (Phase 3).
     ///
-    /// Called by the AI agent on behalf of multiple users. Each entry is
-    /// validated independently — an invalid entry is skipped and counted as
-    /// `skipped` rather than aborting the entire batch (partial success).
+    /// The entire batch is processed atomically — if any transfer fails, the
+    /// whole transaction reverts. Shares are minted once based on the aggregate
+    /// deposit amount, reducing transaction costs for multi-token deposits.
     ///
     /// # Arguments
     ///
     /// * `env` - The Soroban environment.
-    /// * `agent` - The AI agent address (must be the vault's authorized agent).
-    /// * `entries` - A vector of `BatchDepositItem { user, amount }` pairs.
+    /// * `user` - The user address depositing funds (must authorize).
+    /// * `entries` - A vector of `(token_address, amount)` pairs.
     ///
     /// # Events
     ///
-    /// Emits one `DepositEvent` per successfully processed entry, plus a single
-    /// `BatchDepositedEvent` summarising the whole call.
+    /// Emits one `DepositEvent` per entry.
     ///
     /// # Panics
     ///
-    /// - If the vault is paused.
-    /// - If the caller is not the vault agent.
-    /// - If the batch exceeds `MaxBatchSize`.
-    /// - If the agent's batch rate-limit bucket is exhausted.
-    /// - If the total valid amount would exceed the TVL cap.
-    pub fn batch_deposit(env: Env, agent: Address, entries: Vec<BatchDepositItem>) {
+    /// - If any entry's token is not the vault's USDC token (until multi-asset).
+    /// - If any entry's amount fails validation.
+    /// - If the aggregate deposit exceeds the TVL or user cap.
+    /// - If the batch exceeds the configured entry limit.
+    /// - If the user's deposit or batch rate-limit bucket is exhausted.
+    /// - If shares to mint rounds down to zero.
+    pub fn batch_deposit(env: Env, user: Address, entries: Vec<(Address, i128)>) {
         Self::require_initialized(&env);
-        agent.require_auth();
+        user.require_auth();
         Self::require_not_paused(&env);
-        Self::require_is_agent(&env);
-
-        let total_entries = entries.len();
-        Self::require_batch_size(&env, total_entries);
-
-        // Rate-limit the whole batch call using the batch-deposit bucket.
-        Self::enforce_user_rate_limit(&env, &agent, RATE_LIMIT_BATCH_DEPOSIT);
 
         let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
+        let total_entries = entries.len();
+        Self::require_batch_size(&env, total_entries);
+        // A batch is one deposit operation for the per-user deposit bucket and
+        // one operation for the separate batch bucket. This closes the bypass
+        // where a caller could avoid the single-deposit limit by batching.
+        Self::enforce_user_rate_limit(&env, &user, RATE_LIMIT_DEPOSIT);
+        Self::enforce_user_rate_limit(&env, &user, RATE_LIMIT_BATCH_DEPOSIT);
+
+        // First pass: validate every entry before any transfer (fail-fast).
+        let mut total_amount: i128 = 0;
+        for i in 0..total_entries {
+            let (token, amount) = entries.get(i).unwrap();
+            // Until multi-asset is enabled, require all entries to use USDC.
+            if token != usdc_token {
+                panic!(
+                    "batch_deposit: token {:?} is not supported; only USDC is accepted",
+                    token
+                );
+            }
+            Self::require_positive_amount(&env, amount);
+            total_amount = total_amount
+                .checked_add(amount)
+                .expect("batch_deposit: total amount overflow");
+        }
+
+        // Validate aggregate against vault limits.
+        if total_entries > 0 {
+            Self::require_minimum_deposit(&env, total_amount);
+            Self::require_maximum_deposit(&env, total_amount);
+            Self::require_within_deposit_cap(&env, &user, total_amount);
+            Self::require_within_tvl_cap(&env, total_amount);
+        }
+
+        // Second pass: execute transfers.
         let token_client = token::Client::new(&env, &usdc_token);
-
-        // ── CHECKS phase ────────────────────────────────────────────────────
-        // Pre-validate every entry independently to compute the aggregate valid
-        // amount for the TVL cap guard. Invalid entries are counted as skipped.
-        let mut total_valid_amount: i128 = 0;
-        let mut valid_count: u32 = 0;
-        let mut skip_count: u32 = 0;
-
         for i in 0..total_entries {
-            let item = entries.get(i).unwrap();
-            let min_dep = Self::get_min_deposit_internal(&env);
-            let max_dep = Self::get_max_deposit_internal(&env);
-            let cap: i128 = env
-                .storage()
-                .instance()
-                .get(&DataKey::UserDepositCap)
-                .unwrap_or(0_i128);
-
-            let ok = item.amount > 0
-                && item.amount >= min_dep
-                && item.amount <= max_dep
-                && {
-                    if cap > 0 {
-                        let user_shares = Self::read_shares(&env, &item.user);
-                        let user_assets = Self::convert_to_assets_internal(&env, user_shares);
-                        user_assets.saturating_add(item.amount) <= cap
-                    } else {
-                        true
-                    }
-                };
-
-            if ok {
-                total_valid_amount = total_valid_amount
-                    .checked_add(item.amount)
-                    .expect("batch_deposit: amount overflow");
-                valid_count += 1;
-            } else {
-                skip_count += 1;
-            }
+            let (_token, amount) = entries.get(i).unwrap();
+            token_client.transfer(&user, &env.current_contract_address(), &amount);
         }
 
-        // Guard the aggregate valid amount against the TVL cap.
-        if total_valid_amount > 0 {
-            Self::require_within_tvl_cap(&env, total_valid_amount);
-        }
+        // Update total deposits and mint shares once for the aggregate.
+        let total: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalDeposits)
+            .unwrap_or(0_i128);
+        env.storage().instance().set(
+            &DataKey::TotalDeposits,
+            &(total
+                .checked_add(total_amount)
+                .expect("batch_deposit: total deposits overflow")),
+        );
 
-        // ── EFFECTS + INTERACTIONS phase ─────────────────────────────────────
-        // Process each valid entry: transfer tokens, mint shares, update state.
-        for i in 0..total_entries {
-            let item = entries.get(i).unwrap();
-            let min_dep = Self::get_min_deposit_internal(&env);
-            let max_dep = Self::get_max_deposit_internal(&env);
-            if item.amount <= 0 || item.amount < min_dep || item.amount > max_dep {
-                continue;
-            }
-            let cap: i128 = env
+        let shares_to_mint = Self::convert_to_shares_internal(&env, total_amount);
+        Self::require(
+            &env,
+            shares_to_mint > 0,
+            VaultError::SharesToMintMustBePositive,
+        );
+
+        let current_shares: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Shares(user.clone()))
+            .unwrap_or(0_i128);
+        env.storage().persistent().set(
+            &DataKey::Shares(user.clone()),
+            &(current_shares
+                .checked_add(shares_to_mint)
+                .expect("batch_deposit: shares overflow")),
+        );
+
+        if current_shares == 0
+            && !env
                 .storage()
-                .instance()
-                .get(&DataKey::UserDepositCap)
-                .unwrap_or(0_i128);
-            if cap > 0 {
-                let user_shares = Self::read_shares(&env, &item.user);
-                let user_assets = Self::convert_to_assets_internal(&env, user_shares);
-                if user_assets.saturating_add(item.amount) > cap {
-                    continue;
-                }
-            }
-
-            // Transfer USDC from agent to vault.
-            token_client.transfer(&agent, &env.current_contract_address(), &item.amount);
-
-            // Mint shares for the individual user.
-            let shares_to_mint = Self::convert_to_shares_internal(&env, item.amount);
-            if shares_to_mint == 0 {
-                // Return the transfer — zero-share mints are not allowed.
-                token_client.transfer(&env.current_contract_address(), &agent, &item.amount);
-                continue;
-            }
-
-            // Update per-user shares.
-            let current_shares = Self::read_shares(&env, &item.user);
-            env.storage().persistent().set(
-                &DataKey::Shares(item.user.clone()),
-                &(current_shares
-                    .checked_add(shares_to_mint)
-                    .expect("batch_deposit: user shares overflow")),
-            );
-
-            // Register user in the active-share index on first deposit.
-            if current_shares == 0 {
-                Self::add_to_user_index(&env, &item.user);
-                if !env
-                    .storage()
-                    .persistent()
-                    .has(&DataKey::UserStrategy(item.user.clone()))
-                {
-                    let default_strategy = Symbol::new(&env, "balanced");
-                    env.storage().persistent().set(
-                        &DataKey::UserStrategy(item.user.clone()),
-                        &default_strategy,
-                    );
-                    env.events().publish(
-                        (TOPIC_USER_STRATEGY_UPDATED, item.user.clone()),
-                        UserStrategyUpdatedEvent {
-                            user: item.user.clone(),
-                            old_strategy: Symbol::new(&env, ""),
-                            new_strategy: default_strategy,
-                        },
-                    );
-                }
-            }
-
-            // Update vault-wide totals (TotalDeposits, TotalShares, TotalAssets).
-            let td: i128 = env
-                .storage()
-                .instance()
-                .get(&DataKey::TotalDeposits)
-                .unwrap_or(0_i128);
-            env.storage().instance().set(
-                &DataKey::TotalDeposits,
-                &(td.checked_add(item.amount).expect("batch_deposit: deposits overflow")),
-            );
-
-            let ts: i128 = env
-                .storage()
-                .instance()
-                .get(&DataKey::TotalShares)
-                .unwrap_or(0_i128);
-            env.storage().instance().set(
-                &DataKey::TotalShares,
-                &(ts.checked_add(shares_to_mint).expect("batch_deposit: shares overflow")),
-            );
-
-            let ta = Self::get_total_assets_internal(&env);
-            env.storage().instance().set(
-                &DataKey::TotalAssets,
-                &(ta.checked_add(item.amount).expect("batch_deposit: assets overflow")),
-            );
-
-            // Record deposit ledger for flash-loan protection.
-            env.storage().persistent().set(
-                &DataKey::LastDepositLedger(item.user.clone()),
-                &env.ledger().sequence(),
-            );
-
-            // Per-entry DepositEvent (indexed by user address).
+                .persistent()
+                .has(&DataKey::UserStrategy(user.clone()))
+        {
+            let default_strategy = Symbol::new(&env, "balanced");
+            env.storage()
+                .persistent()
+                .set(&DataKey::UserStrategy(user.clone()), &default_strategy);
             env.events().publish(
-                (TOPIC_DEPOSIT, item.user.clone()),
-                DepositEvent {
-                    user: item.user.clone(),
-                    amount: item.amount,
-                    shares: shares_to_mint,
+                (TOPIC_USER_STRATEGY_UPDATED, user.clone()),
+                UserStrategyUpdatedEvent {
+                    user: user.clone(),
+                    old_strategy: Symbol::new(&env, ""),
+                    new_strategy: default_strategy,
                 },
             );
         }
 
-        // Aggregate BatchDepositedEvent (indexed by agent address).
-        env.events().publish(
-            (TOPIC_BATCH_DEPOSITED, agent.clone()),
-            BatchDepositedEvent {
-                count: valid_count,
-                total_amount: total_valid_amount,
-                skipped: skip_count,
-            },
+        let total_shares: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalShares)
+            .unwrap_or(0_i128);
+        env.storage().instance().set(
+            &DataKey::TotalShares,
+            &(total_shares
+                .checked_add(shares_to_mint)
+                .expect("batch_deposit: total shares overflow")),
         );
+
+        for i in 0..total_entries {
+            let (_token, amount) = entries.get(i).unwrap();
+            env.events().publish(
+                (TOPIC_DEPOSIT, user.clone()),
+                DepositEvent {
+                    user: user.clone(),
+                    amount,
+                    shares: shares_to_mint,
+                },
+            );
+        }
     }
 
+    // ==========================================================================
+    // CORE LIFECYCLE - WITHDRAW
+    // ==========================================================================
+
+    /// Withdraws USDC from the vault for a user.
+    ///
+    /// The user must authorize this transaction with their signature.
+    /// The vault transfers USDC from its balance to the user.
+    ///
+    /// If funds are deployed in Blend, this function will pull liquidity back
+    /// first to ensure funds are available for withdrawal.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `user` - The user address withdrawing funds (must authorize).
+    /// * `amount` - Amount of USDC to withdraw (7 decimal places).
+    ///
+    /// # Returns
+    ///
+    /// None.
+    ///
+    /// # Events
+    ///
+    /// Emits:
+    /// - `WithdrawEvent`
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// - If the vault is paused.
+    /// - If amount is not positive.
+    /// - If user has insufficient balance or shares.
+    /// - If the vault has insufficient liquidity and cannot retrieve enough from Blend.
+    /// - If the USDC transfer fails.
     /// - If the user's withdrawal rate-limit bucket is exhausted.
     pub fn withdraw(env: Env, user: Address, amount: i128) {
         Self::require_initialized(&env);
@@ -3206,28 +3114,11 @@ impl NeuroWealthVault {
         usdc_to_return
     }
 
-    /// Deposits a supported asset into the vault via the multi-asset path (#646).
+    /// Sets the Blend pool contract address for on-chain integration.
     ///
     /// Each asset has its own share pool with independent share pricing.
-    /// Validates the asset is supported, checks **both** per-asset and global
-    /// caps, transfers the asset token, mints shares, and emits
-    /// `AssetDepositEvent`.
-    ///
-    /// # Cap enforcement (Issue #441)
-    ///
-    /// `deposit_asset` enforces the **same global caps** as `deposit` and
-    /// `batch_deposit` so multi-asset deposits cannot bypass vault-wide limits:
-    ///
-    /// | Cap | Check | Yield-inclusive? |
-    /// |----|-------|-----------------|
-    /// | Per-asset TVL cap (`config.tvl_cap`) | `totals.assets + amount ≤ config.tvl_cap` | Per-asset pool only |
-    /// | Global TVL cap (`TvLCap`) | `get_total_assets_internal() + amount ≤ TvLCap` | Yes — includes yield |
-    /// | Global user deposit cap (`UserDepositCap`) | `convert_to_assets(user_shares) + amount ≤ UserDepositCap` | Yes — includes yield |
-    ///
-    /// The global checks use yield-inclusive semantics identical to
-    /// `require_within_tvl_cap` and `require_within_deposit_cap` used by the
-    /// USDC `deposit` path, ensuring equivalent deposit paths enforce
-    /// identical cap semantics.
+    /// Validates the asset is supported, checks per-asset caps, transfers the
+    /// asset token, mints shares, and emits `AssetDepositEvent`.
     pub fn deposit_asset(env: Env, user: Address, asset: Symbol, amount: i128) {
         Self::require_initialized(&env);
         user.require_auth();
@@ -3247,24 +3138,6 @@ impl NeuroWealthVault {
         if config.deposit_limit > 0 {
             Self::require(&env, amount <= config.deposit_limit, VaultError::MaximumDepositExceeded);
         }
-
-        // ── Global cap enforcement (Issue #441) ──────────────────────────────
-        // `deposit_asset` must enforce the same global caps as `deposit` and
-        // `batch_deposit` so that multi-asset deposits cannot bypass the
-        // vault-wide TVL cap or the per-user deposit cap. Both checks use
-        // yield-inclusive semantics matching the USDC paths:
-        //
-        //   • Global TVL cap:  `get_total_assets_internal() + amount <= TvLCap`
-        //     (TotalAssets includes accrued yield, just like `require_within_tvl_cap`.)
-        //
-        //   • Global user deposit cap:  `convert_to_assets_internal(user_shares) + amount <= UserDepositCap`
-        //     (The user's USDC share value is converted at the current rate,
-        //     which includes yield — identical to `require_within_deposit_cap`.)
-        //
-        // The per-asset `config.tvl_cap` (checked below) is independent and
-        // caps each asset's own pool; the global cap caps the whole vault.
-        Self::require_within_tvl_cap(&env, amount);
-        Self::require_within_deposit_cap(&env, &user, amount);
 
         // Read all accounting state BEFORE the token transfer so a malicious
         // token contract cannot reenter and observe an inconsistent snapshot
@@ -3845,34 +3718,6 @@ impl NeuroWealthVault {
 
         let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
         let token_client = token::Client::new(&env, &usdc_token);
-
-        let approval_expiration = env.ledger().sequence().saturating_add(1);
-        if let Some(blend_pool) = env
-            .storage()
-            .instance()
-            .get::<DataKey, Address>(&DataKey::BlendPool)
-        {
-            Self::set_protocol_allowance(
-                &env,
-                &usdc_token,
-                &blend_pool,
-                0,
-                approval_expiration,
-            );
-        }
-        if let Some(dex_pool) = env
-            .storage()
-            .instance()
-            .get::<DataKey, Address>(&DataKey::DexPool)
-        {
-            Self::set_protocol_allowance(
-                &env,
-                &usdc_token,
-                &dex_pool,
-                0,
-                approval_expiration,
-            );
-        }
 
         // Check vault's idle USDC balance
         let vault_balance = token_client.balance(&env.current_contract_address());
@@ -4540,10 +4385,6 @@ impl NeuroWealthVault {
     /// integer division, or from a shortfall on an exit leg) simply stays idle
     /// and is corrected on the next rebalance.
     ///
-    /// The vault has no queued-withdrawal reservation state: an unredeemed user
-    /// claim remains represented by shares. Reallocation changes only where
-    /// assets are deployed and must not change `TotalShares` or `TotalAssets`.
-    ///
     /// # Arguments
     ///
     /// * `env` - The Soroban environment.
@@ -4948,25 +4789,7 @@ impl NeuroWealthVault {
             .publish((topics::TOPIC_EMERGENCY_PAUSED,), EmergencyPausedEvent { owner });
     }
 
-    /// Resets the circuit breaker counter and unpauses the vault (Issue #439).
-    ///
-    /// Called by the owner after investigating and resolving the root cause of
-    /// consecutive rebalance failures. The call atomically:
-    /// 1. Sets [`DataKey::ConsecutiveFailures`] back to `0`.
-    /// 2. Clears the [`DataKey::Paused`] flag.
-    /// 3. Emits [`CircuitBreakerResetEvent`].
-    ///
-    /// # Authorization
-    ///
-    /// Only the stored owner may call this function. Any other address —
-    /// including the AI agent — is rejected with [`VaultError::OnlyOwnerCanUnpause`].
-    /// This ensures that a compromised agent key cannot self-heal an
-    /// auto-paused vault.
-    ///
-    /// # Panics
-    ///
-    /// - [`VaultError::NotInitialized`] if the vault has not been initialized.
-    /// - [`VaultError::OnlyOwnerCanUnpause`] if the caller is not the stored owner.
+    /// Resets the circuit breaker and unpauses the vault.
     pub fn reset_circuit_breaker(env: Env, owner: Address) {
         Self::require_initialized(&env);
         owner.require_auth();
@@ -6301,11 +6124,9 @@ impl NeuroWealthVault {
     /// **Storage-only — no on-chain effect on fund deployment.**
     /// `rebalance()` and `deposit()` never read `DataKey::UserStrategy`; the vault
     /// deploys funds pooled to a single `CurrentProtocol` regardless of any
-    /// individual user's selection. `rebalance_multi()` also takes an explicit
-    /// vault-wide Blend/DEX split and does not read this preference. An off-chain
-    /// consumer may use the value to present intent or make a recommendation, but
-    /// the contract does not enforce per-user allocation. A user's chosen strategy
-    /// can therefore diverge from where their share of the pooled funds is actually
+    /// individual user's selection. The off-chain AI agent is expected to consume
+    /// this preference when deciding yield allocation. A user's chosen strategy can
+    /// therefore diverge from where their share of the pooled funds is actually
     /// deployed.
     ///
     /// # Arguments
@@ -6453,9 +6274,6 @@ impl NeuroWealthVault {
     pub fn update_agent(env: Env, new_agent: Address) {
         Self::require_initialized(&env);
         Self::require_is_owner(&env);
-        // A paused vault must not accept new agent-rotation proposals: the
-        // owner should resolve the pause condition first (Issue #438).
-        Self::require_not_paused(&env);
 
         Self::require(
             &env,
@@ -6505,10 +6323,6 @@ impl NeuroWealthVault {
     pub fn confirm_agent_update(env: Env) {
         Self::require_initialized(&env);
         Self::require_is_owner(&env);
-        // Confirming an agent rotation while paused could activate a key the
-        // operator has not yet verified. Require the vault to be unpaused so
-        // agent changes are only applied during normal operation (Issue #438).
-        Self::require_not_paused(&env);
 
         Self::require(
             &env,
@@ -6797,128 +6611,6 @@ impl NeuroWealthVault {
             },
         );
     }
-
-    // ==========================================================================
-    // GUARDIAN KEY — SECOND SIGNATURE FOR EXECUTE_UPGRADE (#44 / #607)
-    // ==========================================================================
-
-    /// Sets the guardian address that must co-sign `execute_upgrade` (#44).
-    ///
-    /// The guardian key is an additional defence-in-depth measure for the
-    /// upgrade flow: once set, `execute_upgrade` requires **both** the owner
-    /// signature and the guardian signature. An adversary who steals only the
-    /// owner key cannot execute a malicious upgrade without also stealing the
-    /// guardian key.
-    ///
-    /// The guardian key has **no other privileges**: it cannot pause, rebalance,
-    /// change configuration, or perform any owner-only action.
-    ///
-    /// Only the owner can call this function. Guardian changes are rejected
-    /// while an upgrade proposal is pending so they cannot change the
-    /// co-signature required for that proposal.
-    ///
-    /// # Arguments
-    ///
-    /// * `env` - The Soroban environment.
-    /// * `new_guardian` - The new guardian address.
-    ///
-    /// # Events
-    ///
-    /// Emits `GuardianSetEvent`.
-    ///
-    /// # Panics
-    ///
-    /// - [`VaultError::CallerIsNotOwner`] if the caller is not the owner.
-    /// - [`VaultError::TimelockAlreadyPending`] if an upgrade is pending.
-    pub fn set_guardian(env: Env, new_guardian: Address) {
-        Self::require_initialized(&env);
-        Self::require_is_owner(&env);
-        Self::require(
-            &env,
-            !env.storage().instance().has(&DataKey::PendingUpgradeHash),
-            VaultError::TimelockAlreadyPending,
-        );
-
-        let old_guardian: Option<Address> = env
-            .storage()
-            .instance()
-            .get(&DataKey::Guardian);
-
-        env.storage()
-            .instance()
-            .set(&DataKey::Guardian, &new_guardian);
-
-        let owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
-        env.events().publish(
-            (TOPIC_GUARDIAN_SET,),
-            GuardianSetEvent {
-                old_guardian,
-                new_guardian: Some(new_guardian),
-                owner,
-            },
-        );
-    }
-
-    /// Removes the guardian requirement from `execute_upgrade`.
-    ///
-    /// After calling this, future `execute_upgrade` calls use owner-only
-    /// authorization. Removal is rejected while an upgrade is pending; the
-    /// owner must cancel that proposal first. Any replacement proposal starts
-    /// a fresh timelock.
-    ///
-    /// Only the owner can call this.
-    ///
-    /// # Events
-    ///
-    /// Emits `GuardianSetEvent` with `new_guardian: None`.
-    ///
-    /// # Panics
-    ///
-    /// - [`VaultError::CallerIsNotOwner`] if the caller is not the owner.
-    /// - [`VaultError::TimelockAlreadyPending`] if an upgrade is pending.
-    pub fn remove_guardian(env: Env) {
-        Self::require_initialized(&env);
-        Self::require_is_owner(&env);
-        Self::require(
-            &env,
-            !env.storage().instance().has(&DataKey::PendingUpgradeHash),
-            VaultError::TimelockAlreadyPending,
-        );
-
-        let old_guardian: Option<Address> = env
-            .storage()
-            .instance()
-            .get(&DataKey::Guardian);
-
-        env.storage().instance().remove(&DataKey::Guardian);
-
-        let owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
-        env.events().publish(
-            (TOPIC_GUARDIAN_SET,),
-            GuardianSetEvent {
-                old_guardian,
-                new_guardian: None,
-                owner,
-            },
-        );
-    }
-
-    /// Returns the current guardian address, if one is configured.
-    ///
-    /// Returns `None` when no guardian is set (single-owner upgrade path).
-    ///
-    /// # Events
-    ///
-    /// None.
-    ///
-    /// # Panics
-    ///
-    /// - [`VaultError::NotInitialized`] if the vault has not been initialized.
-    pub fn get_guardian(env: Env) -> Option<Address> {
-        Self::require_initialized(&env);
-        env.storage().instance().get(&DataKey::Guardian)
-    }
-
 // ==========================================================================
     // MULTI-ASSET SUPPORT (#646) — ADMINISTRATION
     // ==========================================================================
@@ -7138,7 +6830,6 @@ impl NeuroWealthVault {
     ///
     /// Only the owner can set the Blend pool address. This must be called
     /// before the vault can interact with Blend for yield generation.
-    /// Replacing an existing pool clears that pool's USDC allowance first.
     ///
     /// # Arguments
     ///
@@ -7188,16 +6879,6 @@ impl NeuroWealthVault {
         let vault_address = env.current_contract_address();
         BlendPoolClient::get_balance(&env, &pool_address, &usdc_token, &vault_address);
 
-        if let Some(old_pool_address) = old_pool.as_ref() {
-            Self::set_protocol_allowance(
-                &env,
-                &usdc_token,
-                old_pool_address,
-                0,
-                env.ledger().sequence().saturating_add(1),
-            );
-        }
-
         env.storage()
             .instance()
             .set(&DataKey::BlendPool, &pool_address);
@@ -7221,7 +6902,7 @@ impl NeuroWealthVault {
 
     /// Configures the DEX liquidity pool contract address (owner only).
     ///
-    /// Mirrors [`set_blend_pool`](crate::NeuroWealthVault::set_blend_pool). Replacing an existing pool clears its USDC allowance. The pool interface is validated by probing
+    /// Mirrors [`set_blend_pool`](crate::NeuroWealthVault::set_blend_pool). The pool interface is validated by probing
     /// its `balance` entrypoint before the address is stored, so an invalid pool
     /// address is rejected at configuration time. `CurrentProtocol` is initialized
     /// to `"none"` when not already set.
@@ -7266,16 +6947,6 @@ impl NeuroWealthVault {
         let vault_address = env.current_contract_address();
         DexPoolClient::get_balance(&env, &pool_address, &usdc_token, &vault_address);
 
-        if let Some(old_pool_address) = old_pool.as_ref() {
-            Self::set_protocol_allowance(
-                &env,
-                &usdc_token,
-                old_pool_address,
-                0,
-                env.ledger().sequence().saturating_add(1),
-            );
-        }
-
         env.storage()
             .instance()
             .set(&DataKey::DexPool, &pool_address);
@@ -7300,10 +6971,7 @@ impl NeuroWealthVault {
     /// Updates the shared ledger TTL used when approving protocol token spend.
     ///
     /// The approval expiration ledger is computed as:
-    /// `env.ledger().sequence() + blend_approval_ttl`, with a maximum TTL of
-    /// [`MAX_APPROVAL_TTL`]. This legacy setter permits zero for immediate expiry
-    /// and shorter-than-standard TTLs; use `set_approval_ttl` for the 1,000
-    /// ledger minimum.
+    /// `env.ledger().sequence() + blend_approval_ttl`
     ///
     /// # Events
     ///
@@ -7311,19 +6979,11 @@ impl NeuroWealthVault {
     /// - [`ApprovalTtlUpdatedEvent`] (same topic as `set_approval_ttl`, since
     ///   both mutate the shared [`DataKey::ApprovalTtl`]), so indexers can
     ///   watch a single topic for every approval-TTL change.
-    ///
-    /// # Panics
-    ///
-    /// - [`VaultError::ApprovalTtlTooHigh`] if the TTL exceeds
-    ///   [`MAX_APPROVAL_TTL`].
     pub fn set_blend_approval_ttl(env: Env, owner: Address, blend_approval_ttl: u32) {
         Self::require_initialized(&env);
         owner.require_auth();
         let stored_owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
         Self::require(&env, owner == stored_owner, VaultError::CallerIsNotOwner);
-        if blend_approval_ttl > MAX_APPROVAL_TTL {
-            panic_with_error!(&env, VaultError::ApprovalTtlTooHigh);
-        }
 
         let old_ttl = Self::get_approval_ttl_internal(&env);
 
@@ -7534,25 +7194,6 @@ impl NeuroWealthVault {
     /// The agent calls this to reflect realized yield (increase) or a confirmed
     /// strategy loss / bad-debt write-down (decrease).
     ///
-    /// ## Valuation constraints (Issue #437)
-    ///
-    /// Every call is subject to the following hard limits regardless of direction:
-    ///
-    /// - **`new_total >= 0`** — Negative totals are impossible values. A negative
-    ///   figure would invert share prices and allow share-price manipulation.
-    ///   Rejected with [`VaultError::AmountMustBePositive`].
-    /// - **Solvency check** — `new_total` must not exceed the vault's actual
-    ///   on-chain USDC balance (idle + deployed to the active protocol). The agent
-    ///   cannot inflate total assets beyond what the vault can pay out.
-    ///   Rejected with [`VaultError::InsufficientBalanceForAssets`].
-    ///
-    /// ## Share pricing after an accepted loss
-    ///
-    /// `TotalAssets` is the authoritative denominator for every share ↔ asset
-    /// conversion. Accepted losses reduce the exchange rate proportionally,
-    /// distributing the loss fairly across all shareholders. No shares are minted
-    /// or burned; only the per-share asset value changes.
-    ///
     /// ## Decrease policy
     ///
     /// Decreases are permitted only when **all** of the following hold:
@@ -7591,7 +7232,7 @@ impl NeuroWealthVault {
     /// # Panics
     ///
     /// - If called by anyone other than the authorized agent.
-    /// - If `new_total < 0` ([`VaultError::AmountMustBePositive`]) (Issue #437).
+    /// - If new_total is negative.
     /// - If there are assets but total_shares is zero.
     /// - If the vault does not hold enough USDC to back the new_total.
     /// - If a decrease is attempted but not allowed.
@@ -7617,21 +7258,6 @@ impl NeuroWealthVault {
             VaultError::OnlyAgentCanUpdateTotalAssets,
         );
         agent.require_auth();
-        // Asset reports must not silently update share pricing while the vault
-        // is in an emergency-paused state. Any yield accrual or loss that
-        // occurs during a pause must be applied after the owner has reviewed
-        // the situation and unpaused the vault (Issue #438).
-        Self::require_not_paused(&env);
-
-        // Reject impossible values. A negative total assets figure would break
-        // share pricing (shares * negative_total / total_shares < 0) and could
-        // be used to manipulate redemption amounts. Zero is valid — it represents
-        // a vault that has been fully drained or is bootstrapping (Issue #437).
-        Self::require(
-            &env,
-            new_total >= 0,
-            VaultError::AmountMustBePositive,
-        );
 
         let old_total = Self::get_total_assets_internal(&env);
 
@@ -7812,9 +7438,6 @@ impl NeuroWealthVault {
     /// Executes a scheduled upgrade after the timelock has elapsed (step 2 of 2). (#316)
     ///
     /// Can only be called once `env.ledger().sequence() >= UpgradeTimelockExpiry`.
-    /// The owner and configured guardian must each authorize the exact pending
-    /// WASM hash, preventing an authorization for a previous hash from
-    /// authorizing a replacement proposal.
     /// On success the pending WASM hash is activated, the contract `Version` is
     /// incremented, and the pending proposal is cleared. All storage state (user
     /// balances, configuration, owner, agent) is preserved across the upgrade.
@@ -7822,7 +7445,7 @@ impl NeuroWealthVault {
     /// # Arguments
     ///
     /// * `env` - The Soroban environment.
-    /// * `owner` - The owner address (must authorize the pending hash).
+    /// * `owner` - The owner address (must authorize).
     ///
     /// # Events
     ///
@@ -7833,12 +7456,12 @@ impl NeuroWealthVault {
     ///
     /// - If the vault is paused.
     /// - If the caller is not the stored owner.
-    /// - If the configured guardian does not authorize the pending hash.
     /// - If no pending upgrade exists (`NoTimelockPending`).
     /// - If the timelock delay has not yet elapsed (`TimelockNotExpired`).
     /// - If the pending hash does not correspond to an uploaded WASM binary.
     pub fn execute_upgrade(env: Env, owner: Address) {
         Self::require_initialized(&env);
+        owner.require_auth();
         Self::require_not_paused(&env);
 
         let stored_owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
@@ -7849,28 +7472,6 @@ impl NeuroWealthVault {
             env.storage().instance().has(&DataKey::PendingUpgradeHash),
             VaultError::NoTimelockPending,
         );
-
-        let new_wasm_hash: BytesN<32> = env
-            .storage()
-            .instance()
-            .get(&DataKey::PendingUpgradeHash)
-            .unwrap();
-        let authorization_args = vec![
-            &env,
-            owner.clone().into_val(&env),
-            new_wasm_hash.clone().into_val(&env),
-        ];
-        owner.require_auth_for_args(authorization_args.clone());
-
-        // Guardian configuration is locked while a proposal is pending, and
-        // both signatures are scoped to this proposal's exact WASM hash.
-        if let Some(guardian) = env
-            .storage()
-            .instance()
-            .get::<DataKey, Address>(&DataKey::Guardian)
-        {
-            guardian.require_auth_for_args(authorization_args);
-        }
 
         let expiry: u32 = env
             .storage()
@@ -7883,6 +7484,12 @@ impl NeuroWealthVault {
             env.ledger().sequence() >= expiry,
             VaultError::TimelockNotExpired,
         );
+
+        let new_wasm_hash: BytesN<32> = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingUpgradeHash)
+            .unwrap();
 
         // Clear the pending proposal before applying the upgrade so a fresh
         // proposal can be scheduled afterwards.
@@ -8081,37 +7688,13 @@ impl NeuroWealthVault {
     /// Folds a rebalance outcome into the consecutive-failure circuit breaker
     /// (Issue #439).
     ///
-    /// ## Status → counter mapping (deterministic boundaries)
-    ///
-    /// | Status      | Counter effect                          | Rationale |
-    /// |-------------|-----------------------------------------|-----------|
-    /// | `"failed"`  | +1 (saturating); may trip breaker       | Supply/withdraw moved zero funds — a real protocol failure |
-    /// | `"success"` | Reset to 0                              | At least one leg moved funds successfully |
-    /// | `"partial"` | **Unchanged** (not counted as failure)  | Funds moved but less than intended; degraded success, not failure |
-    /// | `"noop"`    | **Unchanged** (not counted as failure)  | Nothing to move (idle balance was zero); not a protocol error |
-    ///
-    /// ## Auto-pause
-    ///
-    /// When the counter reaches [`DataKey::MaxConsecutiveFailures`] the vault
-    /// auto-pauses: [`DataKey::Paused`] is set to `true` and
-    /// [`EmergencyPausedEvent`] is emitted. The pause is applied at most once
-    /// per trip — if the vault is already paused no duplicate event is emitted.
-    ///
-    /// ## Trapped cross-contract calls and the CEI pattern
-    ///
-    /// Protocol supply/withdraw cross-contract calls precede this helper in the
-    /// call stack. If a cross-contract call panics the Soroban VM rolls back the
-    /// entire transaction, so `record_rebalance_outcome` is never reached and
-    /// the counter is never incremented. Only outcomes that survive to a clean
-    /// return path (`"failed"`, `"partial"`, `"noop"`, `"success"`) can affect
-    /// the counter — a trapped call cannot create a misleading persistent
-    /// counter expectation.
-    ///
-    /// ## Reset
-    ///
-    /// After the breaker trips, only the owner can recover the vault by calling
-    /// [`reset_circuit_breaker`](crate::NeuroWealthVault::reset_circuit_breaker),
-    /// which atomically zeroes the counter and clears the paused flag.
+    /// A `"failed"` status increments the counter; a `"success"` status resets
+    /// it to zero. `"partial"` and `"noop"` outcomes leave the counter
+    /// unchanged. When the counter reaches
+    /// [`DataKey::MaxConsecutiveFailures`] the vault auto-pauses by setting the
+    /// shared [`DataKey::Paused`] flag and emitting the existing
+    /// [`EmergencyPausedEvent`]. The pause is applied at most once per trip: if
+    /// the vault is already paused no duplicate event is emitted.
     fn record_rebalance_outcome(env: &Env, status: &Symbol) {
         if *status == symbol_short!("failed") {
             let failures = env
@@ -8144,51 +7727,15 @@ impl NeuroWealthVault {
         }
     }
 
-    /// Extends the persistent TTL for all user-owned state that must remain
-    /// live for indexers, keeper jobs, and migration/lock bookkeeping.
-    fn extend_user_state_ttl(env: &Env, user: &Address) {
-        let user_shares = DataKey::Shares(user.clone());
-        if env.storage().persistent().has(&user_shares) {
+    /// Extends the persistent TTL for a user's `Shares` entry when it exists.
+    fn extend_user_shares_ttl(env: &Env, user: &Address) {
+        let shares_key = DataKey::Shares(user.clone());
+        if env.storage().persistent().has(&shares_key) {
             env.storage().persistent().extend_ttl(
-                &user_shares,
+                &shares_key,
                 USER_SHARES_TTL_THRESHOLD,
                 USER_SHARES_TTL_EXTEND_TO,
             );
-        }
-
-        let locked_key = DataKey::LockedShares(user.clone());
-        if env.storage().persistent().has(&locked_key) {
-            env.storage().persistent().extend_ttl(
-                &locked_key,
-                USER_SHARES_TTL_THRESHOLD,
-                USER_SHARES_TTL_EXTEND_TO,
-            );
-        }
-
-        let strategy_key = DataKey::UserStrategy(user.clone());
-        if env.storage().persistent().has(&strategy_key) {
-            env.storage().persistent().extend_ttl(
-                &strategy_key,
-                USER_SHARES_TTL_THRESHOLD,
-                USER_SHARES_TTL_EXTEND_TO,
-            );
-        }
-
-        if let Some(supported) = env
-            .storage()
-            .instance()
-            .get::<MultiAssetKey, Vec<Symbol>>(&MultiAssetKey::SupportedAssets)
-        {
-            for asset in supported.iter() {
-                let asset_shares_key = MultiAssetKey::Shares(user.clone(), asset.clone());
-                if env.storage().persistent().has(&asset_shares_key) {
-                    env.storage().persistent().extend_ttl(
-                        &asset_shares_key,
-                        USER_SHARES_TTL_THRESHOLD,
-                        USER_SHARES_TTL_EXTEND_TO,
-                    );
-                }
-            }
         }
     }
 
@@ -8510,124 +8057,15 @@ impl NeuroWealthVault {
         // Count maintenance attempts even when the requested entry is absent;
         // otherwise an attacker could use missing-user probes as a cheap DoS.
         Self::enforce_user_rate_limit(&env, &user, RATE_LIMIT_TOUCH_TTL);
-        let has_legacy_shares = env
+        if !env
             .storage()
             .persistent()
-            .has(&DataKey::Shares(user.clone()));
-        let has_locked = env
-            .storage()
-            .persistent()
-            .has(&DataKey::LockedShares(user.clone()));
-        let has_strategy = env
-            .storage()
-            .persistent()
-            .has(&DataKey::UserStrategy(user.clone()));
-
-        let supported_assets = env
-            .storage()
-            .instance()
-            .get::<MultiAssetKey, Vec<Symbol>>(&MultiAssetKey::SupportedAssets)
-            .unwrap_or_else(|| Vec::new(&env));
-        let has_asset_shares = supported_assets.iter().any(|asset| {
-            env.storage()
-                .persistent()
-                .has(&MultiAssetKey::Shares(user.clone(), asset.clone()))
-        });
-
-        if !(has_legacy_shares || has_locked || has_strategy || has_asset_shares) {
+            .has(&DataKey::Shares(user.clone()))
+        {
             return false;
         }
-
-        Self::extend_user_state_ttl(&env, &user);
+        Self::extend_user_shares_ttl(&env, &user);
         true
-    }
-
-    /// Extends the `Shares` entry TTL for a batch of users in a single transaction.
-    ///
-    /// Reduces keeper-job overhead by batching up to `max_batch_size` TTL
-    /// maintenance calls into one transaction. Each user is processed
-    /// independently — a missing entry returns `false` for that slot but does
-    /// not abort the batch. The same `UserTTL` rate-limit bucket as
-    /// `touch_user_ttl` is consumed for every user in the batch, so the
-    /// combined per-user allowance applies.
-    ///
-    /// No authentication is required: anyone can extend TTL for any user.
-    ///
-    /// # Arguments
-    ///
-    /// * `env` - The Soroban environment.
-    /// * `users` - Addresses to touch, in the desired order. Must not exceed
-    ///   the configured `max_batch_size`.
-    ///
-    /// # Returns
-    ///
-    /// A `Vec<bool>` in the same order as `users`: `true` when the entry
-    /// existed and was extended, `false` when no `Shares` entry was found.
-    ///
-    /// # Events
-    ///
-    /// Emits:
-    /// - `BatchTtlTouchedEvent` with the total batch size and extension count.
-    ///
-    /// # Panics
-    ///
-    /// - [`VaultError::NotInitialized`] if the vault has not been initialized.
-    /// - [`VaultError::BatchSizeExceeded`] if `users.len() > max_batch_size`.
-    /// - [`VaultError::RateLimitExceeded`] if any user's TTL bucket is exhausted.
-    pub fn batch_touch_ttl(env: Env, users: Vec<Address>) -> Vec<bool> {
-        Self::require_initialized(&env);
-        let total = users.len();
-        Self::require_batch_size(&env, total);
-
-        let mut results: Vec<bool> = Vec::new(&env);
-        let mut users_extended: u32 = 0;
-
-        for i in 0..total {
-            let user = users.get(i).unwrap();
-            // Enforce per-user rate limit (same bucket as single touch_user_ttl).
-            // Count every probe, even for missing entries, to prevent DoS via probing.
-            Self::enforce_user_rate_limit(&env, &user, RATE_LIMIT_TOUCH_TTL);
-            let has_legacy_shares = env
-                .storage()
-                .persistent()
-                .has(&DataKey::Shares(user.clone()));
-            let has_locked = env
-                .storage()
-                .persistent()
-                .has(&DataKey::LockedShares(user.clone()));
-            let has_strategy = env
-                .storage()
-                .persistent()
-                .has(&DataKey::UserStrategy(user.clone()));
-            let supported_assets = env
-                .storage()
-                .instance()
-                .get::<MultiAssetKey, Vec<Symbol>>(&MultiAssetKey::SupportedAssets)
-                .unwrap_or_else(|| Vec::new(&env));
-            let has_asset_shares = supported_assets.iter().any(|asset| {
-                env.storage()
-                    .persistent()
-                    .has(&MultiAssetKey::Shares(user.clone(), asset.clone()))
-            });
-
-            if has_legacy_shares || has_locked || has_strategy || has_asset_shares {
-                Self::extend_user_state_ttl(&env, &user);
-                results.push_back(true);
-                users_extended = users_extended.saturating_add(1);
-            } else {
-                results.push_back(false);
-            }
-        }
-
-        env.events().publish(
-            (TOPIC_BATCH_TTL_TOUCHED,),
-            BatchTtlTouchedEvent {
-                count: total,
-                users_extended,
-            },
-        );
-
-        results
     }
 
     /// Returns both the principal balance and share balance for a user.
@@ -10128,6 +9566,29 @@ impl NeuroWealthVault {
     /// Internal helper: convert assets (USDC) to shares using current totals.
     /// Uses floor division - safe for deposits (user gets fewer shares, vault benefits).
     ///
+    /// # Rounding rule — FLOOR (vault-protective)
+    ///
+    /// `shares = floor(assets × total_shares / total_assets)`
+    ///
+    /// Rounding down means the user mints *at most* their proportional share.
+    /// Any fractional remainder accrues to the pool, never to the depositor.
+    /// This is the ERC-4626 convention for the deposit direction.
+    ///
+    /// # Bootstrap case
+    ///
+    /// When `total_shares == 0` **or** `total_assets == 0` the vault has no
+    /// existing position to price against.  A 1-to-1 mapping (`shares = assets`)
+    /// is used so that the first depositor sets the initial exchange rate without
+    /// paying a rounding penalty.
+    ///
+    /// # Overflow handling
+    ///
+    /// The intermediate `assets * total_shares` is computed with
+    /// `checked_mul`.  Overflow panics via `expect`, which maps to a
+    /// Soroban transaction revert under `#![no_std]`.  In practice the TVL
+    /// cap (`DEFAULT_TVL_CAP`) keeps both operands well within i128 range;
+    /// the check is defence-in-depth for pathological inputs.
+    ///
     /// # Inflation-attack note
     /// Pricing reads the stored `TotalAssets` (see [`get_total_assets_internal`](crate::NeuroWealthVault::get_total_assets_internal)),
     /// NOT the vault's live token balance. Direct "donations" (token transfers to
@@ -10137,6 +9598,11 @@ impl NeuroWealthVault {
     /// vaults) are unnecessary as a result. The `deposit` entrypoint additionally
     /// rejects zero-share mints and enforces a minimum deposit; see [`deposit`](crate::NeuroWealthVault::deposit)
     /// for the full mitigation rationale.
+    ///
+    /// # See also
+    ///
+    /// `docs/ROUNDING_TABLE.md` — complete rounding-policy reference for every
+    /// entrypoint.
     #[inline]
     fn convert_to_shares_internal(env: &Env, assets: i128) -> i128 {
         if assets == 0 {
@@ -10161,6 +9627,47 @@ impl NeuroWealthVault {
     /// Internal helper: convert assets (USDC) to shares using current totals.
     /// Uses ceiling division - safe for withdrawals (user burns more shares, vault benefits).
     /// Prevents dust attacks where floor division could result in 0 shares burned.
+    ///
+    /// # Rounding rule — CEILING (vault-protective)
+    ///
+    /// `shares = ceil(assets × total_shares / total_assets)`
+    ///
+    /// Ceiling division ensures that the user always burns *at least* their
+    /// proportional share of shares, rounded up by at most 1.  This prevents
+    /// "free withdrawal" dust attacks where a tiny asset amount would produce
+    /// 0 shares burned under floor division.
+    ///
+    /// # Ceiling formula
+    ///
+    /// ```text
+    /// ceil(a / b) = (a + b - 1) / b   for b >= 1
+    /// ```
+    ///
+    /// Applied here as:
+    ///
+    /// ```text
+    /// ceil(assets × total_shares / total_assets)
+    ///   = (assets × total_shares + total_assets - 1) / total_assets
+    /// ```
+    ///
+    /// # Bootstrap case
+    ///
+    /// When `total_shares == 0` or `total_assets == 0`, returns `assets`
+    /// directly (1:1, same as the floor path).  The ceiling of an integer is
+    /// that integer itself.
+    ///
+    /// # Overflow handling
+    ///
+    /// Three checked operations are chained: `checked_mul`, `checked_sub`,
+    /// and `checked_add`.  Any overflow panics and reverts the transaction.
+    /// The `checked_sub(1)` on `total_assets` cannot underflow in this branch
+    /// because `total_assets >= 1` is guaranteed by the `total_assets == 0`
+    /// early-return above.
+    ///
+    /// # See also
+    ///
+    /// `docs/ROUNDING_TABLE.md` — complete rounding-policy reference for every
+    /// entrypoint.
     #[inline]
     fn convert_to_shares_internal_ceil(env: &Env, assets: i128) -> i128 {
         if assets == 0 {
@@ -10196,6 +9703,29 @@ impl NeuroWealthVault {
     }
 
     /// Internal helper: convert shares to assets (USDC) using current totals.
+    ///
+    /// # Rounding rule — FLOOR (vault-protective)
+    ///
+    /// `assets = floor(shares × total_assets / total_shares)`
+    ///
+    /// Rounding down means users receive *at most* their proportional entitlement.
+    /// Any fractional remainder accrues to the pool.  This is the ERC-4626
+    /// convention for all share-to-asset conversions (redemption direction).
+    ///
+    /// # Bootstrap / empty-vault case
+    ///
+    /// Returns `0` when `total_shares == 0` or `total_assets == 0` because
+    /// there is no defined exchange rate.
+    ///
+    /// # Overflow handling
+    ///
+    /// The intermediate `shares * total_assets` product uses `checked_mul`,
+    /// which panics on overflow and reverts the transaction.
+    ///
+    /// # See also
+    ///
+    /// `docs/ROUNDING_TABLE.md` — complete rounding-policy reference for every
+    /// entrypoint.
     #[inline]
     fn convert_to_assets_internal(env: &Env, shares: i128) -> i128 {
         if shares == 0 {
@@ -10241,65 +9771,12 @@ impl NeuroWealthVault {
         );
     }
 
-    /// Binds slippage protection to the actual amount returned by the protocol
-    /// leg being evaluated.
-    ///
-    /// - `min_out < 0` is rejected by the caller before we reach this helper.
-    /// - `min_out == 0` disables the check.
-    /// - `min_out > 0` compares the realized protocol return value against the
-    ///   floor, so a leg returning less than the minimum fails the call.
+    /// Panics when `min_out > 0` and fewer assets were received than required.
     fn require_min_out(env: &Env, actual: i128, min_out: i128, leg: &str) {
-        if min_out == 0 {
-            return;
-        }
         if min_out > 0 && actual < min_out {
             let _ = leg;
             panic_with_error!(env, VaultError::MinOutNotMet);
         }
-    }
-
-    /// Returns a bounded absolute expiration ledger for a protocol allowance.
-    fn protocol_approval_expiration(env: &Env) -> u32 {
-        let ttl = Self::get_approval_ttl_internal(env);
-        Self::require(env, ttl <= MAX_APPROVAL_TTL, VaultError::ApprovalTtlTooHigh);
-        env.ledger().sequence().saturating_add(ttl)
-    }
-
-    /// Sets or revokes the vault's USDC allowance for one protocol pool.
-    fn set_protocol_allowance(
-        env: &Env,
-        usdc_token: &Address,
-        pool_address: &Address,
-        amount: i128,
-        expiration_ledger: u32,
-    ) {
-        Self::require(env, amount >= 0, VaultError::InsufficientLiquidity);
-
-        let vault_address = env.current_contract_address();
-        let approval_args: Vec<Val> = vec![
-            env,
-            vault_address.clone().into_val(env),
-            pool_address.clone().into_val(env),
-            amount.into_val(env),
-            expiration_ledger.into_val(env),
-        ];
-        env.authorize_as_current_contract(vec![
-            env,
-            InvokerContractAuthEntry::Contract(SubContractInvocation {
-                context: ContractContext {
-                    contract: usdc_token.clone(),
-                    fn_name: Symbol::new(env, "approve"),
-                    args: approval_args,
-                },
-                sub_invocations: vec![env],
-            }),
-        ]);
-        token::Client::new(env, usdc_token).approve(
-            &vault_address,
-            pool_address,
-            &amount,
-            &expiration_ledger,
-        );
     }
 
     /// Internal helper: Supplies USDC to the Blend pool.
@@ -10319,7 +9796,7 @@ impl NeuroWealthVault {
     /// - Returns 0 if amount <= 0
     /// - Panics if Blend pool address is not configured
     /// - Emits BlendSupplyEvent with success status
-    /// - Approves no more than the vault's current USDC balance, uses a bounded TTL, and clears unspent allowance after supply
+    /// - Uses the shared approval TTL configuration from instance storage to set the approval expiry
     fn supply_to_blend(env: &Env, amount: i128, min_out: i128) -> i128 {
         if amount <= 0 {
             return 0;
@@ -10335,15 +9812,19 @@ impl NeuroWealthVault {
 
         let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
         let vault_address = env.current_contract_address();
-        let approval_ledger = Self::protocol_approval_expiration(env);
-        let token_client = token::Client::new(env, &usdc_token);
-        Self::require(
-            env,
-            token_client.balance(&vault_address) >= amount,
-            VaultError::InsufficientLiquidity,
-        );
+        let approval_ledger = env
+            .ledger()
+            .sequence()
+            .saturating_add(Self::get_approval_ttl_internal(env));
 
         // Prepare authorization for token approval and Blend supply
+        let approval_args: Vec<Val> = vec![
+            env,
+            vault_address.clone().into_val(env),
+            pool_address.clone().into_val(env),
+            amount.into_val(env),
+            approval_ledger.into_val(env),
+        ];
         let submit_args: Vec<Val> = vec![
             env,
             vault_address.clone().into_val(env),
@@ -10367,8 +9848,20 @@ impl NeuroWealthVault {
             amount.into_val(env),
         ];
 
-        // Approve only the amount available, then clear any unused allowance.
-        Self::set_protocol_allowance(env, &usdc_token, &pool_address, amount, approval_ledger);
+        // Approve Blend pool to spend USDC
+        let token_client = token::Client::new(env, &usdc_token);
+        env.authorize_as_current_contract(vec![
+            env,
+            InvokerContractAuthEntry::Contract(SubContractInvocation {
+                context: ContractContext {
+                    contract: usdc_token.clone(),
+                    fn_name: Symbol::new(env, "approve"),
+                    args: approval_args,
+                },
+                sub_invocations: vec![env],
+            }),
+        ]);
+        token_client.approve(&vault_address, &pool_address, &amount, &approval_ledger);
 
         // Authorize and execute Blend supply
         env.authorize_as_current_contract(vec![
@@ -10398,7 +9891,6 @@ impl NeuroWealthVault {
             BlendPoolClient::supply(env, &pool_address, &usdc_token, amount, &vault_address);
 
         Self::require_min_out(env, supplied, min_out, "blend supply");
-        Self::set_protocol_allowance(env, &usdc_token, &pool_address, 0, approval_ledger);
 
         if supplied > 0 {
             Self::set_current_protocol(env, symbol_short!("blend"));
@@ -10468,13 +9960,6 @@ impl NeuroWealthVault {
         );
 
         Self::require_min_out(env, withdrawn, min_out, "blend withdraw");
-        Self::set_protocol_allowance(
-            env,
-            &usdc_token,
-            &pool_address,
-            0,
-            env.ledger().sequence().saturating_add(1),
-        );
 
         if withdrawn > 0 {
             let remaining =
@@ -10499,7 +9984,7 @@ impl NeuroWealthVault {
 
     /// Internal helper: Supplies USDC to the DEX liquidity pool.
     ///
-    /// Mirrors [`supply_to_blend`](crate::NeuroWealthVault::supply_to_blend): approves only available USDC, authorizes
+    /// Mirrors [`supply_to_blend`](crate::NeuroWealthVault::supply_to_blend): approves the pool to pull USDC, authorizes
     /// the cross-contract `add_liquidity` call (with its `transfer_from`
     /// sub-invocation), then supplies. The `min_out` floor is enforced both by
     /// forwarding it to the pool and by [`require_min_out`](crate::NeuroWealthVault::require_min_out) on the realized
@@ -10517,7 +10002,7 @@ impl NeuroWealthVault {
     /// - Returns 0 if amount <= 0
     /// - Panics if the DEX pool address is not configured
     /// - Panics with `MinOutNotMet` if the realized amount is below `min_out`
-    /// - Clears unspent allowance after supply and emits `DexSupplyEvent` with success status
+    /// - Emits `DexSupplyEvent` with success status
     fn supply_to_dex(env: &Env, amount: i128, min_out: i128) -> i128 {
         if amount <= 0 {
             return 0;
@@ -10533,14 +10018,18 @@ impl NeuroWealthVault {
 
         let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
         let vault_address = env.current_contract_address();
-        let approval_ledger = Self::protocol_approval_expiration(env);
-        let token_client = token::Client::new(env, &usdc_token);
-        Self::require(
-            env,
-            token_client.balance(&vault_address) >= amount,
-            VaultError::InsufficientLiquidity,
-        );
+        let approval_ledger = env
+            .ledger()
+            .sequence()
+            .saturating_add(Self::get_approval_ttl_internal(env));
 
+        let approval_args: Vec<Val> = vec![
+            env,
+            vault_address.clone().into_val(env),
+            pool_address.clone().into_val(env),
+            amount.into_val(env),
+            approval_ledger.into_val(env),
+        ];
         let add_liquidity_args: Vec<Val> = vec![
             env,
             vault_address.clone().into_val(env),
@@ -10556,8 +10045,20 @@ impl NeuroWealthVault {
             amount.into_val(env),
         ];
 
-        // Approve only the amount available, then clear any unused allowance.
-        Self::set_protocol_allowance(env, &usdc_token, &pool_address, amount, approval_ledger);
+        // Approve the DEX pool to spend USDC.
+        let token_client = token::Client::new(env, &usdc_token);
+        env.authorize_as_current_contract(vec![
+            env,
+            InvokerContractAuthEntry::Contract(SubContractInvocation {
+                context: ContractContext {
+                    contract: usdc_token.clone(),
+                    fn_name: Symbol::new(env, "approve"),
+                    args: approval_args,
+                },
+                sub_invocations: vec![env],
+            }),
+        ]);
+        token_client.approve(&vault_address, &pool_address, &amount, &approval_ledger);
 
         // Authorize and execute the DEX add_liquidity (pulls USDC via transfer_from).
         env.authorize_as_current_contract(vec![
@@ -10592,7 +10093,6 @@ impl NeuroWealthVault {
         );
 
         Self::require_min_out(env, supplied, min_out, "dex supply");
-        Self::set_protocol_allowance(env, &usdc_token, &pool_address, 0, approval_ledger);
 
         if supplied > 0 {
             Self::set_current_protocol(env, symbol_short!("dex"));
@@ -10661,13 +10161,6 @@ impl NeuroWealthVault {
         );
 
         Self::require_min_out(env, withdrawn, min_out, "dex withdraw");
-        Self::set_protocol_allowance(
-            env,
-            &usdc_token,
-            &pool_address,
-            0,
-            env.ledger().sequence().saturating_add(1),
-        );
 
         if withdrawn > 0 {
             let remaining =
@@ -10906,20 +10399,21 @@ impl NeuroWealthVault {
     /// Both legs use **floor** division, so:
     ///
     /// ```text
-    /// blend_target = floor(total x blend_bps / 10_000)
-    /// dex_target   = floor(total x dex_bps   / 10_000)
-    /// idle         = total - blend_target - dex_target  >= 0
+    /// blend_target = floor(total × blend_bps / 10_000)
+    /// dex_target   = floor(total × dex_bps   / 10_000)
+    /// idle         = total − blend_target − dex_target  ≥ 0
     /// ```
     ///
     /// The idle remainder is at most `2` stroops (one per leg).  This ensures
-    /// `blend_target + dex_target <= total` always holds, so the vault can never
+    /// `blend_target + dex_target ≤ total` always holds, so the vault can never
     /// attempt to supply more than its deployable balance.
     ///
     /// # Overflow handling
     ///
-    /// `total x bps` uses `checked_mul`; overflow panics and reverts the
+    /// `total × bps` uses `checked_mul`; overflow panics and reverts the
     /// transaction before any state is written.  In practice `total` is bounded
-    /// by the TVL cap and `bps <= 10_000`, so the product fits in i128.
+    /// by the TVL cap (≤ 100 M USDC × 10^7 = 10^15 stroops) and `bps ≤ 10_000`,
+    /// so the product fits comfortably in i128.
     ///
     /// # See also
     ///
