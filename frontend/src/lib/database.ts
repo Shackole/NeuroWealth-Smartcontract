@@ -5,6 +5,7 @@ export interface EarningsSummary {
 }
 
 export interface ChartDataPoint {
+  /** Explicit date or period label (e.g. '2026-07-21 UTC') */
   date: string;
   value: number;
   yield: number;
@@ -13,7 +14,7 @@ export interface ChartDataPoint {
 
 export interface TransactionRecord {
   id: string;
-  type: 'deposit' | 'withdrawal' | 'rebalance';
+  type: 'deposit' | 'withdrawal' | 'rebalance' | 'withdraw';
   amount: number;
   asset?: string;
   address?: string;
@@ -24,7 +25,7 @@ export interface TransactionRecord {
 }
 
 /**
- * Fetches user earnings summary (today, week, month) from database / API.
+ * Fetches user earnings summary (today, week, month) in USDC from database / API.
  */
 export async function getEarningsSummary(userAddress?: string): Promise<EarningsSummary> {
   if (!userAddress) return { today: 0, week: 0, month: 0 };
@@ -37,20 +38,47 @@ export async function getEarningsSummary(userAddress?: string): Promise<Earnings
 }
 
 /**
- * Fetches historical portfolio value series for Recharts line chart.
+ * Fetches historical portfolio value, accrued earnings (USDC), and APY (%) series.
  */
 export async function getPortfolioValueHistory(userAddress?: string): Promise<ChartDataPoint[]> {
-  const dates = ['Jul 21', 'Jul 22', 'Jul 23', 'Jul 24', 'Jul 25', 'Jul 26', 'Jul 27', 'Jul 28'];
+  if (!userAddress) return [];
+
+  const dates = [
+    '2026-07-21 UTC',
+    '2026-07-22 UTC',
+    '2026-07-23 UTC',
+    '2026-07-24 UTC',
+    '2026-07-25 UTC',
+    '2026-07-26 UTC',
+    '2026-07-27 UTC',
+    '2026-07-28 UTC',
+  ];
   let baseVal = 1350;
 
   return dates.map((date, idx) => {
     baseVal += 12 + idx * 2.5;
+    const apy = Number((8.1 + idx * 0.05).toFixed(2));
     return {
       date,
       value: Number(baseVal.toFixed(2)),
-      yield: Number((baseVal * 0.084 / 365 * (idx + 1)).toFixed(2))
+      yield: Number(((baseVal * (apy / 100)) / 365 * (idx + 1)).toFixed(2)),
+      apy,
     };
   });
+}
+
+/**
+ * Fetches historical cumulative earnings series for EarningsHistoryChart.
+ */
+export async function getEarningsHistory(userAddress?: string): Promise<EarningsDataPoint[]> {
+  if (!userAddress) return [];
+
+  const history = await getPortfolioValueHistory(userAddress);
+  return history.map((point, idx) => ({
+    timestamp: new Date(Date.UTC(2026, 6, 21 + idx, 0, 0, 0)).toISOString(),
+    balance: point.yield ?? 0,
+    apy: point.apy ?? 8.4,
+  }));
 }
 
 /**

@@ -71,7 +71,8 @@ export const PortfolioDashboard: React.FC<PortfolioDashboardProps> = ({
             Portfolio Overview
           </h2>
           <p className="text-xs sm:text-sm text-slate-400">
-            Real-time balance, earnings, and yield metrics
+            Real-time balance (USDC), earnings (USDC), and yield metrics (% APY) on{' '}
+            <span className="font-semibold text-slate-300">{networkName}</span>
           </p>
         </div>
         <div className={`flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border px-3 py-2 ${offline || stale ? 'border-amber-500/30 bg-amber-500/5' : 'border-slate-800 bg-slate-900/40'}`}>
