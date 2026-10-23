@@ -34,6 +34,12 @@ on:
 permissions:
   contents: read
 
+# Serialize deployments per target branch. An active rollout/migration is never
+# cancelled by a newer commit; GitHub retains the newest pending run visibly.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   # ---------------------------------------------------------------------------
   # Staging deployment — runs on push to the `staging` branch

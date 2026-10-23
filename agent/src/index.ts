@@ -5,8 +5,7 @@ import { evaluateYield } from './yieldComparison';
 import healthRouter, { configureHealthChecks } from './health';
 import logger from './logger';
 import { initializeTracing } from './tracing';
-import { getQueueStats, closeQueues } from './transactionQueue';
-import { renderOperationalMetrics } from './operationalMetrics';
+import { configureHttpSecurity, configureHttpTimeouts } from './httpSecurity';
 
 import { ipRateLimiter, userRateLimiter } from './rateLimiter';
 
@@ -27,19 +26,15 @@ initializeTracing();
 const app = express();
 const PORT = parseInt(process.env.PORT || '3001', 10);
 
-app.use(express.json());
+configureHttpSecurity(app);
 app.use(ipRateLimiter);
 app.use(userRateLimiter);
 app.use(healthRouter);
-app.get('/metrics', (_req, res) => {
-  res.type('text/plain; version=0.0.4; charset=utf-8').send(renderOperationalMetrics());
-});
 
 // Mount strategy aggregator API route (Issue #41)
 app.use(strategyRouter);
 
 let decisionInterval: ReturnType<typeof setInterval> | null = null;
-let queueMetricsInterval: ReturnType<typeof setInterval> | null = null;
 
 /**
  * Invokes the vault contract's `auto_compound(min_out)` function to harvest
@@ -106,22 +101,13 @@ async function main() {
   await startEventListener();
   startDecisionLoop();
 
-  const refreshQueueMetrics = async () => {
-    try {
-      await getQueueStats();
-    } catch (error) {
-      logger.warn({ error: error instanceof Error ? error.message : error }, 'Queue metrics refresh failed');
-    }
-  };
-  await refreshQueueMetrics();
-  queueMetricsInterval = setInterval(refreshQueueMetrics, 15_000);
-
   // Issue #40: Start USDC issuer freeze monitor (polls every 10 minutes).
   issuerFreezeMonitor.start();
 
   const serverInstance = app.listen(PORT, () => {
     logger.info({ port: PORT }, 'Agent HTTP server listening');
   });
+  configureHttpTimeouts(serverInstance);
 
   // Graceful shutdown
   async function shutdown(signal: string) {
@@ -130,10 +116,6 @@ async function main() {
     if (decisionInterval) {
       clearInterval(decisionInterval);
       decisionInterval = null;
-    }
-    if (queueMetricsInterval) {
-      clearInterval(queueMetricsInterval);
-      queueMetricsInterval = null;
     }
 
     stopEventListener();
@@ -146,7 +128,6 @@ async function main() {
     });
 
     try {
-      await closeQueues();
       await pool.end();
       logger.info('Database pool closed');
     } catch {

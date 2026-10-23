@@ -11,8 +11,12 @@ name: CD — Vercel Deploy
 # On merge to main:
 #   - Deploys to the production Vercel URL.
 #
-# Configure `preview` and protected `production` GitHub environments with
-# separate, least-privilege Vercel tokens and project IDs. PRs use preview only.
+# Prerequisites (GitHub Actions environments):
+#   VERCEL_TOKEN          — Vercel personal access token (Settings → Tokens)
+#   VERCEL_ORG_ID         — Found in Vercel project settings
+#   VERCEL_PROJECT_ID     — Found in Vercel project settings
+#   Configure preview values in `vercel-preview` and production values in
+#   `vercel-production`; the production environment should allow only `main`.
 #
 # Optional:
 #   LHCI_GITHUB_APP_TOKEN — Lighthouse CI GitHub App token for rich PR annotations
@@ -35,6 +39,12 @@ permissions:
   contents: read
   pull-requests: write   # needed to post preview URL comment
 
+# Serialize revisions within each ref. Do not cancel an active production
+# deployment; later main revisions remain queued for the same group.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   # ───────────────────────────────────────────────────────────────────────────
   # Build & deploy
@@ -42,19 +52,18 @@ jobs:
   deploy:
     name: Build & Deploy to Vercel
     runs-on: ubuntu-latest
-    if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'
     environment:
-      name: ${{ github.event_name == 'pull_request' && 'preview' || 'production' }}
+      name: ${{ github.ref == 'refs/heads/main' && 'vercel-production' || 'vercel-preview' }}
     outputs:
       preview_url: ${{ steps.deploy.outputs.preview_url }}
       is_production: ${{ steps.context.outputs.is_production }}
 
     steps:
       - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        uses: actions/checkout@v7
 
       - name: Set up Node.js
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        uses: actions/setup-node@v7
         with:
           node-version: "20"
           cache: "npm"
@@ -89,20 +98,18 @@ jobs:
       # Pull Vercel project settings so `vercel deploy` knows the project.
       - name: Pull Vercel project settings
         working-directory: frontend
-        run: npx vercel pull --yes --environment=preview --token="$VERCEL_TOKEN"
+        run: npx vercel pull --yes --environment=preview --token=${{ secrets.VERCEL_TOKEN }}
         env:
-          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-          VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
-          VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
 
       # Build the Vercel output artifact from the already-validated Next.js build.
       - name: Build Vercel output
         working-directory: frontend
-        run: npx vercel build ${{ steps.context.outputs.is_production == 'true' && '--prod' || '' }} --token="$VERCEL_TOKEN"
+        run: npx vercel build ${{ steps.context.outputs.is_production == 'true' && '--prod' || '' }} --token=${{ secrets.VERCEL_TOKEN }}
         env:
-          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-          VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
-          VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
 
       # Deploy the pre-built artifact — avoids a second full build on Vercel.
       - name: Deploy to Vercel
@@ -111,13 +118,12 @@ jobs:
         run: |
           DEPLOY_URL=$(npx vercel deploy --prebuilt \
             ${{ steps.context.outputs.is_production == 'true' && '--prod' || '' }} \
-            --token="$VERCEL_TOKEN")
+            --token=${{ secrets.VERCEL_TOKEN }})
           echo "preview_url=$DEPLOY_URL" >> "$GITHUB_OUTPUT"
           echo "Deployed to: $DEPLOY_URL"
         env:
-          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-          VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
-          VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
 
   # ───────────────────────────────────────────────────────────────────────────
   # Post preview URL as a PR comment
@@ -130,7 +136,7 @@ jobs:
 
     steps:
       - name: Find existing preview comment
-        uses: peter-evans/find-comment@3eae4d37986fb5a8592848f6a574fdf654e61f9e # v3
+        uses: peter-evans/find-comment@v3
         id: find_comment
         with:
           issue-number: ${{ github.event.pull_request.number }}
@@ -138,7 +144,7 @@ jobs:
           body-includes: "<!-- vercel-preview -->"
 
       - name: Create or update preview comment
-        uses: peter-evans/create-or-update-comment@71345be0265236311c031f5c7866368bd1eff043 # v4
+        uses: peter-evans/create-or-update-comment@v4
         with:
           comment-id: ${{ steps.find_comment.outputs.comment-id }}
           issue-number: ${{ github.event.pull_request.number }}
@@ -166,10 +172,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        uses: actions/checkout@v7
 
       - name: Set up Node.js
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        uses: actions/setup-node@v7
         with:
           node-version: "20"
           cache: "npm"
