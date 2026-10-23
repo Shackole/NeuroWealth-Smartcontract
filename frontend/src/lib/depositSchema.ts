@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { parseUsdcAmount } from './moneyInput';
 
 export const STRATEGY_OPTIONS = ['Conservative', 'Balanced', 'Growth'] as const;
 export type Strategy = typeof STRATEGY_OPTIONS[number];
@@ -15,7 +16,9 @@ export const depositSchema = z.object({
   amount: z
     .string()
     .min(1, 'Amount is required')
-    .refine((val) => !isNaN(parseFloat(val)), { message: 'Amount must be a number' })
+    .refine((val) => parseUsdcAmount(val) !== null, {
+      message: 'Use a period for decimals and do not include grouping separators',
+    })
     .refine((val) => parseFloat(val) > 0, { message: 'Amount must be greater than zero' })
     .refine((val) => parseFloat(val) >= MIN_DEPOSIT_USDC, {
       message: `Minimum deposit is ${MIN_DEPOSIT_USDC} USDC`,

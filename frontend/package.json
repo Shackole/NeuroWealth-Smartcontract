@@ -7,8 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test:e2e": "playwright test",
-    "analyze": "ANALYZE=true next build"
+    "check:i18n": "node scripts/check-i18n-keys.js && node scripts/check-transaction-locales.js",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "@neurowealth/vault-client": "file:../packages/vault-client",
@@ -17,8 +17,8 @@
     "clsx": "^2.1.1",
     "lucide-react": "^0.378.0",
     "next": "^15.0.0",
-    "next-intl": "^4.14.9",
-    "react": "^19.3.1",
+    "next-intl": "^4.14.8",
+    "react": "^19.3.0",
     "react-dom": "^18.3.1",
     "recharts": "^2.12.7",
     "tailwind-merge": "^2.3.0"
@@ -28,9 +28,9 @@
     "@types/react": "^19.3.0",
     "@types/react-dom": "^18.3.0",
     "autoprefixer": "^10.6.1",
-    "@playwright/test": "^1.64.1",
+    "@playwright/test": "^1.52.0",
     "husky": "^9.0.0",
-    "postcss": "^8.5.30",
+    "postcss": "^8.5.28",
     "tailwindcss": "^3.4.3",
     "typescript": "^5.4.5"
   }

@@ -1,66 +1,54 @@
 'use client';
 
-import React, { useMemo, useState } from 'react';
+import React, { useState } from 'react';
 import { Header } from '@/components/Header';
-import { PortfolioDashboard } from '@/components/PortfolioDashboard';
+import { BalanceCard } from '@/components/BalanceCard';
+import { EarningsCard } from '@/components/EarningsCard';
 import { PortfolioChart } from '@/components/PortfolioChart';
-import { TransactionHistoryTable } from '@/components/TransactionHistoryTable';
+import { TransactionHistory } from '@/components/TransactionHistory';
 import { ActionModal } from '@/components/ActionModal';
-import { usePortfolio } from '@/lib/usePortfolio';
-import { useAssetBreakdown } from '@/lib/useAssetBreakdown';
-
-const USDC_SCALE = 10_000_000n;
-
-function formatRawUsdc(amount: bigint): string {
-  const whole = amount / USDC_SCALE;
-  const fraction = (amount % USDC_SCALE).toString().padStart(7, '0');
-  return `${whole}.${fraction}`;
-}
 
 export default function DashboardViewPage() {
   const [publicKey, setPublicKey] = useState<string | null>('GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5');
   const [modalType, setModalType] = useState<'deposit' | 'withdraw'>('deposit');
   const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
-  const { data, isLoading, isValidating, error, refresh } = usePortfolio(publicKey);
-  const {
-    raw: assetBalances,
-    updatedAt: assetUpdatedAt,
-    source: assetSource,
-    hasData: hasAssetData,
-    error: assetError,
-    isValidating: assetsValidating,
-    refresh: refreshAssets,
-  } = useAssetBreakdown();
 
-  const assets = useMemo(() => [
+  const vaultState = {
+    balance: 100.25,
+    strategy: 'Balanced',
+    exchangeRate: 1.042,
+    apy: 8.4,
+  };
+
+  const earnings = {
+    today: 0.23,
+    week: 1.61,
+    month: 6.95,
+  };
+
+  const chartData = [
+    { date: 'Day 1', value: 95.0 },
+    { date: 'Day 2', value: 97.2 },
+    { date: 'Day 3', value: 100.25 },
+  ];
+
+  const transactions = [
     {
-      id: 'vault-idle-usdc',
-      symbol: 'USDC',
-      name: 'USD Coin',
-      rawAmount: formatRawUsdc(assetBalances.idle),
-      protocol: 'Vault (idle)',
-      estimatedValue: null,
-      valuationSource: null,
-      quoteUpdatedAt: null,
+      id: 'tx-1',
+      type: 'deposit' as const,
+      amount: 50.0,
+      timestamp: new Date().toISOString(),
+      status: 'confirmed' as const,
+      txHash: '0x1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b',
     },
     {
-      id: 'vault-deployed-usdc',
-      symbol: 'USDC',
-      name: 'USD Coin',
-      rawAmount: formatRawUsdc(assetBalances.deployed),
-      protocol: `Active strategy (${data.vaultState.strategy})`,
-      estimatedValue: null,
-      valuationSource: null,
-      quoteUpdatedAt: null,
+      id: 'tx-2',
+      type: 'yield' as const,
+      amount: 0.25,
+      timestamp: new Date().toISOString(),
+      status: 'confirmed' as const,
     },
-  ], [assetBalances, data.vaultState.strategy]);
-
-  const dataStatus = error || assetError
-    ? 'error'
-    : isValidating || assetsValidating
-      ? 'refreshing'
-      : 'online';
-  const updatedAt = assetUpdatedAt || data.updatedAt || null;
+  ];
 
   return (
     <div className="min-h-screen bg-[#080b11] text-slate-100 flex flex-col justify-between">
@@ -78,45 +66,33 @@ export default function DashboardViewPage() {
 
         <section aria-labelledby="portfolio-summary-heading" className="space-y-4">
           <h2 id="portfolio-summary-heading" className="sr-only">Portfolio Summary</h2>
-          <PortfolioDashboard
-            balance={data.vaultState.balance}
-            exchangeRate={data.vaultState.exchangeRate}
-            strategy={data.vaultState.strategy}
-            apy={data.vaultState.apy}
-            earnings={data.earnings}
-            isConnected={Boolean(publicKey)}
-            onOpenDeposit={() => {
-              setModalType('deposit');
-              setIsModalOpen(true);
-            }}
-            onOpenWithdraw={() => {
-              setModalType('withdraw');
-              setIsModalOpen(true);
-            }}
-            dataStatus={dataStatus}
-            hasData={Boolean(data.updatedAt) || hasAssetData}
-            updatedAt={updatedAt}
-            onRefresh={() => {
-              void refresh();
-              void refreshAssets();
-            }}
-            assets={hasAssetData ? assets : undefined}
-            totalEstimatedValue={null}
-            totalValueSource={`${assetSource}; USDC quote unavailable, so no estimated total is shown`}
-          />
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <BalanceCard
+              balance={vaultState.balance}
+              usdEquivalent={vaultState.balance}
+              exchangeRate={vaultState.exchangeRate}
+              isConnected={!!publicKey}
+              onOpenDeposit={() => {
+                setModalType('deposit');
+                setIsModalOpen(true);
+              }}
+              onOpenWithdraw={() => {
+                setModalType('withdraw');
+                setIsModalOpen(true);
+              }}
+            />
+            <EarningsCard earnings={earnings} apy={vaultState.apy} />
+          </div>
         </section>
 
         <section aria-labelledby="chart-heading" className="space-y-4">
           <h2 id="chart-heading" className="text-xl font-bold text-white">Portfolio Performance</h2>
-          <PortfolioChart
-            data={data.chartData}
-            status={error ? 'error' : isLoading ? 'loading' : 'ready'}
-          />
+          <PortfolioChart data={chartData} />
         </section>
 
         <section aria-labelledby="history-heading" className="space-y-4">
           <h2 id="history-heading" className="text-xl font-bold text-white">Recent Transactions</h2>
-          <TransactionHistoryTable publicKey={publicKey} />
+          <TransactionHistory transactions={transactions} />
         </section>
       </main>
 
@@ -129,9 +105,9 @@ export default function DashboardViewPage() {
           isOpen={isModalOpen}
           type={modalType}
           onClose={() => setIsModalOpen(false)}
-          onSuccess={() => setIsModalOpen(false)}
-          publicKey={publicKey || ''}
-          currentBalance={data.vaultState.balance}
+          userPublicKey={publicKey}
+          balance={vaultState.balance}
+          exchangeRate={vaultState.exchangeRate}
         />
       )}
     </div>
