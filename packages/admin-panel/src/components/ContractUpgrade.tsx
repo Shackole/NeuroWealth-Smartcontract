@@ -6,6 +6,7 @@ import { useStore } from "@/lib/store";
 import { getSorobanServer } from "@/lib/stellar";
 import { GitBranch, AlertTriangle, CheckCircle } from "lucide-react";
 import * as StellarSdk from "@stellar/stellar-sdk";
+import { ActionReview } from "./ActionReview";
 
 interface ContractUpgradeProps {
   client: VaultClient;
@@ -24,11 +25,16 @@ export function ContractUpgrade({
   const [pendingExpiry, setPendingExpiry] = useState<number | null>(null);
   const [wasmFile, setWasmFile] = useState<File | null>(null);
   const [wasmHash, setWasmHash] = useState<string>("");
+  const [reviewedWasmHash, setReviewedWasmHash] = useState<string | null>(null);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [txHash, setTxHash] = useState<string | null>(null);
   const [showScheduleConfirm, setShowScheduleConfirm] = useState(false);
+  const [reviewedPendingAction, setReviewedPendingAction] = useState<{
+    kind: "execute" | "cancel";
+    hash: string;
+  } | null>(null);
   const [activeTab, setActiveTab] = useState<"schedule" | "execute" | "cancel">(
     "schedule",
   );
@@ -79,12 +85,13 @@ export function ContractUpgrade({
   };
 
   const handleScheduleUpgrade = async () => {
-    if (!wasmHash) {
+    const proposalHash = reviewedWasmHash;
+    if (!proposalHash) {
       setError("Please select a WASM file");
       return;
     }
 
-    if (wasmHash.length !== 64) {
+    if (proposalHash.length !== 64) {
       setError("Invalid WASM hash length");
       return;
     }
@@ -95,7 +102,7 @@ export function ContractUpgrade({
 
     try {
       // Convert hex to BytesN<32>
-      const hashBytes = Buffer.from(wasmHash, "hex");
+      const hashBytes = Buffer.from(proposalHash, "hex");
       const result = await client.schedule_upgrade(
         signer,
         signer.publicKey(),
@@ -110,6 +117,7 @@ export function ContractUpgrade({
 
       setWasmFile(null);
       setWasmHash("");
+      setReviewedWasmHash(null);
     } catch (err) {
       setError(
         err instanceof Error ? err.message : "Failed to schedule upgrade",
@@ -120,12 +128,21 @@ export function ContractUpgrade({
     }
   };
 
-  const handleExecuteUpgrade = async () => {
+  const handleExecuteUpgrade = async (reviewedHash: string) => {
     setLoading(true);
     setError(null);
     setTxHash(null);
 
     try {
+      const current = await client.get_pending_upgrade(signer.publicKey());
+      const latestHash = current && typeof current === "object"
+        ? String((current as any).wasm_hash || (current as any).hash || "")
+        : "";
+      const latestExpiry = current && typeof current === "object"
+        ? Number((current as any).expiry || (current as any).effective_ledger || 0)
+        : 0;
+      if (latestHash !== reviewedHash) throw new Error("The pending WASM hash changed. Refresh and review the current proposal.");
+      if (!latestExpiry || currentLedger < latestExpiry) throw new Error("The contract timelock has not expired. Refresh the ledger and review again.");
       const result = await client.execute_upgrade(signer, signer.publicKey());
       setTxHash(result.hash);
 
@@ -143,6 +160,7 @@ export function ContractUpgrade({
 
       // Fetch updated info
       await fetchUpgradeInfo();
+      setReviewedPendingAction(null);
     } catch (err) {
       setError(
         err instanceof Error ? err.message : "Failed to execute upgrade",
@@ -152,12 +170,17 @@ export function ContractUpgrade({
     }
   };
 
-  const handleCancelUpgrade = async () => {
+  const handleCancelUpgrade = async (reviewedHash: string) => {
     setLoading(true);
     setError(null);
     setTxHash(null);
 
     try {
+      const current = await client.get_pending_upgrade(signer.publicKey());
+      const latestHash = current && typeof current === "object"
+        ? String((current as any).wasm_hash || (current as any).hash || "")
+        : "";
+      if (latestHash !== reviewedHash) throw new Error("The pending WASM hash changed. Refresh and review the current proposal.");
       const result = await client.cancel_upgrade(signer, signer.publicKey());
       setTxHash(result.hash);
 
@@ -175,6 +198,7 @@ export function ContractUpgrade({
 
       // Fetch updated info
       await fetchUpgradeInfo();
+      setReviewedPendingAction(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to cancel upgrade");
     } finally {
@@ -315,22 +339,32 @@ export function ContractUpgrade({
                     This will schedule a contract upgrade with a 24-hour
                     timelock.
                     <br />
+                    Current version: <span className="font-mono">{version ?? "Unknown"}</span>
                     <br />
-                    After the timelock expires, you can execute the upgrade to
-                    deploy the new code.
+                    Proposed WASM SHA-256: <span className="font-mono break-all">{reviewedWasmHash || "No reviewed hash"}</span>
+                    <br />
+                    Network: {String(network)}
+                    <br />
+                    Required signer role: contract owner
+                    <br />
+                    Signing account: <span className="font-mono break-all">{signer.publicKey()}</span>
+                    <br />
+                    <br />
+                    After the 24-hour timelock expires, the owner can execute
+                    this exact reviewed WASM hash.
                   </p>
                 </div>
               </div>
               <div className="flex gap-2">
                 <button
                   onClick={handleScheduleUpgrade}
-                  disabled={loading}
+                  disabled={loading || !reviewedWasmHash}
                   className="button-danger px-4 py-2 disabled:opacity-50"
                 >
                   {loading ? "Processing..." : "Schedule Upgrade"}
                 </button>
                 <button
-                  onClick={() => setShowScheduleConfirm(false)}
+                  onClick={() => { setShowScheduleConfirm(false); setReviewedWasmHash(null); }}
                   disabled={loading}
                   className="button-secondary px-4 py-2"
                 >
@@ -340,7 +374,7 @@ export function ContractUpgrade({
             </div>
           ) : (
             <button
-              onClick={() => setShowScheduleConfirm(true)}
+              onClick={() => { setReviewedWasmHash(wasmHash); setShowScheduleConfirm(true); }}
               disabled={!wasmFile || loading}
               className="button-primary w-full py-3 disabled:opacity-50"
             >
@@ -357,7 +391,7 @@ export function ContractUpgrade({
               Execute the scheduled upgrade
             </p>
             <button
-              onClick={handleExecuteUpgrade}
+              onClick={() => setReviewedPendingAction({ kind: "execute", hash: pendingHash })}
               disabled={loading || !canExecuteUpgrade}
               className="button-primary w-full py-3 disabled:opacity-50"
             >
@@ -378,7 +412,7 @@ export function ContractUpgrade({
               Cancel the scheduled upgrade
             </p>
             <button
-              onClick={handleCancelUpgrade}
+              onClick={() => setReviewedPendingAction({ kind: "cancel", hash: pendingHash })}
               disabled={loading}
               className="button-danger w-full py-3 disabled:opacity-50"
             >
@@ -386,6 +420,32 @@ export function ContractUpgrade({
             </button>
           </div>
         </div>
+      )}
+
+      {reviewedPendingAction && (
+        <ActionReview
+          title={reviewedPendingAction.kind === "execute" ? "Execute contract upgrade" : "Cancel contract upgrade"}
+          network={String(network)}
+          signer={signer.publicKey()}
+          requiredAuthority="Contract owner"
+          timelock={reviewedPendingAction.kind === "execute"
+            ? `Execution is gated until ledger ${pendingExpiry ?? "unknown"}; current ledger ${currentLedger}.`
+            : `Pending proposal expires at ledger ${pendingExpiry ?? "unknown"}; cancellation is available to the owner.`}
+          changes={[{
+            label: "Pending WASM hash",
+            current: reviewedPendingAction.hash,
+            proposed: reviewedPendingAction.kind === "execute"
+              ? `Execute this exact hash: ${reviewedPendingAction.hash}`
+              : `Cancel the proposal for this exact hash: ${reviewedPendingAction.hash}`,
+          }]}
+          loading={loading}
+          onCancel={() => setReviewedPendingAction(null)}
+          onConfirm={() => {
+            const proposal = reviewedPendingAction;
+            if (proposal.kind === "execute") void handleExecuteUpgrade(proposal.hash);
+            else void handleCancelUpgrade(proposal.hash);
+          }}
+        />
       )}
 
       {txHash && (
