@@ -27,6 +27,18 @@ module.exports = {
           DEFAULT: '#e2e8f0',
           dark: '#1e293b',
         },
+        focus: {
+          light: '#047857',
+          dark: '#34d399',
+        },
+        feedback: {
+          error: {
+            text: {
+              light: '#b91c1c',
+              dark: '#fca5a5',
+            },
+          },
+        },
         muted: {
           DEFAULT: '#64748b',
           dark: '#94a3b8',

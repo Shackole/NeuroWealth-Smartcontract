@@ -28,6 +28,13 @@ Preferred: **Figma**. Sketch or Adobe XD also accepted.
 
 ## Design Decisions
 
+### Usability research
+
+The first-depositor task protocol, consent guidance, severity rubric, and blank
+observation record are in [usability-study.md](usability-study.md). Findings
+must be added only after real sessions; the protocol file records the current
+study status.
+
 1. **Two-column layout on desktop** — Balance/strategy on the left (5 cols), chart/APY on the right
    (7 cols). The chart gets more horizontal space because it is the primary engagement surface and
    users scan left-to-right for portfolio health first, then growth trend.

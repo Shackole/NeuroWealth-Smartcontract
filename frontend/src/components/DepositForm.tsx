@@ -604,9 +604,9 @@ export const DepositForm: React.FC<DepositFormProps> = ({
                     placeholder="0.00"
                     className={`w-full bg-slate-900 border rounded-xl py-3 px-4 pr-20 text-white font-mono text-lg focus:outline-none transition-colors ${
                       errors.amount
-                        ? 'border-red-500 focus:border-red-400'
-                        : 'border-slate-700 focus:border-emerald-500'
-                    }`}
+                        ? 'border-red-500 focus:border-red-400 focus-visible:ring-feedback-error-text-dark'
+                      : 'border-slate-700 focus:border-emerald-500 focus-visible:ring-focus-dark'
+                    } focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950`}
                     aria-describedby={errors.amount ? 'amount-error' : undefined}
                     aria-invalid={!!errors.amount}
                     {...register('amount')}
@@ -624,7 +624,7 @@ export const DepositForm: React.FC<DepositFormProps> = ({
                 {errors.amount && (
                   <p
                     id="amount-error"
-                    className="mt-1.5 text-xs text-red-400 flex items-center gap-1"
+                    className="mt-1.5 text-xs text-feedback-error-text-dark flex items-center gap-1"
                     role="alert"
                   >
                     <AlertTriangle size={12} aria-hidden="true" />
