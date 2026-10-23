@@ -10,7 +10,7 @@ on:
     - cron: "0 3 * * 0"
 
 permissions:
-  contents: read
+  contents: write
 
 env:
   # Maximum allowed size in bytes for the optimised contract WASM.
@@ -100,7 +100,7 @@ jobs:
           workspaces: neurowealth-vault
 
       - name: Cache cargo registry and tooling
-        uses: actions/cache@v6
+        uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/bin/
@@ -286,6 +286,7 @@ jobs:
     # against pinned dependencies surface without waiting for a PR.
     permissions:
       contents: read
+      issues: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -302,19 +303,12 @@ jobs:
           # --all-features (the action's default).
           arguments: ""
 
-
-  cargo-deny-tracking:
-    name: Report scheduled dependency audit failure
-    runs-on: ubuntu-latest
-    needs: [cargo-deny]
-    if: >-
-      always() && github.event_name == 'schedule' &&
-      needs.cargo-deny.result == 'failure'
-    permissions:
-      issues: write
-    steps:
       - name: Open or update advisory tracking issue
-        uses: actions/github-script@v7
+        # Only scheduled runs manage the tracking issue: a per-PR failure is
+        # already visible on the PR itself, while a scheduled failure has no
+        # PR to surface it and would otherwise go unnoticed.
+        if: failure() && github.event_name == 'schedule'
+        uses: actions/github-script@v9
         with:
           script: |
             const title = 'Scheduled cargo-deny audit is failing (dependency advisory drift)';
