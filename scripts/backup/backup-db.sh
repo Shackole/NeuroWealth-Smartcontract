@@ -93,7 +93,34 @@ aws s3 cp \
   --storage-class STANDARD_IA \
   "${ENCRYPTED_PATH}" \
   "${S3_URI}"
-log "Upload complete"
+log "Upload complete; verifying S3 encryption metadata"
+SERVER_SIDE_ENCRYPTION="$(aws s3api head-object \
+  --region "${AWS_REGION}" \
+  --bucket "${BACKUP_S3_BUCKET}" \
+  --key "${S3_KEY}" \
+  --query ServerSideEncryption \
+  --output text)"
+case "${SERVER_SIDE_ENCRYPTION}" in
+  AES256|aws:kms|aws:kms:dsse) ;;
+  *) error "S3 object is missing an accepted server-side encryption setting"; exit 1 ;;
+esac
+log "S3 encryption verified (${SERVER_SIDE_ENCRYPTION}); verifying retention lifecycle"
+LIFECYCLE_RULES="$(aws s3api get-bucket-lifecycle-configuration \
+  --region "${AWS_REGION}" \
+  --bucket "${BACKUP_S3_BUCKET}" \
+  --query 'Rules[?Status==`Enabled`].{Expiration:Expiration.Days,Noncurrent:NoncurrentVersionExpiration.NoncurrentDays}' \
+  --output json)"
+if ! python3 - "${LIFECYCLE_RULES}" <<'PY'
+import json, sys
+rules = json.loads(sys.argv[1])
+if not rules or not any(isinstance(rule.get("Expiration"), int) and rule["Expiration"] > 0 for rule in rules):
+    raise SystemExit("No enabled S3 lifecycle expiration policy is configured")
+PY
+then
+  error "Backup retention policy verification failed"
+  exit 1
+fi
+log "S3 lifecycle retention policy verified"
 
 # ---------------------------------------------------------------------------
 # Step 4: Write health beacon

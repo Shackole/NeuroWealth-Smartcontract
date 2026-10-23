@@ -62,3 +62,10 @@ jobs:
         run: |
           chmod +x scripts/backup/check-backup-health.sh
           ./scripts/backup/check-backup-health.sh
+
+      - name: Alert on backup workflow failure
+        if: failure()
+        env:
+          PAGERDUTY_ROUTING_KEY: ${{ secrets.PAGERDUTY_ROUTING_KEY }}
+          GITHUB_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: python3 scripts/backup/notify-failure.py

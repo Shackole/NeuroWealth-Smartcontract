@@ -87,7 +87,7 @@ jobs:
 
       - name: Deploy agent to Railway staging service
         env:
-          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN_STAGING }}
           RAILWAY_STAGING_SERVICE: ${{ vars.RAILWAY_STAGING_SERVICE }}
         run: |
           set -euo pipefail
