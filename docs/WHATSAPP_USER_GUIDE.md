@@ -51,18 +51,28 @@ Bot:   📱 I've sent a 6-digit code to +1 415 555 0100.
        Please enter it here to verify your identity.
 
 You:   847291
-Bot:   ✅ Verified! Welcome to NeuroWealth.
+Bot:   ✅ Phone verified. Before we create a wallet, please review how this
+       WhatsApp account works.
 
-       I've set up a secure Stellar wallet for you.
-       Your funds are protected by a smart contract — only you can withdraw them.
+       NeuroWealth creates and operates a custodial Stellar wallet for you. The
+       signing key is encrypted and held by NeuroWealth's backend; you do not
+       control or receive the secret key. Transfers are signed by the service
+       after your WhatsApp request.
 
-       Which investment strategy would you like to start with?
+       Recovery may not be possible if the service loses the key or cannot
+       verify your phone. Keep your phone number secure. Do not send passwords,
+       OTPs, or secret keys in chat.
 
-       🛡️  Conservative  — stablecoin lending, ~3–6% APY, lowest risk
-       ⚖️  Balanced      — lending + DEX liquidity, ~6–10% APY, medium risk
-       🚀  Growth        — multi-protocol deployment, ~10–15% APY, higher risk
+       Reply AGREE to create the wallet, DECLINE to stop, or HELP for details.
 
-       Reply with: conservative, balanced, or growth
+You:   AGREE
+Bot:   ✅ Custodial wallet created on Stellar.
+       Wallet address: G...
+
+       Send USDC on Stellar to this address. Check the network and token before
+       sending; transfers on the wrong network or asset may be unrecoverable.
+       You can ask for help, check balance or earnings, deposit, withdraw, or
+       change your strategy.
 ```
 
 **Step 3 — Choose a strategy**
@@ -91,20 +101,17 @@ Bot:   💸 Sending deposit request...
        I'll notify you the moment it arrives and starts earning. ✅
 ```
 
-> **Custody and prototype status:** WhatsApp uses a server-managed, custodial
-> Stellar keypair. The current implementation keeps encrypted wallet records
-> in process memory, so a restart loses them; the key encryption code also
-> includes an unsafe development fallback. Do not use this prototype for real
-> funds. Phone verification is not key recovery or proof of wallet ownership.
-> See [`SECURITY.md`](../SECURITY.md) for the full trust boundary.
+> **Note:** Wallet creation happens only after you explicitly accept custodial
+> use. NeuroWealth manages the **custodial** Stellar keypair, stores its signing
+> secret encrypted in the backend, and signs transactions after your requests.
+> See the [FAQ](#faq) for more on custody and security.
 
 ---
 
 ## Supported Commands
 
-The intended bot interface accepts natural-language commands. The examples
-below describe the prototype's intended intents; they do not guarantee that a
-live transfer or yield operation is available.
+The bot understands natural language — you do not need to use exact phrases. These
+examples show the intent and the types of variations that work.
 
 | Intent | Example Messages |
 |--------|-----------------|

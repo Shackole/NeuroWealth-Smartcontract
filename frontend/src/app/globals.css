@@ -126,6 +126,18 @@ body {
     transition: none !important;
     scroll-behavior: auto !important;
   }
+
+  .skeleton-shimmer::after {
+    animation: none;
+  }
+
+  /* Progress and status remain visible as text; movement is never the signal. */
+  .animate-spin,
+  .animate-ping,
+  .animate-pulse,
+  .animate-bounce {
+    animation: none !important;
+  }
 }
 
 /* Custom scrollbar */

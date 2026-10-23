@@ -15,7 +15,7 @@ This directory contains reference designs for the NeuroWealth WhatsApp conversat
 
 ## Conversation Flows Covered
 
-1. **Onboarding** — Welcome, phone verification (OTP), wallet creation
+1. **Onboarding** — Welcome, phone verification (OTP), explicit custodial consent, then wallet creation
 2. **Deposit** — Deposit confirmation with strategy and APY
 3. **Balance Check** — Portfolio card with balance, earnings, APY, strategy
 4. **Withdrawal** — Withdrawal confirmation and completion

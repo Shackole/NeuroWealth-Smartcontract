@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import {
   X,
   ArrowUpRight,
@@ -11,7 +11,8 @@ import {
   Banknote,
 } from 'lucide-react';
 import { signWithFreighter } from '@/lib/freighter';
-import { getVaultErrorPresentation, type VaultErrorPresentation } from '@/lib/vaultErrors';
+import { TransactionIdentity } from './TransactionIdentity';
+import { useWalletStore } from '@/lib/walletStore';
 
 interface WithdrawalModalProps {
   isOpen: boolean;
@@ -23,6 +24,8 @@ interface WithdrawalModalProps {
   exchangeRate: number;
   /** Whether the vault is currently paused */
   isPaused?: boolean;
+  /** Whether withdrawals remain permitted for the current pause mode. */
+  withdrawalsAllowed?: boolean;
   /** Called on success so the dashboard can refresh balance immediately (optimistic update) */
   onSuccess?: (newBalance: number) => void;
 }
@@ -36,26 +39,36 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
   balance,
   exchangeRate,
   isPaused = false,
+  withdrawalsAllowed,
   onSuccess,
 }) => {
+  const currentWalletKey = useWalletStore((state) => state.publicKey);
   const [step, setStep] = useState<Step>('input');
   const [amount, setAmount] = useState<string>('');
   const [isWithdrawAll, setIsWithdrawAll] = useState(false);
   const [previewShares, setPreviewShares] = useState<number>(0);
   const [txHash, setTxHash] = useState<string>('');
-  const [errorPresentation, setErrorPresentation] = useState<VaultErrorPresentation | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string>('');
+
+  useEffect(() => {
+    if (step === 'preview' && currentWalletKey && userPublicKey !== currentWalletKey) {
+      setStep('input');
+      setPreviewShares(0);
+      setErrorMsg('The connected account changed. Review the withdrawal again with the current wallet.');
+    }
+  }, [currentWalletKey, userPublicKey, step]);
 
   if (!isOpen) return null;
 
   const numAmount = isWithdrawAll ? balance : parseFloat(amount) || 0;
-  const hasExcessPrecision = !isWithdrawAll && /\.\d{8,}/.test(amount);
+  const withdrawalsDisabled = withdrawalsAllowed === undefined ? isPaused : !withdrawalsAllowed;
 
   // preview_withdraw: shares burned = amount / exchangeRate (ceiling division)
   // ERC-4626 convention: shares burned round UP to protect the vault
   const estimatedSharesToBurn =
     exchangeRate > 0 ? Math.ceil((numAmount / exchangeRate) * 1e7) / 1e7 : 0;
 
-  const isValidAmount = numAmount > 0 && numAmount <= balance && !hasExcessPrecision;
+  const isValidAmount = numAmount > 0 && numAmount <= balance;
 
   const handleWithdrawAll = () => {
     setIsWithdrawAll(true);
@@ -69,18 +82,23 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
 
   /** Step 1 → 2: compute share preview then show confirmation screen */
   const handlePreview = useCallback(async () => {
-    if (!isValidAmount) return;
+    if (!isValidAmount || !userPublicKey || (currentWalletKey && currentWalletKey !== userPublicKey)) return;
     // In production: call vault.preview_withdraw(amount_in_stroops) via RPC simulation
     setPreviewShares(estimatedSharesToBurn);
     setStep('preview');
-  }, [isValidAmount, estimatedSharesToBurn]);
+  }, [isValidAmount, estimatedSharesToBurn, userPublicKey, currentWalletKey]);
 
   /** Step 2 → 3 → success/error: sign and submit */
   const handleConfirm = useCallback(async () => {
     if (!userPublicKey) return;
+    if (currentWalletKey && currentWalletKey !== userPublicKey) {
+      setStep('input');
+      setErrorMsg('The connected account changed. Review the withdrawal again with the current wallet.');
+      return;
+    }
 
     setStep('processing');
-    setErrorPresentation(null);
+    setErrorMsg('');
 
     try {
       // Build Soroban XDR for either withdraw(user, amount) or withdraw_all(user)
@@ -104,11 +122,12 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
 
       setStep('success');
     } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Transaction failed. Please try again.';
       console.error('Withdrawal failed:', err);
-      setErrorPresentation(getVaultErrorPresentation(err));
+      setErrorMsg(message);
       setStep('error');
     }
-  }, [userPublicKey, isWithdrawAll, numAmount, balance, onSuccess]);
+  }, [userPublicKey, currentWalletKey, isWithdrawAll, numAmount, balance, onSuccess]);
 
   const handleClose = () => {
     setStep('input');
@@ -116,7 +135,7 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
     setIsWithdrawAll(false);
     setPreviewShares(0);
     setTxHash('');
-    setErrorPresentation(null);
+    setErrorMsg('');
     onClose();
   };
 
@@ -146,8 +165,9 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
             <div>
               <p className="font-semibold text-amber-300">Vault is temporarily paused</p>
               <p className="text-amber-200/70 text-xs mt-0.5">
-                Withdrawals are disabled while the vault is paused. Please check back shortly or
-                use the emergency withdrawal function if available.
+                {withdrawalsDisabled
+                  ? 'Withdrawals are currently unavailable. A pause does not necessarily lock your funds; check the vault status and try again when withdrawals are permitted.'
+                  : 'This pause does not block withdrawals. You can continue with the withdrawal review below.'}
               </p>
             </div>
           </div>
@@ -169,39 +189,31 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
             <div className="mb-4">
               <div className="flex justify-between text-xs text-slate-400 mb-1.5 font-medium">
                 <span>Amount (USDC)</span>
-                <span>Available: {balance.toFixed(7)} USDC</span>
+                <span>Available: {balance.toFixed(2)} USDC</span>
               </div>
               <div className="relative">
                 <input
                   type="number"
-                  step="0.0000001"
+                  step="0.01"
                   min="0"
                   max={balance}
                   value={isWithdrawAll ? balance.toFixed(7) : amount}
                   onChange={handleAmountChange}
                   placeholder="0.00"
-                  disabled={isPaused}
+                  disabled={withdrawalsDisabled}
                   className="w-full bg-slate-900 border border-slate-700 rounded-xl py-3 px-4 text-white font-mono text-lg focus:outline-none focus:border-indigo-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                   aria-label="Withdrawal amount in USDC"
                 />
                 <button
                   type="button"
                   onClick={handleWithdrawAll}
-                  disabled={isPaused || balance <= 0}
+                  disabled={withdrawalsDisabled || balance <= 0}
                   className="absolute right-3 top-3 text-xs font-semibold text-indigo-400 hover:text-indigo-300 bg-indigo-500/10 px-2 py-1 rounded transition-colors disabled:opacity-40"
                   aria-label="Withdraw all funds"
                 >
                   Withdraw All
                 </button>
               </div>
-              <p className="mt-1.5 text-xs text-slate-500">
-                Up to 7 decimal places. 0.0000001 USDC is the smallest unit; amounts are not silently rounded.
-              </p>
-              {hasExcessPrecision && (
-                <p className="mt-1 text-xs text-red-400" role="alert">
-                  Use no more than 7 decimal places; the amount was not rounded.
-                </p>
-              )}
               {isWithdrawAll && (
                 <p className="mt-1 text-xs text-indigo-400">
                   withdraw_all() will be called — burns all your shares at once.
@@ -224,18 +236,18 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
               <div className="flex justify-between">
                 <span className="text-slate-400">You Receive:</span>
                 <span className="text-emerald-400">
-                  {numAmount > 0 ? numAmount.toFixed(7) : '—'} USDC
+                  {numAmount > 0 ? numAmount.toFixed(2) : '—'} USDC
                 </span>
               </div>
               <div className="flex justify-between">
-                <span className="text-slate-400">Network fee (separate):</span>
-                <span className="text-slate-400">Paid in XLM; Freighter shows the final fee</span>
+                <span className="text-slate-400">Network Fee:</span>
+                <span className="text-slate-400">&lt; 0.00001 XLM</span>
               </div>
             </div>
 
             <button
               onClick={handlePreview}
-              disabled={isPaused || !isValidAmount}
+              disabled={withdrawalsDisabled || !isValidAmount}
               className="w-full flex items-center justify-center gap-2 bg-gradient-to-r from-indigo-500 to-violet-600 hover:from-indigo-400 hover:to-violet-500 text-white font-bold py-3.5 rounded-xl transition-all shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <Banknote size={18} />
@@ -258,6 +270,7 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
             </div>
 
             <div className="bg-slate-900/80 border border-slate-700 rounded-xl p-4 mb-6 space-y-3 text-sm">
+              {userPublicKey && <TransactionIdentity publicKey={userPublicKey} />}
               <div className="flex justify-between">
                 <span className="text-slate-400">Withdrawal Type:</span>
                 <span className="text-white font-semibold">
@@ -332,7 +345,7 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
             </div>
             <h3 className="text-xl font-bold text-white mb-2">Withdrawal Successful!</h3>
             <p className="text-sm text-slate-400 mb-1">
-              <span className="text-emerald-400 font-semibold">{numAmount.toFixed(7)} USDC</span>{' '}
+              <span className="text-emerald-400 font-semibold">{numAmount.toFixed(2)} USDC</span>{' '}
               sent to your wallet
             </p>
             <p className="text-xs text-slate-500 mb-1 font-mono">
@@ -356,24 +369,16 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
             <div className="h-16 w-16 bg-red-500/20 text-red-400 rounded-full flex items-center justify-center mx-auto mb-4 border border-red-500/30">
               <AlertTriangle size={36} />
             </div>
-            <h3 className="text-xl font-bold text-white mb-2">
-              {errorPresentation?.title ?? 'Withdrawal could not be completed'}
-            </h3>
+            <h3 className="text-xl font-bold text-white mb-2">Withdrawal Failed</h3>
             <p className="text-sm text-red-300 mb-6 bg-red-500/10 px-3 py-2 rounded-xl border border-red-500/20">
-              {errorPresentation?.message} {errorPresentation?.action}
+              {errorMsg}
             </p>
-            {errorPresentation?.technicalDetails && (
-              <details className="mb-4 text-left text-xs text-slate-500">
-                <summary className="cursor-pointer">Error details</summary>
-                <code className="mt-2 block break-all">{errorPresentation.technicalDetails}</code>
-              </details>
-            )}
             <div className="flex gap-3">
               <button
                 onClick={() => setStep('input')}
                 className="flex-1 py-3 rounded-xl border border-slate-600 text-slate-300 hover:bg-slate-800 font-semibold transition-colors"
               >
-                Review amount
+                Try Again
               </button>
               <button
                 onClick={handleClose}

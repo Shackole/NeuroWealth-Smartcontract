@@ -3,6 +3,7 @@
 import React from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { CheckCircle2, XCircle, AlertTriangle, Info, X } from 'lucide-react';
+import { useReducedMotion } from '@/lib/useReducedMotion';
 
 export type ToastType = 'success' | 'error' | 'warning' | 'info';
 
@@ -34,22 +35,20 @@ const STYLES: Record<ToastType, string> = {
 
 /**
  * Single toast notification with slide-in from top-right, auto-dismiss after 5 s.
- * Respects prefers-reduced-motion: the animation is skipped when the user has
- * requested reduced motion (Framer Motion reads this via the `useReducedMotion`
- * hook internally when `reducedMotion="user"` is set on MotionConfig, but here
- * we provide explicit animation values that Framer Motion will skip for us).
+ * Respects prefers-reduced-motion by removing slide and scale movement.
  */
 export const Toast: React.FC<ToastProps> = ({ toast, onDismiss }) => {
+  const reducedMotion = useReducedMotion();
   return (
     <motion.div
       key={toast.id}
       role="alert"
       aria-live="assertive"
       aria-atomic="true"
-      initial={{ opacity: 0, x: 64, scale: 0.95 }}
+      initial={reducedMotion ? false : { opacity: 0, x: 64, scale: 0.95 }}
       animate={{ opacity: 1, x: 0, scale: 1 }}
-      exit={{ opacity: 0, x: 64, scale: 0.95 }}
-      transition={{ duration: 0.2, ease: 'easeOut' }}
+      exit={reducedMotion ? undefined : { opacity: 0, x: 64, scale: 0.95 }}
+      transition={{ duration: reducedMotion ? 0 : 0.2, ease: 'easeOut' }}
       className={`flex items-start gap-3 w-80 max-w-sm rounded-xl border px-4 py-3 shadow-2xl backdrop-blur-sm pointer-events-auto ${STYLES[toast.type]}`}
     >
       <span className="mt-0.5 shrink-0">{ICONS[toast.type]}</span>

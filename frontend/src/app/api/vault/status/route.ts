@@ -11,8 +11,12 @@ import { NextResponse } from 'next/server';
  */
 
 export interface VaultStatus {
+  availability: 'available' | 'unavailable';
+  mode: 'normal' | 'pause' | 'emergency' | 'recovery' | 'unknown';
   /** Whether the vault is currently paused */
   paused: boolean;
+  deposits_allowed: boolean | null;
+  withdrawals_allowed: boolean | null;
   /** Human-readable reason for the pause, or null when not paused */
   reason: string | null;
   /**
@@ -30,27 +34,42 @@ const CACHE_TTL_MS = 30_000;
 async function fetchVaultStatus(): Promise<VaultStatus> {
   const agentUrl = process.env.AGENT_METRICS_URL;
 
-  if (agentUrl) {
-    try {
-      const res = await fetch(`${agentUrl}/api/vault/status`, {
-        next: { revalidate: 30 },
-      });
-      if (res.ok) {
-        const json = await res.json() as Partial<VaultStatus>;
-        return {
-          paused: json.paused ?? false,
-          reason: json.reason ?? null,
-          expected_resume: json.expected_resume ?? null,
-        };
-      }
-    } catch {
-      // fall through to default
+  if (!agentUrl) return unavailableStatus();
+  try {
+    const res = await fetch(`${agentUrl}/api/vault/status`, {
+      next: { revalidate: 30 },
+    });
+    if (res.ok) {
+      const json = await res.json() as Partial<VaultStatus>;
+      const paused = json.paused ?? false;
+      const acceptedModes = ['normal', 'pause', 'emergency', 'recovery', 'unknown'] as const;
+      const mode = acceptedModes.includes(json.mode as typeof acceptedModes[number])
+        ? json.mode as VaultStatus['mode']
+        : paused ? 'pause' : 'normal';
+      const defaultCapability = paused ? false : mode === 'normal' ? true : null;
+      return {
+        availability: 'available',
+        mode,
+        paused,
+        deposits_allowed: json.deposits_allowed ?? defaultCapability,
+        withdrawals_allowed: json.withdrawals_allowed ?? defaultCapability,
+        reason: json.reason ?? null,
+        expected_resume: json.expected_resume ?? null,
+      };
     }
+  } catch {
+    // Report unavailable instead of presenting an unverified live state.
   }
+  return unavailableStatus();
+}
 
-  // Default: vault is live
+function unavailableStatus(): VaultStatus {
   return {
+    availability: 'unavailable',
+    mode: 'unknown',
     paused: false,
+    deposits_allowed: null,
+    withdrawals_allowed: null,
     reason: null,
     expected_resume: null,
   };
@@ -71,11 +90,7 @@ export async function GET() {
     });
   } catch (err) {
     console.error('[/api/vault/status] Failed to fetch vault status:', err);
-    const fallback: VaultStatus = cachedStatus ?? {
-      paused: false,
-      reason: null,
-      expected_resume: null,
-    };
+    const fallback: VaultStatus = cachedStatus ?? unavailableStatus();
     return NextResponse.json(fallback, {
       status: 200,
       headers: { 'X-Vault-Status-Source': 'fallback-cache' },
