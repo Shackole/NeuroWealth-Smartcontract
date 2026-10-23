@@ -63,6 +63,7 @@ mod test_tvl_cap_serial;
 mod test_tvl_cap_stress;
 mod test_update_total_assets_blend;
 mod test_update_total_assets_dex;
+mod test_update_total_assets_limits;
 mod test_upgrade_compatibility;
 mod test_upgrade_regression;
 mod test_upgrade_timelock;

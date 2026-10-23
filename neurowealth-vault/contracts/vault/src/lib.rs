@@ -7502,6 +7502,25 @@ impl NeuroWealthVault {
     /// The agent calls this to reflect realized yield (increase) or a confirmed
     /// strategy loss / bad-debt write-down (decrease).
     ///
+    /// ## Valuation constraints (Issue #437)
+    ///
+    /// Every call is subject to the following hard limits regardless of direction:
+    ///
+    /// - **`new_total >= 0`** — Negative totals are impossible values. A negative
+    ///   figure would invert share prices and allow share-price manipulation.
+    ///   Rejected with [`VaultError::AmountMustBePositive`].
+    /// - **Solvency check** — `new_total` must not exceed the vault's actual
+    ///   on-chain USDC balance (idle + deployed to the active protocol). The agent
+    ///   cannot inflate total assets beyond what the vault can pay out.
+    ///   Rejected with [`VaultError::InsufficientBalanceForAssets`].
+    ///
+    /// ## Share pricing after an accepted loss
+    ///
+    /// `TotalAssets` is the authoritative denominator for every share ↔ asset
+    /// conversion. Accepted losses reduce the exchange rate proportionally,
+    /// distributing the loss fairly across all shareholders. No shares are minted
+    /// or burned; only the per-share asset value changes.
+    ///
     /// ## Decrease policy
     ///
     /// Decreases are permitted only when **all** of the following hold:
@@ -7540,7 +7559,7 @@ impl NeuroWealthVault {
     /// # Panics
     ///
     /// - If called by anyone other than the authorized agent.
-    /// - If new_total is negative.
+    /// - If `new_total < 0` ([`VaultError::AmountMustBePositive`]) (Issue #437).
     /// - If there are assets but total_shares is zero.
     /// - If the vault does not hold enough USDC to back the new_total.
     /// - If a decrease is attempted but not allowed.
@@ -7566,6 +7585,16 @@ impl NeuroWealthVault {
             VaultError::OnlyAgentCanUpdateTotalAssets,
         );
         agent.require_auth();
+
+        // Reject impossible values. A negative total assets figure would break
+        // share pricing (shares * negative_total / total_shares < 0) and could
+        // be used to manipulate redemption amounts. Zero is valid — it represents
+        // a vault that has been fully drained or is bootstrapping (Issue #437).
+        Self::require(
+            &env,
+            new_total >= 0,
+            VaultError::AmountMustBePositive,
+        );
 
         let old_total = Self::get_total_assets_internal(&env);
 
