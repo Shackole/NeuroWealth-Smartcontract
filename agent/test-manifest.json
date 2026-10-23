@@ -1,0 +1,8 @@
+{
+  "excluded": [
+    {
+      "file": "src/__tests__/api.integration.test.ts",
+      "reason": "This legacy Jest suite imports the shared production DATABASE_URL pool and has no isolated database fixture. It is listed explicitly until it is migrated to a disposable CI PostgreSQL service."
+    }
+  ]
+}
