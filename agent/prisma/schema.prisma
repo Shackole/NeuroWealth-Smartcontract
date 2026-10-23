@@ -84,48 +84,6 @@ enum TransactionStatus {
 }
 
 // ─────────────────────────────────────────────
-// TRANSACTION SUBMISSIONS
-// Issue #415: durable record of an in-flight
-// transaction submission so an RPC timeout can
-// be reconciled (queried by hash) before any
-// replacement is constructed or signed.
-// ─────────────────────────────────────────────
-model TransactionSubmission {
-  id            String                     @id @default(uuid()) @db.Uuid
-  /// Stellar transaction hash — persisted before/at submission.
-  txHash        String                     @unique @map("tx_hash")
-  /// Source account the transaction was submitted from.
-  sourceAccount String                     @map("source_account")
-  /// Serialized envelope (base64 XDR) so the exact signed
-  /// transaction can be re-queried without re-signing.
-  envelopeXdr   String                     @map("envelope_xdr")
-  status        TransactionSubmissionStatus @default(submitted)
-  /// Number of reconciliation attempts performed so far.
-  attempts      Int                        @default(0)
-  /// Last observed error / timeout message, for operators.
-  lastError     String?                    @map("last_error")
-  /// Ledger at which the transaction was confirmed, if any.
-  ledger        Int?
-  createdAt     DateTime                   @default(now()) @map("created_at")
-  updatedAt     DateTime                   @updatedAt @map("updated_at")
-
-  @@index([status, updatedAt])
-  @@index([sourceAccount, createdAt(sort: Desc)])
-  @@map("transaction_submissions")
-}
-
-enum TransactionSubmissionStatus {
-  /// Persisted, submitted, outcome not yet known.
-  submitted
-  /// RPC timed out / returned unknown — must be reconciled before retry.
-  unknown
-  /// Accepted on-chain — terminal success, never re-execute.
-  confirmed
-  /// Terminal failure — recorded, safe to construct a replacement.
-  failed
-}
-
-// ─────────────────────────────────────────────
 // REBALANCES
 // Agent decisions: records each protocol switch
 // with before/after APY and on-chain proof.
@@ -171,34 +129,6 @@ model ApySnapshot {
 }
 
 // ─────────────────────────────────────────────
-// SCHEDULER LEASES
-// Issue #420: durable distributed lease so only
-// one agent replica owns a given rebalance
-// interval. A crashed owner is replaced once
-// `expiresAt` passes; renewal bumps `expiresAt`
-// and `renewedAt`; release clears `ownerId`.
-// ─────────────────────────────────────────────
-model SchedulerLease {
-  /// Logical interval key, e.g. "rebalance:2026-10-15T03:00Z"
-  intervalKey String    @id @map("interval_key")
-  /// Replica identity currently holding the lease (null when released)
-  ownerId     String?   @map("owner_id")
-  /// Lease expiry — after this instant another replica may acquire
-  expiresAt   DateTime  @map("expires_at")
-  /// Last successful renewal (observability)
-  renewedAt   DateTime? @map("renewed_at")
-  /// When the lease was first acquired (observability)
-  acquiredAt  DateTime  @default(now()) @map("acquired_at")
-  /// When the lease was released (observability)
-  releasedAt  DateTime? @map("released_at")
-  createdAt   DateTime  @default(now()) @map("created_at")
-  updatedAt   DateTime  @updatedAt @map("updated_at")
-
-  @@index([expiresAt])
-  @@map("scheduler_leases")
-}
-
-// ─────────────────────────────────────────────
 // AUDIT LOGS
 // Immutable append-only audit trail, written
 // every time a custodial secret key is decrypted
@@ -221,31 +151,25 @@ model AuditLog {
   @@map("audit_logs")
 }
 
-// ─────────────────────────────────────────────
-// EVENT INGESTION CHECKPOINTS
-// Durable cursor for the Soroban event listener.
-// One row per (contract, network) stream so a
-// restart resumes from the last committed ledger
-// instead of jumping to the newest ledger.
-// The cursor is advanced only after events from
-// that ledger have been durably processed.
-// ─────────────────────────────────────────────
-model EventCheckpoint {
-  id             String   @id @default(uuid()) @db.Uuid
-  /// Soroban contract ID (C... address) being ingested
-  contractId     String   @map("contract_id")
-  /// Stellar network identity, e.g. "testnet" or "mainnet"
-  network        String
-  /// Last ledger whose events were durably processed
-  lastLedger     Int      @map("last_ledger")
-  /// Optional paging token within the ledger for finer resume
-  lastCursor     String?  @map("last_cursor")
-  /// Set when the cursor is missing/expired and recovery is required
-  recoveryNeeded Boolean  @default(false) @map("recovery_needed")
-  updatedAt      DateTime @updatedAt @map("updated_at")
-  createdAt      DateTime @default(now()) @map("created_at")
+model EventListenerCheckpoint {
+  network          String   @db.Text
+  contractId       String   @map("contract_id") @db.Text
+  nextLedger       BigInt   @map("next_ledger")
+  paginationCursor String?  @map("pagination_cursor") @db.Text
+  recoveryRequired Boolean  @default(false) @map("recovery_required")
+  updatedAt        DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
 
-  @@unique([contractId, network])
-  @@index([contractId, network])
-  @@map("event_checkpoints")
+  @@id([network, contractId])
+  @@index([updatedAt(sort: Desc)])
+  @@map("event_listener_checkpoints")
+}
+
+model VaultEvent {
+  eventId        String   @id @map("event_id") @db.Text
+  eventType      String   @map("event_type") @db.Text
+  ledgerSequence BigInt   @map("ledger_sequence")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([ledgerSequence(sort: Desc)])
+  @@map("vault_events")
 }

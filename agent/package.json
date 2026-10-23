@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "build": "tsc",
-    "test": "ts-node --transpile-only src/openAiKeyManager.test.ts && ts-node --transpile-only src/rateLimiter.test.ts && ts-node --transpile-only src/db.test.ts && ts-node --transpile-only src/backgroundWork.test.ts",
+    "test": "ts-node --transpile-only src/openAiKeyManager.test.ts && ts-node --transpile-only src/rateLimiter.test.ts && ts-node --transpile-only src/db.test.ts && ts-node --transpile-only src/eventListener.test.ts && node --test -r ts-node/register src/accountSequence.test.ts src/transactionSubmission.test.ts",
     "start:prod": "npx ts-node src/index.ts",
     "start:dev": "ts-node src/index.ts"
   },
@@ -15,9 +15,9 @@
   "dependencies": {
     "@opentelemetry/api": "^1.7.0",
     "@opentelemetry/exporter-jaeger": "^2.11.0",
-    "@opentelemetry/instrumentation": "^0.223.0",
-    "@opentelemetry/instrumentation-http": "^0.223.0",
-    "@opentelemetry/instrumentation-pg": "^0.76.0",
+    "@opentelemetry/instrumentation": "^0.45.1",
+    "@opentelemetry/instrumentation-http": "^0.45.1",
+    "@opentelemetry/instrumentation-pg": "^0.35.0",
     "@opentelemetry/resources": "^1.18.1",
     "@opentelemetry/sdk-trace-node": "^2.11.0",
     "@opentelemetry/semantic-conventions": "^1.18.1",
@@ -25,7 +25,6 @@
     "dotenv": "^18.0.3",
     "express": "^5.2.1",
     "express-rate-limit": "^8.7.0",
-    "ioredis": "^6.0.0",
     "openai": "^7.0.0",
     "pg": "^8.22.0",
     "pino": "^10.3.1"
