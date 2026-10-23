@@ -866,6 +866,23 @@ When adding an event or a field:
 - If the event publishes indexed topics beyond position 0, add a topic-tuple
   table like the ones under `DepositEvent` and `WithdrawEvent`.
 
+## Ingestion checkpoint and recovery
+
+The agent listener polls the configured Soroban RPC every five seconds and
+pages event responses in batches of 1,000. Its current ledger checkpoint and
+Prometheus checkpoint-age metric are process-local: a process restart starts
+at the latest ledger and does not restore the prior ledger from the database.
+That means HTTP health can be green while an earlier outage has left an
+unreconciled event gap. Use the alert and recovery steps in
+[`docs/runbooks/event-ingestion.md`](docs/runbooks/event-ingestion.md).
+
+Before backfilling, inspect RPC `getHealth` for the retained ledger range, then
+query `getEvents` with a contract filter. Persist each event idempotently by
+`event.id`; for continuation pages use the last event's opaque `cursor` in
+`pagination.cursor` and omit `startLedger`/`endLedger`. If the gap predates RPC
+retention, use an approved archive source and record any unrecoverable range.
+The listener does not provide a repair CLI or durable checkpoint store today.
+
 ## Multi-Protocol Allocation Events (Phase 2)
 
 ### `ProtocolAllocationChangedEvent`

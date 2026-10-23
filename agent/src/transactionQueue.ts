@@ -15,7 +15,6 @@
 
 import Bull from 'bull';
 import type { Job, Queue } from 'bull';
-import crypto from 'crypto';
 import {
   Keypair,
   Networks,
@@ -26,8 +25,11 @@ import {
   Horizon,
 } from '@stellar/stellar-sdk';
 import logger from './logger';
-import { withAccountSequenceLock, type RedisLockClient } from './accountSequence';
-import { shouldRetrySequenceMismatch, SubmissionOutcomeUnknownError, submitExactlyOnceOnTimeout } from './transactionSubmission';
+import {
+  recordDeadLetterGrowth,
+  recordQueueSubmissionFailure,
+  setQueueMetrics,
+} from './operationalMetrics';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -47,8 +49,6 @@ export interface TransactionJobData {
   destinationAddress?: string;
   /** Optional: Soroban contract invocation XDR (if pre-built by caller) */
   xdrEnvelope?: string;
-  /** Optional public key selecting a signer configured in SIGNER_SECRET_KEYS_JSON. */
-  signerAddress?: string;
   /** ISO timestamp when this job was created by the caller. */
   requestedAt: string;
 }
@@ -71,7 +71,6 @@ const NETWORK_PASSPHRASE =
     ? Networks.PUBLIC
     : Networks.TESTNET;
 const AGENT_SECRET = process.env.AGENT_SECRET_KEY || '';
-const SIGNER_SECRET_KEYS_JSON = process.env.SIGNER_SECRET_KEYS_JSON || '{}';
 
 const QUEUE_NAME = 'transactions';
 const DLQ_NAME = 'transactions:failed';
@@ -120,35 +119,27 @@ const server = new Horizon.Server(STELLAR_RPC_URL);
 // ─────────────────────────────────────────────────────────────────────────────
 
 function dedupKey(key: string): string {
-  const namespace = (process.env.TRANSACTION_DEDUP_NAMESPACE || 'default').replace(/[^a-zA-Z0-9:_-]/g, '_');
-  return `dedup:tx:${namespace}:${key}`;
+  return `dedup:tx:${key}`;
 }
 
-async function reserveDedupKey(
+async function isDuplicate(
   queue: Queue<TransactionJobData>,
   key: string,
-  reservation: string,
 ): Promise<boolean> {
+  // Access Bull's internal Redis client (type-cast needed — Bull exposes it)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const client = (queue as any).client as import('ioredis').Redis;
-  return (await client.set(dedupKey(key), reservation, 'PX', DEDUP_TTL_MS, 'NX')) === 'OK';
+  const result = await client.get(dedupKey(key));
+  return result !== null;
 }
 
-async function releaseDedupReservation(
+async function markSeen(
   queue: Queue<TransactionJobData>,
   key: string,
-  reservation: string,
 ): Promise<void> {
-  // Compare-and-delete means a failed enqueue cannot remove another caller's
-  // reservation if this one expired and was replaced in the meantime.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const client = (queue as any).client as import('ioredis').Redis;
-  await client.eval(
-    "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
-    1,
-    dedupKey(key),
-    reservation,
-  );
+  await client.set(dedupKey(key), '1', 'PX', DEDUP_TTL_MS);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -162,16 +153,7 @@ async function releaseDedupReservation(
 export async function enqueueTransaction(
   data: TransactionJobData,
 ): Promise<Job<TransactionJobData> | null> {
-  return enqueueTransactionOnQueue(transactionQueue, data);
-}
-
-/** Queue-injected entry point used by isolated Redis integration coverage. */
-export async function enqueueTransactionOnQueue(
-  queue: Queue<TransactionJobData>,
-  data: TransactionJobData,
-): Promise<Job<TransactionJobData> | null> {
-  const reservation = crypto.randomUUID();
-  if (!(await reserveDedupKey(queue, data.deduplicationKey, reservation))) {
+  if (await isDuplicate(transactionQueue, data.deduplicationKey)) {
     logger.warn(
       { deduplicationKey: data.deduplicationKey },
       'Transaction deduplicated — already queued',
@@ -179,16 +161,8 @@ export async function enqueueTransactionOnQueue(
     return null;
   }
 
-  // Bull job IDs are deterministic per dedup key, covering the ambiguous case
-  // where Redis accepts queue.add but the caller loses its response.
-  const jobId = `dedup-${crypto.createHash('sha256').update(data.deduplicationKey).digest('hex')}`;
-  let job: Job<TransactionJobData>;
-  try {
-    job = await queue.add(data, { jobId });
-  } catch (error) {
-    await releaseDedupReservation(queue, data.deduplicationKey, reservation);
-    throw error;
-  }
+  await markSeen(transactionQueue, data.deduplicationKey);
+  const job = await transactionQueue.add(data);
 
   logger.info(
     { jobId: job.id, type: data.type, userAddress: data.userAddress },
@@ -205,6 +179,15 @@ export async function enqueueTransactionOnQueue(
  * Returns true when the error message indicates a sequence number conflict —
  * the only case where we re-fetch sequence and retry within the same attempt.
  */
+function isSequenceMismatch(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return (
+    msg.toLowerCase().includes('tx_bad_seq') ||
+    msg.toLowerCase().includes('sequence') ||
+    msg.toLowerCase().includes('bad_seq')
+  );
+}
+
 /**
  * Build and sign a Stellar transaction.
  * Fetches a fresh sequence number before each call.
@@ -216,6 +199,8 @@ async function buildAndSignTransaction(
   // If the caller already built and serialised the XDR, just re-sign with
   // a fresh sequence number rather than rebuilding from scratch.
   if (data.xdrEnvelope) {
+    // Re-fetch sequence and rebuild with latest account state
+    const account = await server.loadAccount(keypair.publicKey());
     const tx = TransactionBuilder.fromXDR(data.xdrEnvelope, NETWORK_PASSPHRASE);
 
     // Re-sign with this keypair
@@ -244,7 +229,7 @@ async function buildAndSignTransaction(
         Operation.payment({
           destination,
           asset: usdcAsset,
-          amount: formatStroops(data.amountStroops),
+          amount: (parseInt(data.amountStroops, 10) / 1e7).toFixed(7),
         }),
       );
       break;
@@ -268,21 +253,6 @@ async function buildAndSignTransaction(
   return tx.toEnvelope().toXDR('base64');
 }
 
-function formatStroops(amountStroops: string): string {
-  if (!/^\d+$/.test(amountStroops)) throw new Error('INVALID_STROOPS_AMOUNT');
-  const units = BigInt(amountStroops);
-  const scale = 10_000_000n;
-  const whole = units / scale;
-  const fraction = (units % scale).toString().padStart(7, '0');
-  return `${whole}.${fraction}`;
-}
-
-function isSubmissionTimeout(error: unknown): boolean {
-  const value = error as { message?: string; status?: number; statusCode?: number };
-  const message = value?.message ?? String(error);
-  return value?.status === 504 || value?.statusCode === 504 || /timeout|timed out|ETIMEDOUT|ECONNRESET/i.test(message);
-}
-
 /**
  * Submit a signed transaction XDR to Horizon with sequence-number retry logic.
  */
@@ -290,83 +260,39 @@ async function submitWithSequenceRetry(
   keypair: Keypair,
   data: TransactionJobData,
 ): Promise<TransactionJobResult> {
-  // Bull exposes this Redis connection; the token-checked lease coordinates
-  // sequence use across worker processes sharing the same queue backend.
-  const redis = (transactionQueue as unknown as { client: RedisLockClient }).client;
-  return withAccountSequenceLock(keypair.publicKey(), async () => {
-    let lastError: unknown;
+  let lastError: unknown;
 
-    for (let attempt = 0; attempt < MAX_SEQUENCE_RETRIES; attempt++) {
-      try {
-        const xdr = await buildAndSignTransaction(keypair, data);
-        const transaction = TransactionBuilder.fromXDR(xdr, NETWORK_PASSPHRASE);
-        const txHash = transaction.hash().toString('hex');
-        const response = await submitExactlyOnceOnTimeout(
-          async () => {
-            const submitted = await server.submitTransaction(transaction);
-            return { txHash: submitted.hash, ledger: submitted.ledger };
-          },
-          async () => {
-            try {
-              const accepted = await server.transactions().transaction(txHash).call();
-              return {
-                txHash: accepted.hash ?? txHash,
-                ledger: accepted.ledger,
-              };
-            } catch {
-              return null;
-            }
-          },
-          isSubmissionTimeout,
-          txHash,
-        );
-
-        return {
-          txHash: response.txHash,
-          ledger: response.ledger,
-          submittedAt: new Date().toISOString(),
-        };
-      } catch (err) {
-        lastError = err;
-
-        if (shouldRetrySequenceMismatch(err, attempt, MAX_SEQUENCE_RETRIES)) {
-          logger.warn(
-            { attempt: attempt + 1, userAddress: data.userAddress, signerAddress: keypair.publicKey() },
-            'Sequence mismatch — re-fetching sequence and retrying',
-          );
-          await new Promise((r) => setTimeout(r, 200 + Math.random() * 300));
-          continue;
-        }
-
-        throw err;
-      }
-    }
-
-    throw lastError;
-  }, redis);
-}
-
-function resolveSigningKeypair(data: TransactionJobData): Keypair {
-  let secret = AGENT_SECRET;
-  if (data.signerAddress) {
-    let configured: Record<string, string>;
+  for (let attempt = 0; attempt < MAX_SEQUENCE_RETRIES; attempt++) {
     try {
-      configured = JSON.parse(SIGNER_SECRET_KEYS_JSON);
-    } catch {
-      throw new Error('SIGNER_SECRET_KEYS_JSON must be a JSON object keyed by public key');
-    }
-    secret = configured[data.signerAddress] ?? '';
-    if (!secret && AGENT_SECRET) {
-      const defaultKeypair = Keypair.fromSecret(AGENT_SECRET);
-      if (defaultKeypair.publicKey() === data.signerAddress) secret = AGENT_SECRET;
+      const xdr = await buildAndSignTransaction(keypair, data);
+      const response = await server.submitTransaction(
+        TransactionBuilder.fromXDR(xdr, NETWORK_PASSPHRASE),
+      );
+
+      return {
+        txHash: response.hash,
+        ledger: response.ledger,
+        submittedAt: new Date().toISOString(),
+      };
+    } catch (err) {
+      lastError = err;
+
+      if (isSequenceMismatch(err) && attempt < MAX_SEQUENCE_RETRIES - 1) {
+        logger.warn(
+          { attempt: attempt + 1, userAddress: data.userAddress },
+          'Sequence mismatch — re-fetching sequence and retrying',
+        );
+        // Small jitter before next attempt
+        await new Promise((r) => setTimeout(r, 200 + Math.random() * 300));
+        continue;
+      }
+
+      // For non-sequence errors, re-throw immediately so Bull handles retries
+      throw err;
     }
   }
-  if (!secret) throw new Error(`No configured transaction signer for ${data.signerAddress ?? 'default account'}`);
-  const keypair = Keypair.fromSecret(secret);
-  if (data.signerAddress && keypair.publicKey() !== data.signerAddress) {
-    throw new Error('Configured signer secret does not match signerAddress');
-  }
-  return keypair;
+
+  throw lastError;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -381,14 +307,12 @@ transactionQueue.process(CONCURRENCY, async (job: Job<TransactionJobData>) => {
     'Processing transaction job',
   );
 
-  const keypair = resolveSigningKeypair(data);
-  let result: TransactionJobResult;
-  try {
-    result = await submitWithSequenceRetry(keypair, data);
-  } catch (error) {
-    if (error instanceof SubmissionOutcomeUnknownError) job.discard();
-    throw error;
+  if (!AGENT_SECRET) {
+    throw new Error('AGENT_SECRET_KEY environment variable is not set');
   }
+
+  const keypair = Keypair.fromSecret(AGENT_SECRET);
+  const result = await submitWithSequenceRetry(keypair, data);
 
   logger.info(
     { jobId: job.id, txHash: result.txHash, ledger: result.ledger },
@@ -400,6 +324,7 @@ transactionQueue.process(CONCURRENCY, async (job: Job<TransactionJobData>) => {
 
 // Move exhausted jobs to dead-letter queue with full error context
 transactionQueue.on('failed', async (job: Job<TransactionJobData>, err: Error) => {
+  recordQueueSubmissionFailure();
   if (job.attemptsMade >= (job.opts.attempts ?? 3)) {
     logger.error(
       {
@@ -421,6 +346,7 @@ transactionQueue.on('failed', async (job: Job<TransactionJobData>, err: Error) =
         jobId: `dlq:${job.id}`,
       },
     );
+    recordDeadLetterGrowth();
   }
 });
 
@@ -452,10 +378,11 @@ export interface QueueStats {
     waiting: number;
     failed: number;
   };
+  oldestPendingAgeSeconds: number;
 }
 
 export async function getQueueStats(): Promise<QueueStats> {
-  const [waiting, active, completed, failed, delayed, isPaused] =
+  const [waiting, active, completed, failed, delayed, isPaused, pendingJobs] =
     await Promise.all([
       transactionQueue.getWaitingCount(),
       transactionQueue.getActiveCount(),
@@ -463,12 +390,25 @@ export async function getQueueStats(): Promise<QueueStats> {
       transactionQueue.getFailedCount(),
       transactionQueue.getDelayedCount(),
       transactionQueue.isPaused(),
+      transactionQueue.getJobs(['waiting', 'delayed'], 0, 0),
     ]);
 
   const [dlqWaiting, dlqFailed] = await Promise.all([
     deadLetterQueue.getWaitingCount(),
     deadLetterQueue.getFailedCount(),
   ]);
+
+  const now = Date.now();
+  const oldestPendingAgeSeconds = pendingJobs.reduce(
+    (oldest, job) => Math.max(oldest, Math.max(0, now - job.timestamp) / 1000),
+    0,
+  );
+  setQueueMetrics({
+    pending: waiting + delayed,
+    oldestPendingAgeSeconds,
+    activeWorkers: active,
+    deadLetterJobs: dlqWaiting,
+  });
 
   return {
     queue: QUEUE_NAME,
@@ -477,6 +417,7 @@ export async function getQueueStats(): Promise<QueueStats> {
     completed,
     failed,
     delayed,
+    oldestPendingAgeSeconds,
     paused: isPaused,
     deadLetter: {
       queue: DLQ_NAME,
