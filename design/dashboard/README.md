@@ -1,7 +1,9 @@
 # Dashboard — Design Handoff
 
-**Issue:** #98
-**Spec:** [docs/DASHBOARD_WIREFRAMES.md](../../docs/DASHBOARD_WIREFRAMES.md)
+**Issue:** #98, #491  
+**Specs:**
+- Wireframes: [docs/DASHBOARD_WIREFRAMES.md](../../docs/DASHBOARD_WIREFRAMES.md)
+- Transaction Progress Vocabulary: [design/dashboard/TRANSACTION_PROGRESS_VOCABULARY.md](TRANSACTION_PROGRESS_VOCABULARY.md)
 
 ## Asset Inventory
 
@@ -45,6 +47,12 @@ Preferred: **Figma**. Sketch or Adobe XD also accepted.
 
 5. **Skeleton loading over spinners** — Better perceived performance; avoids layout shift when data
    arrives. Each data region shows a shimmer skeleton at the correct size.
+
+6. **Coherent transaction progress vocabulary (#491)** — Standardized status naming, iconography,
+   explicit units (USDC, NV-SHARES, XLM), and recovery flows for all ledger interactions.
+   Delayed confirmation (>10s) is strictly visually and semantically distinguished from failure
+   to prevent duplicate submissions, and success is strictly bound to verified ledger confirmation.
+   Full spec in [TRANSACTION_PROGRESS_VOCABULARY.md](TRANSACTION_PROGRESS_VOCABULARY.md).
 
 ---
 

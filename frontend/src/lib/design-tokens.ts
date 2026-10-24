@@ -293,6 +293,55 @@ export const zIndex = {
   tooltip:  70,
 } as const;
 
+// ── Transaction Progress Tokens (#491) ───────────────────────────────────────
+
+export const transactionProgress = {
+  statuses: {
+    review: {
+      color: '#818cf8', // secondary-400
+      bg: 'rgba(99, 102, 241, 0.1)',
+      border: 'rgba(99, 102, 241, 0.3)',
+      icon: 'FileText',
+    },
+    signature_request: {
+      color: '#a5b4fc', // secondary-300
+      bg: 'rgba(99, 102, 241, 0.15)',
+      border: 'rgba(99, 102, 241, 0.35)',
+      icon: 'Key',
+    },
+    submission: {
+      color: '#38bdf8', // accent-400
+      bg: 'rgba(14, 165, 233, 0.1)',
+      border: 'rgba(14, 165, 233, 0.3)',
+      icon: 'Send',
+    },
+    confirmation: {
+      color: '#34d399', // primary-400
+      bg: 'rgba(16, 185, 129, 0.1)',
+      border: 'rgba(16, 185, 129, 0.3)',
+      icon: 'Loader2',
+    },
+    delayed: {
+      color: '#fbbf24', // warning-400
+      bg: 'rgba(245, 158, 11, 0.1)',
+      border: 'rgba(245, 158, 11, 0.3)',
+      icon: 'Clock',
+    },
+    confirmed: {
+      color: '#10b981', // primary-500
+      bg: 'rgba(16, 185, 129, 0.2)',
+      border: 'rgba(16, 185, 129, 0.4)',
+      icon: 'CheckCircle2',
+    },
+    failure: {
+      color: '#f87171', // error-400
+      bg: 'rgba(239, 68, 68, 0.15)',
+      border: 'rgba(239, 68, 68, 0.35)',
+      icon: 'XCircle',
+    },
+  },
+} as const;
+
 // ── Aggregate export ─────────────────────────────────────────────────────────
 
 export const tokens = {
@@ -305,6 +354,7 @@ export const tokens = {
   shadows,
   breakpoints,
   zIndex,
+  transactionProgress,
 } as const;
 
 export type Tokens = typeof tokens;
