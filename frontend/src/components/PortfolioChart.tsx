@@ -11,12 +11,14 @@ import {
   CartesianGrid
 } from 'recharts';
 import { ChartDataPoint } from '@/lib/database';
+import { useReducedMotion } from '@/lib/useReducedMotion';
 
 interface PortfolioChartProps {
   data: ChartDataPoint[];
 }
 
 export const PortfolioChart: React.FC<PortfolioChartProps> = ({ data }) => {
+  const reducedMotion = useReducedMotion();
   return (
     <div className="glass-panel rounded-2xl p-6 relative">
       <div className="flex items-center justify-between mb-6">
@@ -70,6 +72,7 @@ export const PortfolioChart: React.FC<PortfolioChartProps> = ({ data }) => {
               fillOpacity={1}
               fill="url(#colorValue)"
               name="Portfolio Value"
+              isAnimationActive={!reducedMotion}
             />
             <Area
               type="monotone"
@@ -79,6 +82,7 @@ export const PortfolioChart: React.FC<PortfolioChartProps> = ({ data }) => {
               fillOpacity={1}
               fill="url(#colorYield)"
               name="Yield Earned"
+              isAnimationActive={!reducedMotion}
             />
           </AreaChart>
         </ResponsiveContainer>

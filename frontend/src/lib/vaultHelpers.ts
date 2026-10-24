@@ -20,6 +20,7 @@ import {
 
 import { signWithFreighter } from '@/lib/freighter';
 import type { Strategy } from '@/lib/depositSchema';
+import { getVaultErrorPresentation } from '@/lib/vaultErrors';
 
 export const DECIMAL_PLACES = 7;
 export const STROOP = 10 ** DECIMAL_PLACES; // 1 USDC in raw units
@@ -188,6 +189,29 @@ export async function previewDepositToShares(
   return fromRawUnits(rawShares);
 }
 
+/** Simulate preview_withdraw against Soroban and return shares to be burned. */
+export async function previewWithdrawShares(publicKey: string, amountUsdc: number): Promise<number> {
+  const server = getServer();
+  const account = await server.getAccount(publicKey);
+  const tx = new TransactionBuilder(account, {
+    fee: '100',
+    networkPassphrase: NETWORK_PASSPHRASE,
+  })
+    .addOperation(getContract().call(
+      'preview_withdraw',
+      nativeToScVal(toRawUnits(amountUsdc), { type: 'i128' }),
+    ))
+    .setTimeout(30)
+    .build();
+  const simulation = await server.simulateTransaction(tx);
+  if (SorobanRpc.Api.isSimulationError(simulation)) {
+    throw new Error((simulation as SorobanRpc.Api.SimulateTransactionErrorResponse).error ?? 'Withdrawal preview failed');
+  }
+  const result = (simulation as SorobanRpc.Api.SimulateTransactionSuccessResponse).result;
+  if (!result) throw new Error('Withdrawal preview returned no result');
+  return fromRawUnits(scValToNative(result.retval) as bigint);
+}
+
 // ─── Build + sign helpers ─────────────────────────────────────────────────────
 
 /**
@@ -267,7 +291,34 @@ async function submitAndConfirm(signedXdr: string): Promise<string> {
     throw new Error('Transaction timed out — it may still be pending. Check the explorer.');
   }
 
+  if (getResp.status !== SorobanRpc.Api.GetTransactionStatus.SUCCESS) {
+    throw new Error('Transaction was submitted but has not been confirmed yet. Check the explorer before retrying.');
+  }
+
   return sendResp.hash;
+}
+
+/** Submit a real partial or full withdrawal and wait for ledger confirmation. */
+export async function executeWithdrawal(
+  publicKey: string,
+  amountUsdc: number,
+  withdrawAll: boolean,
+): Promise<{ txHash: string; newBalance: number }> {
+  if (!publicKey) throw new Error('Connect the wallet that owns this vault position.');
+  if (!withdrawAll && (!Number.isFinite(amountUsdc) || amountUsdc <= 0)) {
+    throw new Error('Enter a withdrawal amount greater than zero.');
+  }
+  const contract = getContract();
+  const operation = withdrawAll
+    ? contract.call('withdraw_all', new Address(publicKey).toScVal())
+    : contract.call(
+      'withdraw',
+      new Address(publicKey).toScVal(),
+      nativeToScVal(toRawUnits(amountUsdc), { type: 'i128' }),
+    );
+  const signedXdr = await buildAndSignTx(publicKey, operation);
+  const txHash = await submitAndConfirm(signedXdr);
+  return { txHash, newBalance: await getVaultBalance(publicKey) };
 }
 
 // ─── Deposit flow ─────────────────────────────────────────────────────────────
@@ -322,35 +373,6 @@ export async function executeDeposit(
  * Translate raw contract / SDK error messages into user-friendly strings.
  */
 export function humanizeError(error: unknown): string {
-  const raw = error instanceof Error ? error.message : String(error);
-
-  if (raw.includes('rejected') || raw.includes('Freighter')) {
-    return 'Transaction was cancelled. Please approve the transaction in your Freighter wallet.';
-  }
-  if (raw.includes('InvalidAmountError') || raw.includes('Error(Contract, #105)')) {
-    return 'Invalid amount. Please enter between 1 and 10,000 USDC.';
-  }
-  if (raw.includes('DepositCapExceededError') || raw.includes('Error(Contract, #106)')) {
-    return 'Your deposit would exceed the per-user cap of 10,000 USDC.';
-  }
-  if (raw.includes('TvlCapExceededError') || raw.includes('Error(Contract, #107)')) {
-    return 'The vault is at capacity. Please try a smaller amount or try again later.';
-  }
-  if (raw.includes('PausedError') || raw.includes('Error(Contract, #101)')) {
-    return 'The vault is currently paused for maintenance. Please try again later.';
-  }
-  if (raw.includes('InsufficientLiquidity')) {
-    return 'Insufficient liquidity in the vault. Please try a smaller amount.';
-  }
-  if (raw.includes('timed out')) {
-    return 'Transaction timed out. Your funds are safe — check the Stellar explorer for the latest status.';
-  }
-  if (raw.includes('simulation failed') || raw.includes('Preview failed')) {
-    return 'Could not estimate transaction. The network may be busy — please try again.';
-  }
-  if (raw.includes('getAccount') || raw.includes('404')) {
-    return 'Wallet not found on the Stellar network. Make sure your account is funded.';
-  }
-
-  return `Transaction failed: ${raw.length > 120 ? raw.slice(0, 120) + '…' : raw}`;
+  const presentation = getVaultErrorPresentation(error);
+  return `${presentation.message} ${presentation.action}`;
 }

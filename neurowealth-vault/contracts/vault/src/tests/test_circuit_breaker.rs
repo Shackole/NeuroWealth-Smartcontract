@@ -251,3 +251,133 @@ fn test_set_max_consecutive_failures_event_reflects_previous_value() {
     assert_eq!(event.old_threshold, 5);
     assert_eq!(event.new_threshold, 2);
 }
+
+// ============================================================================
+// Issue #439 — Explicit semantics tests
+// ============================================================================
+
+/// A `"partial"` rebalance outcome must NOT increment the consecutive-failure
+/// counter. Only a `"failed"` outcome increments it; partial is a degraded
+/// success that still moved some funds.
+#[test]
+fn test_partial_does_not_increment_counter() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (contract_id, _agent, owner, usdc_token, blend_pool) =
+        setup_vault_with_token_and_blend(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+    let blend_client = MockBlendPoolClient::new(&env, &blend_pool);
+
+    client.set_blend_pool(&owner, &blend_pool);
+
+    // Deposit a large amount, then cap the pool so it only accepts half.
+    let amount = 10_000_000_i128;
+    let user = Address::generate(&env);
+    mint_and_deposit(&env, &client, &usdc_token, &user, amount);
+
+    // Allow partial fill: only 5_000_000 can be supplied (half).
+    blend_client.set_max_supply_limit(&(amount / 2));
+
+    // This rebalance status should be "partial" because supplied < vault_balance.
+    client.rebalance(&symbol_short!("blend"), &500_i128, &0_i128);
+
+    assert_eq!(
+        client.get_consecutive_failures(),
+        0,
+        "partial rebalance must not increment the failure counter"
+    );
+    assert!(!client.is_paused(), "partial rebalance must not trigger auto-pause");
+}
+
+/// A `"noop"` rebalance outcome (no funds to move, but protocol target set)
+/// must NOT increment the consecutive-failure counter. A noop is neutral —
+/// the agent chose the right protocol but there was nothing to supply.
+#[test]
+fn test_noop_does_not_increment_counter() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (contract_id, _agent, owner, _usdc_token, blend_pool) =
+        setup_vault_with_token_and_blend(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+
+    client.set_blend_pool(&owner, &blend_pool);
+
+    // No funds deposited → vault balance is zero → rebalance to blend is noop.
+    client.rebalance(&symbol_short!("blend"), &500_i128, &0_i128);
+
+    assert_eq!(
+        client.get_consecutive_failures(),
+        0,
+        "noop rebalance must not increment the failure counter"
+    );
+    assert!(!client.is_paused(), "noop rebalance must not trigger auto-pause");
+}
+
+/// Only the owner may call `reset_circuit_breaker`. A non-owner caller must
+/// be rejected even when the vault is paused (i.e., the circuit breaker has
+/// already tripped).
+#[test]
+fn test_unauthorized_reset_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, owner, _blend_pool) = setup_failing_blend(&env, 10_000_000_i128);
+
+    // Trip the circuit breaker (default threshold = 3).
+    client.rebalance(&symbol_short!("blend"), &500_i128, &0_i128);
+    client.rebalance(&symbol_short!("blend"), &500_i128, &0_i128);
+    client.rebalance(&symbol_short!("blend"), &500_i128, &0_i128);
+    assert!(client.is_paused(), "pre-condition: vault must be paused");
+
+    let non_owner = Address::generate(&env);
+
+    // mock_all_auths allows any auth check to pass in the test environment, so
+    // we temporarily disable it and instead mock only the non-owner, ensuring
+    // the owner check (require_is_owner) sees a different caller.
+    // The simplest approach: call with a non-owner address; the `require_auth`
+    // will succeed (mock_all_auths is on), but the equality check against the
+    // stored owner will fail.
+    let result = client.try_reset_circuit_breaker(&non_owner);
+    assert!(
+        result.is_err(),
+        "reset_circuit_breaker must reject a non-owner caller"
+    );
+
+    // Confirm the vault is still paused after the rejected attempt.
+    assert!(client.is_paused(), "vault must remain paused after unauthorized reset attempt");
+
+    // Owner succeeds.
+    let _ = client.reset_circuit_breaker(&owner);
+    assert!(!client.is_paused(), "owner reset must unpause the vault");
+}
+
+/// `reset_circuit_breaker` must clear the consecutive-failure counter AND
+/// unpause the vault in a single call. After the reset the vault should
+/// accept new rebalances normally.
+#[test]
+fn test_reset_clears_counter_and_unpauses() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, owner, _blend_pool) = setup_failing_blend(&env, 10_000_000_i128);
+
+    // Trip the circuit breaker.
+    client.rebalance(&symbol_short!("blend"), &500_i128, &0_i128);
+    client.rebalance(&symbol_short!("blend"), &500_i128, &0_i128);
+    client.rebalance(&symbol_short!("blend"), &500_i128, &0_i128);
+
+    assert!(client.is_paused());
+    assert!(client.get_consecutive_failures() >= 3);
+
+    // Owner resets.
+    client.reset_circuit_breaker(&owner);
+
+    assert_eq!(
+        client.get_consecutive_failures(),
+        0,
+        "reset must zero the consecutive-failure counter"
+    );
+    assert!(!client.is_paused(), "reset must unpause the vault");
+}

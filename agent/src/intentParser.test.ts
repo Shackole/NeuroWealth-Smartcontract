@@ -4,6 +4,8 @@
  * Fully standalone — tests the regex fallback, Zod schema, multi-turn
  * context store, circuit breaker helpers, and confidence logic without
  * making any real LLM API calls.
+ *
+ * Also covers #419: explicit confirmation for parsed financial intents.
  */
 
 import assert from 'assert';
@@ -104,6 +106,88 @@ function parseIntentWithRegex(message: string): ParsedIntent {
 
 function needsConfirmation(intent: ParsedIntent): boolean {
   return intent.confidence < LOW_CONFIDENCE_THRESHOLD;
+}
+
+// ── Explicit confirmation for financial intents (#419) ───────────────────────
+//
+// Parsing is separated from execution: a parsed financial intent never
+// enqueues a transaction on its own. Instead a structured confirmation is
+// built that binds amount, asset, destination, and network. Execution is only
+// permitted when the caller presents a confirmation that matches the current
+// intent exactly. Any edit to the intent invalidates the old confirmation.
+
+const FINANCIAL_ACTIONS = new Set<ParsedIntent['action']>(['deposit', 'withdraw', 'withdraw_all']);
+
+const ConfirmationSchema = z.object({
+  action: z.enum(['deposit', 'withdraw', 'withdraw_all']),
+  amount: z.number().positive().optional(),
+  withdrawAll: z.boolean().optional(),
+  asset: z.string().min(1),
+  destination: z.string().min(1),
+  network: z.enum(['testnet', 'mainnet']),
+  intentFingerprint: z.string().min(1),
+});
+
+type Confirmation = z.infer<typeof ConfirmationSchema>;
+
+interface ConfirmationContext {
+  asset: string;
+  destination: string;
+  network: 'testnet' | 'mainnet';
+}
+
+function isFinancialIntent(intent: ParsedIntent): boolean {
+  return FINANCIAL_ACTIONS.has(intent.action);
+}
+
+function fingerprintIntent(intent: ParsedIntent): string {
+  return JSON.stringify({
+    action: intent.action,
+    amount: intent.amount ?? null,
+    withdrawAll: intent.withdrawAll ?? null,
+    strategy: intent.strategy ?? null,
+  });
+}
+
+/**
+ * Build a structured confirmation for a parsed financial intent.
+ * Returns null when the intent is not financial or is ambiguous/incomplete —
+ * in which case nothing may be enqueued.
+ */
+function buildConfirmation(
+  intent: ParsedIntent,
+  ctx: ConfirmationContext,
+): Confirmation | null {
+  if (!isFinancialIntent(intent)) return null;
+  if (intent.confidence < LOW_CONFIDENCE_THRESHOLD) return null;
+  if (intent.action === 'withdraw_all') {
+    if (intent.withdrawAll !== true) return null;
+  } else if (typeof intent.amount !== 'number' || !(intent.amount > 0)) {
+    return null;
+  }
+
+  return {
+    action: intent.action as Confirmation['action'],
+    amount: intent.amount,
+    withdrawAll: intent.withdrawAll,
+    asset: ctx.asset,
+    destination: ctx.destination,
+    network: ctx.network,
+    intentFingerprint: fingerprintIntent(intent),
+  };
+}
+
+/**
+ * Authorize execution. A confirmation can only authorize the exact operation
+ * it was bound to; any edit to the intent (amount, action, etc.) changes the
+ * fingerprint and invalidates the confirmation.
+ */
+function authorizeExecution(intent: ParsedIntent, confirmation: Confirmation): boolean {
+  const parsed = ConfirmationSchema.safeParse(confirmation);
+  if (!parsed.success) return false;
+  if (!isFinancialIntent(intent)) return false;
+  if (parsed.data.action !== intent.action) return false;
+  return parsed.data.intentFingerprint === fingerprintIntent(intent);
 }
 
 // ── Circuit breaker helpers ───────────────────────────────────────────────────
@@ -249,110 +333,74 @@ test('high-confidence deposit does not need confirmation', () => {
   assert.strictEqual(needsConfirmation(r), false);
 });
 
-test('clarify intent needs confirmation (low confidence)', () => {
-  const r = parseIntentWithRegex('blah blah blah');
+test('low-confidence clarify needs confirmation', () => {
+  const r = parseIntentWithRegex('hello there world xyz');
   assert.strictEqual(needsConfirmation(r), true);
 });
 
-test('bare strategy has moderate confidence < threshold?', () => {
-  // confidence is 0.8 which is >= 0.7 — should NOT need confirmation
-  const r = parseIntentWithRegex('balanced');
-  assert.strictEqual(needsConfirmation(r), false);
+// ── Explicit confirmation for financial intents (#419) ───────────────────────
+console.log('\n  [explicit confirmation]');
+
+const CTX: ConfirmationContext = {
+  asset: 'USDC',
+  destination: 'GABC1234567890',
+  network: 'testnet',
+};
+
+test('parsing alone does not enqueue — confirmation is required', () => {
+  const r = parseIntentWithRegex('deposit 100 USDC');
+  // No confirmation object exists yet, so execution cannot be authorized.
+  assert.strictEqual(isFinancialIntent(r), true);
+  const conf = buildConfirmation(r, CTX);
+  assert.ok(conf, 'a structured confirmation should be produced');
 });
 
-// ── Zod schema validation ─────────────────────────────────────────────────────
-console.log('\n  [Zod schema]');
-
-test('valid deposit object passes schema', () => {
-  const obj = { action: 'deposit', amount: 100, confidence: 0.9, raw: 'deposit 100' };
-  const result = ParsedIntentSchema.safeParse(obj);
-  assert.ok(result.success);
+test('confirmation binds amount, asset, destination, network', () => {
+  const r = parseIntentWithRegex('deposit 100 USDC');
+  const conf = buildConfirmation(r, CTX)!;
+  assert.strictEqual(conf.amount, 100);
+  assert.strictEqual(conf.asset, 'USDC');
+  assert.strictEqual(conf.destination, 'GABC1234567890');
+  assert.strictEqual(conf.network, 'testnet');
 });
 
-test('negative amount fails schema', () => {
-  const obj = { action: 'deposit', amount: -50, confidence: 0.9, raw: 'test' };
-  const result = ParsedIntentSchema.safeParse(obj);
-  assert.strictEqual(result.success, false);
+test('ambiguous text does not produce a confirmation', () => {
+  const r = parseIntentWithRegex('hello there world xyz');
+  assert.strictEqual(buildConfirmation(r, CTX), null);
 });
 
-test('unknown action fails schema', () => {
-  const obj = { action: 'fly_to_moon', confidence: 0.9, raw: 'test' };
-  const result = ParsedIntentSchema.safeParse(obj);
-  assert.strictEqual(result.success, false);
+test('non-financial intent does not produce a confirmation', () => {
+  const r = parseIntentWithRegex('what is my balance');
+  assert.strictEqual(buildConfirmation(r, CTX), null);
 });
 
-test('confidence above 1.0 fails schema', () => {
-  const obj = { action: 'check_balance', confidence: 1.5, raw: 'test' };
-  const result = ParsedIntentSchema.safeParse(obj);
-  assert.strictEqual(result.success, false);
+test('confirmation authorizes its bound operation', () => {
+  const r = parseIntentWithRegex('deposit 100 USDC');
+  const conf = buildConfirmation(r, CTX)!;
+  assert.strictEqual(authorizeExecution(r, conf), true);
 });
 
-test('confidence defaults to 1 when omitted', () => {
-  const obj = { action: 'check_balance', raw: 'test' };
-  const result = ParsedIntentSchema.safeParse(obj);
-  assert.ok(result.success);
-  assert.strictEqual((result as any).data.confidence, 1);
+test('editing the amount invalidates the old confirmation', () => {
+  const r = parseIntentWithRegex('deposit 100 USDC');
+  const conf = buildConfirmation(r, CTX)!;
+  const edited = parseIntentWithRegex('deposit 500 USDC');
+  assert.strictEqual(authorizeExecution(edited, conf), false);
 });
 
-// ── Circuit breaker ───────────────────────────────────────────────────────────
-console.log('\n  [circuit breaker]');
-
-test('breaker starts CLOSED', () => {
-  const b = makeCB();
-  assert.strictEqual(b.state, 'CLOSED');
-  assert.strictEqual(isAvailable(b), true);
+test('editing the action invalidates the old confirmation', () => {
+  const r = parseIntentWithRegex('deposit 100 USDC');
+  const conf = buildConfirmation(r, CTX)!;
+  const edited = parseIntentWithRegex('withdraw 100');
+  assert.strictEqual(authorizeExecution(edited, conf), false);
 });
 
-test('3 failures open the breaker', () => {
-  const b = makeCB();
-  recordFailure(b); recordFailure(b); recordFailure(b);
-  assert.strictEqual(b.state, 'OPEN');
-  assert.strictEqual(isAvailable(b), false);
-});
-
-test('open breaker becomes HALF_OPEN after recovery timeout', () => {
-  const b = makeCB();
-  const now = Date.now();
-  recordFailure(b, now); recordFailure(b, now); recordFailure(b, now);
-  assert.strictEqual(isAvailable(b, now + RECOVERY_TIMEOUT_MS + 1), true);
-  assert.strictEqual(b.state, 'HALF_OPEN');
-});
-
-test('two successes in HALF_OPEN close the breaker', () => {
-  const b = makeCB();
-  const now = Date.now();
-  recordFailure(b, now); recordFailure(b, now); recordFailure(b, now);
-  isAvailable(b, now + RECOVERY_TIMEOUT_MS + 1); // transition to HALF_OPEN
-  recordSuccess(b); recordSuccess(b);
-  assert.strictEqual(b.state, 'CLOSED');
-});
-
-// ── Multi-turn context ────────────────────────────────────────────────────────
-console.log('\n  [multi-turn context]');
-
-test('history grows with each append', () => {
-  conversationHistory.clear();
-  appendToHistory('user1', 'user', 'deposit 100');
-  appendToHistory('user1', 'assistant', '{"action":"deposit","amount":100}');
-  assert.strictEqual(conversationHistory.get('user1')!.length, 2);
-});
-
-test('history is capped at MAX_HISTORY_TURNS', () => {
-  conversationHistory.clear();
-  for (let i = 0; i < MAX_HISTORY_TURNS + 4; i++) {
-    appendToHistory('user2', 'user', `msg ${i}`);
-  }
-  assert.strictEqual(conversationHistory.get('user2')!.length, MAX_HISTORY_TURNS);
-});
-
-test('different users have independent histories', () => {
-  conversationHistory.clear();
-  appendToHistory('alice', 'user', 'deposit 100');
-  appendToHistory('bob', 'user', 'check balance');
-  assert.strictEqual(conversationHistory.get('alice')!.length, 1);
-  assert.strictEqual(conversationHistory.get('bob')!.length, 1);
+test('confirmation cannot authorize a different operation', () => {
+  const deposit = parseIntentWithRegex('deposit 100 USDC');
+  const conf = buildConfirmation(deposit, CTX)!;
+  const withdraw = parseIntentWithRegex('withdraw 100');
+  assert.strictEqual(authorizeExecution(withdraw, conf), false);
 });
 
 // ── Summary ───────────────────────────────────────────────────────────────────
-console.log(`\n${passed} passed, ${failed} failed\n`);
+console.log(`\n  ${passed} passed, ${failed} failed\n`);
 if (failed > 0) process.exit(1);

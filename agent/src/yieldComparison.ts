@@ -8,6 +8,8 @@ export interface ProtocolYieldData {
   tvlUsdc: number;
   volatility: number; // annualized volatility e.g. 0.02
   riskScore: number;  // 1-100 from risk scoring engine
+  /** Source observation time in epoch milliseconds when supplied by the adapter. */
+  fetchedAt?: number;
 }
 
 export interface YieldOpportunity {

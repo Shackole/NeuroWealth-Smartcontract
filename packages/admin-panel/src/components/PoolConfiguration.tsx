@@ -6,6 +6,9 @@ import { useStore } from "@/lib/store";
 import { getSorobanServer } from "@/lib/stellar";
 import { Network } from "lucide-react";
 import * as StellarSdk from "@stellar/stellar-sdk";
+import { ActionReview, type ActionReviewChange } from "./ActionReview";
+
+type PoolReview = { kind: "blend" | "dex"; value: string; change: ActionReviewChange };
 
 interface PoolConfigurationProps {
   client: VaultClient;
@@ -23,6 +26,7 @@ export function PoolConfiguration({ client, signer }: PoolConfigurationProps) {
   const [error, setError] = useState<string | null>(null);
   const [txHash, setTxHash] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"blend" | "dex">("blend");
+  const [review, setReview] = useState<PoolReview | null>(null);
 
   useEffect(() => {
     fetchPools();
@@ -46,8 +50,8 @@ export function PoolConfiguration({ client, signer }: PoolConfigurationProps) {
     }
   };
 
-  const handleSetBlendPool = async () => {
-    if (!newBlendPool.startsWith("C")) {
+  const handleSetBlendPool = async (reviewedAddress: string) => {
+    if (!reviewedAddress.startsWith("C")) {
       setError("Invalid Soroban contract address (must start with C)");
       return;
     }
@@ -60,10 +64,10 @@ export function PoolConfiguration({ client, signer }: PoolConfigurationProps) {
       const result = await client.set_blend_pool(
         signer,
         signer.publicKey(),
-        newBlendPool,
+        reviewedAddress,
       );
       setTxHash(result.hash);
-      setBlendPool(newBlendPool);
+      setBlendPool(reviewedAddress);
 
       // Poll for confirmation
       const server = getSorobanServer(network);
@@ -83,8 +87,8 @@ export function PoolConfiguration({ client, signer }: PoolConfigurationProps) {
     }
   };
 
-  const handleSetDexPool = async () => {
-    if (!newDexPool.startsWith("C")) {
+  const handleSetDexPool = async (reviewedAddress: string) => {
+    if (!reviewedAddress.startsWith("C")) {
       setError("Invalid Soroban contract address (must start with C)");
       return;
     }
@@ -97,10 +101,10 @@ export function PoolConfiguration({ client, signer }: PoolConfigurationProps) {
       const result = await client.set_dex_pool(
         signer,
         signer.publicKey(),
-        newDexPool,
+        reviewedAddress,
       );
       setTxHash(result.hash);
-      setDexPool(newDexPool);
+      setDexPool(reviewedAddress);
 
       // Poll for confirmation
       const server = getSorobanServer(network);
@@ -176,7 +180,11 @@ export function PoolConfiguration({ client, signer }: PoolConfigurationProps) {
           </div>
 
           <button
-            onClick={handleSetBlendPool}
+            onClick={() => setReview({
+              kind: "blend",
+              value: newBlendPool,
+              change: { label: "Blend pool contract", current: blendPool || "Not configured", proposed: newBlendPool },
+            })}
             disabled={loading}
             className="button-primary w-full py-3 disabled:opacity-50"
           >
@@ -217,7 +225,11 @@ export function PoolConfiguration({ client, signer }: PoolConfigurationProps) {
           </div>
 
           <button
-            onClick={handleSetDexPool}
+            onClick={() => setReview({
+              kind: "dex",
+              value: newDexPool,
+              change: { label: "DEX pool contract", current: dexPool || "Not configured", proposed: newDexPool },
+            })}
             disabled={loading}
             className="button-primary w-full py-3 disabled:opacity-50"
           >
@@ -230,6 +242,25 @@ export function PoolConfiguration({ client, signer }: PoolConfigurationProps) {
         <div className="mt-4 p-3 bg-emerald-900/20 border border-emerald-700 rounded text-sm text-emerald-300">
           <p className="font-mono break-all">Tx: {txHash}</p>
         </div>
+      )}
+
+      {review && (
+        <ActionReview
+          title={review.kind === "blend" ? "Blend pool update" : "DEX pool update"}
+          network={String(network)}
+          signer={signer.publicKey()}
+          requiredAuthority="Contract owner"
+          timelock="No additional timelock is used for this pool update."
+          changes={[review.change]}
+          loading={loading}
+          onCancel={() => setReview(null)}
+          onConfirm={() => {
+            const proposal = review;
+            setReview(null);
+            if (proposal.kind === "blend") void handleSetBlendPool(proposal.value);
+            else void handleSetDexPool(proposal.value);
+          }}
+        />
       )}
 
       {error && (

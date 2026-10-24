@@ -5,13 +5,8 @@ import { X, ArrowDownLeft, ArrowUpRight, Loader2, RefreshCw } from 'lucide-react
 import { signWithFreighter } from '@/lib/freighter';
 import { fetchVaultCapState } from '@/lib/stellar';
 import { VaultCapIndicator, VaultCapData } from '@/components/VaultCapIndicator';
-import { TransactionProgress } from '@/components/TransactionProgress';
-import {
-  type TransactionProgressStatus,
-  type TransactionContext,
-  buildStandardSteps,
-  getExplorerUrl,
-} from '@/lib/transactionProgress';
+import { TransactionIdentity } from '@/components/TransactionIdentity';
+import { useWalletStore } from '@/lib/walletStore';
 
 interface ActionModalProps {
   isOpen: boolean;
@@ -36,6 +31,7 @@ export const ActionModal: React.FC<ActionModalProps> = ({
   exchangeRate,
   embedded = false,
 }) => {
+  const currentWalletKey = useWalletStore((state) => state.publicKey);
   const [amount, setAmount] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(false);
   const [progressStatus, setProgressStatus] = useState<TransactionProgressStatus | null>(null);
@@ -44,6 +40,12 @@ export const ActionModal: React.FC<ActionModalProps> = ({
   const [errorMessage, setErrorMessage] = useState<string | undefined>(undefined);
   const [capData, setCapData] = useState<VaultCapData | null>(null);
   const [capLoading, setCapLoading] = useState<boolean>(false);
+
+  useEffect(() => {
+    setAmount('');
+    setTxSuccess(false);
+    setTxHash('');
+  }, [userPublicKey]);
 
   // Refresh cap data each time the deposit modal is opened
   useEffect(() => {
@@ -70,8 +72,9 @@ export const ActionModal: React.FC<ActionModalProps> = ({
     ? Math.max(capData.userDepositCap - capData.userDeposits, 0)
     : undefined;
 
-  const executeTransaction = async () => {
-    if (!userPublicKey || numAmount <= 0 || depositBlocked) return;
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!userPublicKey || (currentWalletKey && currentWalletKey !== userPublicKey) || numAmount <= 0 || depositBlocked) return;
 
     setLoading(true);
     setErrorMessage(undefined);
@@ -181,52 +184,33 @@ export const ActionModal: React.FC<ActionModalProps> = ({
         </button>
       )}
 
-      {progressStatus !== null ? (
-        <div className="py-2 space-y-4">
-          <TransactionProgress
-            steps={buildStandardSteps(progressStatus, currentContext)}
-            context={currentContext}
-            title={
-              progressStatus === 'confirmed'
-                ? `${type === 'deposit' ? 'Deposit' : 'Withdrawal'} Confirmed`
-                : progressStatus === 'failure'
-                ? 'Transaction Failed'
-                : `${type === 'deposit' ? 'Deposit' : 'Withdrawal'} Progress`
-            }
-            onRetry={executeTransaction}
-            onAction={handleAction}
-          />
+      {userPublicKey && !txSuccess && (
+        <div className="mb-4">
+          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Transaction review identity</p>
+          <TransactionIdentity publicKey={userPublicKey} />
+        </div>
+      )}
 
-          {/* Explicit Dismiss / Reset Button on Terminal Success */}
-          {progressStatus === 'confirmed' && (
-            <button
-              type="button"
-              onClick={handleResetAndClose}
-              className="w-full mt-4 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold py-3 rounded-xl transition-all"
-            >
-              Done
-            </button>
-          )}
-
-          {/* Action button if on review status */}
-          {progressStatus === 'review' && (
-            <div className="flex gap-3 pt-2">
-              <button
-                type="button"
-                onClick={() => setProgressStatus(null)}
-                className="flex-1 py-3 rounded-xl border border-slate-700 text-slate-300 hover:bg-slate-800 font-semibold transition-colors"
-              >
-                Back &amp; Edit
-              </button>
-              <button
-                type="button"
-                onClick={executeTransaction}
-                className="flex-1 py-3 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-slate-950 font-bold transition-all shadow-glow-emerald"
-              >
-                Confirm &amp; Sign
-              </button>
-            </div>
-          )}
+      {txSuccess ? (
+        <div className="text-center py-6">
+          <div className="h-16 w-16 bg-emerald-500/20 text-emerald-400 rounded-full flex items-center justify-center mx-auto mb-4 border border-emerald-500/30">
+            <CheckCircle2 size={36} />
+          </div>
+          <h3 className="text-xl font-bold text-white mb-2">
+            {type === 'deposit' ? 'Deposit Successful!' : 'Withdrawal Successful!'}
+          </h3>
+          <p className="text-sm text-slate-400 mb-4 font-mono">
+            Transaction Hash: {txHash.substring(0, 12)}...{txHash.substring(txHash.length - 8)}
+          </p>
+          <p className="text-xs text-emerald-400 bg-emerald-500/10 py-2 px-3 rounded-lg border border-emerald-500/20 mb-6">
+            Confirmed in ~3.8 seconds on Stellar Devnet
+          </p>
+          <button
+            onClick={handleResetAndClose}
+            className="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold py-3 rounded-xl transition-all"
+          >
+            Done
+          </button>
         </div>
       ) : (
         <form onSubmit={handleSubmit}>

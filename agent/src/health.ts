@@ -30,6 +30,21 @@ let rpcServer: SorobanRpc.Server | null = null;
 /** Optional Redis-compatible client (ioredis or node-redis). */
 let redisClient: { ping(): Promise<string> } | null = null;
 
+const defaultRequiredDependencies = process.env.NODE_ENV === 'production'
+  ? ['database', 'stellar_rpc']
+  : [];
+const requiredDependencies = new Set(
+  (process.env.HEALTH_REQUIRED_DEPENDENCIES ?? defaultRequiredDependencies.join(','))
+    .split(',')
+    .map((dependency) => dependency.trim())
+    .filter(Boolean),
+);
+
+function dependencyIsHealthy(name: string, status: string): boolean {
+  if (status === 'ok') return true;
+  return status === 'not_configured' && !requiredDependencies.has(name);
+}
+
 // ── Alert state ───────────────────────────────────────────────────────────────
 const ALERT_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
 const criticalFailureSince: Record<string, number | null> = {};
@@ -174,9 +189,9 @@ router.get('/health', async (_req, res) => {
         : 'degraded';
 
   // Record alerts for critical checks
-  recordCheckResult('database', dbResult.status === 'ok' || dbResult.status === 'not_configured');
-  recordCheckResult('stellar_rpc', rpcResult.status === 'ok' || rpcResult.status === 'not_configured');
-  recordCheckResult('redis', redisResult.status === 'ok' || redisResult.status === 'not_configured');
+  recordCheckResult('database', dependencyIsHealthy('database', dbResult.status));
+  recordCheckResult('stellar_rpc', dependencyIsHealthy('stellar_rpc', rpcResult.status));
+  recordCheckResult('redis', dependencyIsHealthy('redis', redisResult.status));
 
   const checks = {
     database: dbResult.status,
@@ -185,9 +200,11 @@ router.get('/health', async (_req, res) => {
     openai_api_keys: openAiStatus,
   };
 
-  const isHealthy = Object.values(checks).every(
-    (s) => s === 'ok' || s === 'not_configured',
-  );
+  const isHealthy =
+    dependencyIsHealthy('database', dbResult.status) &&
+    dependencyIsHealthy('redis', redisResult.status) &&
+    dependencyIsHealthy('stellar_rpc', rpcResult.status) &&
+    (openAiStatus === 'ok' || openAiStatus === 'not_configured');
 
   res.status(isHealthy ? 200 : 503).json({
     status: isHealthy ? 'ok' : 'degraded',
@@ -212,7 +229,6 @@ router.get('/health', async (_req, res) => {
       openAiKeys: {
         totalConfigured: openAiKeyManager.keyCount,
         healthyCount: healthyKeysCount,
-        keys: keyHealth,
       },
     },
     uptime: process.uptime(),
@@ -224,24 +240,28 @@ router.get('/health', async (_req, res) => {
  * GET /health/ready
  *
  * Kubernetes readiness probe.
- * Returns 200 when every *critical* dependency (DB, Stellar RPC) is reachable.
- * Returns 503 when any critical dependency is down so the pod is removed from
- * the load-balancer until it recovers.
+ * Returns 503 when any configured dependency is down. In production, DB,
+ * Redis, and Stellar RPC are required by default; local deployments may leave
+ * optional dependencies unconfigured. Override the policy with
+ * HEALTH_REQUIRED_DEPENDENCIES (comma-separated dependency names).
  */
 router.get('/health/ready', async (_req, res) => {
-  const [dbResult, rpcResult] = await Promise.all([
+  const [dbResult, redisResult, rpcResult] = await Promise.all([
     checkDatabase(),
+    checkRedis(),
     checkStellarRpc(),
   ]);
 
-  const dbOk = dbResult.status === 'ok' || dbResult.status === 'not_configured';
-  const rpcOk = rpcResult.status === 'ok' || rpcResult.status === 'not_configured';
-  const ready = dbOk && rpcOk;
+  const databaseReady = dependencyIsHealthy('database', dbResult.status);
+  const redisReady = dependencyIsHealthy('redis', redisResult.status);
+  const stellarRpcReady = dependencyIsHealthy('stellar_rpc', rpcResult.status);
+  const ready = databaseReady && redisReady && stellarRpcReady;
 
   res.status(ready ? 200 : 503).json({
     ready,
     checks: {
       database: dbResult.status,
+      redis: redisResult.status,
       stellar_rpc: rpcResult.status,
     },
     timestamp: new Date().toISOString(),

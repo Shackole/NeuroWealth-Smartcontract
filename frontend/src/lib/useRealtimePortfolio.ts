@@ -32,6 +32,7 @@ interface UseRealtimePortfolioOptions {
   pollIntervalMs?: number;
   contractId?: string;
   accountAddress?: string;
+  network?: 'testnet' | 'mainnet' | 'unknown';
 }
 
 const DEFAULT_POLL_INTERVAL = 10000;
@@ -42,6 +43,7 @@ export function useRealtimePortfolio(options: UseRealtimePortfolioOptions = {}) 
     pollIntervalMs = DEFAULT_POLL_INTERVAL,
     contractId,
     accountAddress,
+    network = 'unknown',
   } = options;
 
   const [state, setState] = useState<PortfolioState>({
@@ -57,6 +59,10 @@ export function useRealtimePortfolio(options: UseRealtimePortfolioOptions = {}) 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttempts = useRef(0);
+  const contextGeneration = useRef(0);
+  const portfolioContext = `${network}:${accountAddress ?? ''}:${contractId ?? ''}`;
+  const activePortfolioContext = useRef(portfolioContext);
+  const isContextCurrent = activePortfolioContext.current === portfolioContext;
 
   const addEvent = useCallback((event: PortfolioEvent) => {
     setEvents(prev => [event, ...prev].slice(0, 100));
@@ -64,25 +70,28 @@ export function useRealtimePortfolio(options: UseRealtimePortfolioOptions = {}) 
 
   const connectWebSocket = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
+    const generation = contextGeneration.current;
 
     try {
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
 
       ws.onopen = () => {
+        if (generation !== contextGeneration.current || wsRef.current !== ws) return;
         console.log('[Realtime] WebSocket connected');
         reconnectAttempts.current = 0;
         setState(prev => ({ ...prev, isConnected: true, connectionType: 'websocket' }));
 
         if (contractId) {
-          ws.send(JSON.stringify({ action: 'subscribe', contractId }));
+          ws.send(JSON.stringify({ action: 'subscribe', contractId, network }));
         }
         if (accountAddress) {
-          ws.send(JSON.stringify({ action: 'subscribe_account', address: accountAddress }));
+          ws.send(JSON.stringify({ action: 'subscribe_account', address: accountAddress, network }));
         }
       };
 
       ws.onmessage = (event) => {
+        if (generation !== contextGeneration.current || wsRef.current !== ws) return;
         try {
           const data = JSON.parse(event.data);
 
@@ -109,6 +118,7 @@ export function useRealtimePortfolio(options: UseRealtimePortfolioOptions = {}) 
       };
 
       ws.onclose = () => {
+        if (generation !== contextGeneration.current || wsRef.current !== ws) return;
         console.log('[Realtime] WebSocket disconnected');
         setState(prev => ({ ...prev, isConnected: false, connectionType: 'disconnected' }));
 
@@ -118,6 +128,7 @@ export function useRealtimePortfolio(options: UseRealtimePortfolioOptions = {}) 
       };
 
       ws.onerror = (error) => {
+        if (generation !== contextGeneration.current || wsRef.current !== ws) return;
         console.error('[Realtime] WebSocket error:', error);
         ws.close();
       };
@@ -125,10 +136,11 @@ export function useRealtimePortfolio(options: UseRealtimePortfolioOptions = {}) 
       console.error('[Realtime] Failed to connect WebSocket:', error);
       startPolling();
     }
-  }, [wsUrl, contractId, accountAddress, addEvent]);
+  }, [wsUrl, contractId, accountAddress, network, addEvent]);
 
   const startPolling = useCallback(() => {
     if (pollRef.current) return;
+    const generation = contextGeneration.current;
 
     console.log('[Realtime] Falling back to polling');
     setState(prev => ({ ...prev, isConnected: true, connectionType: 'polling' }));
@@ -138,11 +150,13 @@ export function useRealtimePortfolio(options: UseRealtimePortfolioOptions = {}) 
         const params = new URLSearchParams();
         if (contractId) params.set('contractId', contractId);
         if (accountAddress) params.set('address', accountAddress);
+        params.set('network', network);
 
         const response = await fetch(`/api/portfolio?${params.toString()}`);
         if (!response.ok) throw new Error('Failed to fetch portfolio');
 
         const data = await response.json();
+        if (generation !== contextGeneration.current) return;
         setState(prev => ({
           ...prev,
           balance: data.balance || prev.balance,
@@ -156,12 +170,14 @@ export function useRealtimePortfolio(options: UseRealtimePortfolioOptions = {}) 
 
     fetchPortfolio();
     pollRef.current = setInterval(fetchPortfolio, pollIntervalMs);
-  }, [contractId, accountAddress, pollIntervalMs]);
+  }, [contractId, accountAddress, network, pollIntervalMs]);
 
   const disconnect = useCallback(() => {
+    contextGeneration.current += 1;
     if (wsRef.current) {
-      wsRef.current.close();
+      const socket = wsRef.current;
       wsRef.current = null;
+      socket.close();
     }
     if (pollRef.current) {
       clearInterval(pollRef.current);
@@ -171,17 +187,41 @@ export function useRealtimePortfolio(options: UseRealtimePortfolioOptions = {}) 
       clearTimeout(reconnectTimeoutRef.current);
       reconnectTimeoutRef.current = null;
     }
-    setState(prev => ({ ...prev, isConnected: false, connectionType: 'disconnected' }));
+    reconnectAttempts.current = 0;
+    setState({
+      balance: { idle: 0, deployed: 0, total: 0 },
+      yieldAccrual: { rate: 0, earned24h: 0, earnedTotal: 0 },
+      lastUpdate: Date.now(),
+      isConnected: false,
+      connectionType: 'disconnected',
+    });
+    setEvents([]);
   }, []);
 
   useEffect(() => {
+    activePortfolioContext.current = portfolioContext;
+    contextGeneration.current += 1;
+    setState({
+      balance: { idle: 0, deployed: 0, total: 0 },
+      yieldAccrual: { rate: 0, earned24h: 0, earnedTotal: 0 },
+      lastUpdate: Date.now(),
+      isConnected: false,
+      connectionType: 'disconnected',
+    });
+    setEvents([]);
     connectWebSocket();
     return disconnect;
-  }, [connectWebSocket, disconnect]);
+  }, [connectWebSocket, disconnect, portfolioContext]);
 
   return {
-    ...state,
-    events,
+    ...(isContextCurrent ? state : {
+      balance: { idle: 0, deployed: 0, total: 0 },
+      yieldAccrual: { rate: 0, earned24h: 0, earnedTotal: 0 },
+      lastUpdate: Date.now(),
+      isConnected: false,
+      connectionType: 'disconnected' as const,
+    }),
+    events: isContextCurrent ? events : [],
     disconnect,
     reconnect: connectWebSocket,
   };

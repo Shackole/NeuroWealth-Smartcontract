@@ -2,6 +2,33 @@
 
 This document describes the security architecture, trust model, and threat model for the NeuroWealth Vault contract.
 
+## Wallet custody differs by product flow
+
+The web and WhatsApp paths have different signing and recovery models. Do not
+describe the entire product as non-custodial:
+
+- **Web / Freighter:** the browser requests the user's public key and asks the
+  Freighter extension to sign transactions. The web application does not
+  receive the wallet's secret key. Users remain responsible for their wallet
+  backup and recovery.
+- **WhatsApp:** the service generates and signs with a server-managed Stellar
+  keypair after phone verification. This is custodial: operators who control
+  the signing service and its encryption material may be able to authorize
+  transactions for that wallet. Phone-number verification is not proof of
+  wallet ownership and does not provide independent key recovery.
+
+The current WhatsApp implementation stores encrypted wallet records in an
+in-process `Map`; a service restart loses the records. Its encryption module
+also contains a development fallback key. Until durable encrypted storage,
+managed key rotation/recovery, production secret configuration, and operational
+access controls are implemented and reviewed, treat WhatsApp wallet handling
+as a prototype and do not use it to custody real funds. The user-facing
+distinction is described in the [WhatsApp guide](docs/WHATSAPP_USER_GUIDE.md).
+
+The vault contract's on-chain controls do not remove the custodial risks of a
+server-managed signing key. A deployed contract may restrict where funds can
+move, but the WhatsApp operator still controls signing for that account.
+
 ## Threat Model & Trust Boundaries (Issue #563)
 
 The `NeuroWealthVault` smart contract operates in a multi-actor ecosystem involving privileged governance keys, automated off-chain execution services, end users, external DeFi protocols, and token issuers. System security depends on defining explicit trust boundaries and technical constraints around each actor.
@@ -50,7 +77,8 @@ The Owner key is the primary administrative authority of the contract. As mandat
   - Configure deposit safety caps (`set_caps`, `set_tvl_cap`, `set_user_deposit_cap`, `set_deposit_limits`).
   - Set rebalance cooldowns and approval TTLs (`set_rebalance_cooldown`, `set_approval_ttl`).
   - Initiate and execute timelocked AI agent rotations (`update_agent`, `confirm_agent_update`, `cancel_agent_update`).
-  - Schedule, execute, or cancel contract WASM upgrades behind a 24-hour timelock (`schedule_upgrade`, `execute_upgrade`, `cancel_upgrade`).
+  - Schedule or cancel contract WASM upgrades; execute a pending upgrade after 17,280 ledgers only with owner authorization and, when configured at scheduling time, the guardian co-signature bound to that exact WASM hash (`schedule_upgrade`, `execute_upgrade`, `cancel_upgrade`).
+  - Set or remove the guardian only when no upgrade is pending. Removal is owner-only and applies to future proposals; cancel a pending proposal before rotating/removing the guardian.
   - Configure whitelisted external protocol pool addresses (`set_blend_pool`, `set_dex_pool`).
   - Initiate and complete ownership transfers (`transfer_ownership`, `accept_ownership`).
   - Execute emergency yield harvests during agent rotation (`emergency_harvest`).
@@ -58,7 +86,7 @@ The Owner key is the primary administrative authority of the contract. As mandat
   - Direct user USDC deposits to owner-controlled arbitrary wallets.
   - Withdraw or burn user shares without explicit user authorization.
   - Modify individual user share balances.
-  - Bypass upgrade or agent rotation timelocks (must wait 17,280 ledgers ≈ 24 hours).
+  - Bypass upgrade or agent rotation timelocks (must wait 17,280 ledgers ≈ 24 hours). Execution fails before the advertised expiry ledger and is first allowed when `current_ledger >= effective_ledger`.
   - Perform instant WASM code replacements.
 
 #### 2. AI Agent Hot Key
@@ -161,6 +189,11 @@ The vault automatically manages liquidity between idle USDC (held in the contrac
 2. **Protocol Withdrawals**: If idle USDC is insufficient, the vault automatically attempts to withdraw the required amount from the active protocol (e.g., Blend).
 3. **Partial Withdrawals**: If the protocol has insufficient liquidity (e.g., high utilization), the user receives all available USDC and **retains their remaining shares** in the vault. This ensures users are not forced into unfavorable liquidations during protocol-wide liquidity crunches.
 
+The contract has no asynchronous withdrawal queue or reserved-withdrawal balance.
+Remaining shares are the user's claim after a partial payment. Strategy
+reallocation changes asset location without consuming those shares or aggregate
+asset accounting, and each later withdrawal is share-limited and user-authorized.
+
 ### Withdrawal Priority
 
 Users can withdraw their USDC at any time without:
@@ -188,11 +221,14 @@ The `update_total_assets` function used by the AI agent has built-in guardrails:
 The AI agent can move funds between protocols via `rebalance()`, but is constrained:
 - **Rebalance Cooldown**: Consecutive rebalances are rate-limited by a configurable cooldown (`get_rebalance_cooldown` / `get_last_rebalance_ledger`), which bounds how quickly a compromised or malfunctioning agent can churn funds across protocols.
 - **No Direct Custody**: Rebalancing only moves funds between the vault's own positions in whitelisted pools; the agent cannot redirect funds to an arbitrary address.
+- **Protocol Spend Authority**: Approvals are limited to the USDC available for supply and capped at 500,000 ledgers. Successful supplies clear residual allowances, replaced pools are revoked, and emergency exits clear configured pool allowances. The legacy setter accepts zero for immediate expiry and short values for recovery operations.
 
 ### 4. Upgrade Risks
 
 The contract owner can upgrade the contract code. To protect against malicious or accidental instant code changes, upgrade risk is mitigated via a mandatory two-step timelock mechanism:
 - **Two-Step Timelock**: Upgrades must first be scheduled via `schedule_upgrade(new_wasm_hash)`, initiating a timelock delay before `execute_upgrade()` can be called.
+- **Hash-Bound Authorization**: At execution, the owner and any configured guardian must authorize the exact pending WASM hash. A signature authorizing another hash cannot authorize this proposal.
+- **Guardian Changes During a Proposal**: `set_guardian` and `remove_guardian` fail while an upgrade is pending. To rotate or remove the guardian, the owner must first cancel that proposal; a later proposal starts a fresh 24-hour delay. With no guardian configured, future upgrades require owner authorization only.
 - **Cancellation Window**: During the timelock window, the owner or security monitoring can invoke `cancel_upgrade()` to abort a compromised or erroneous upgrade proposal.
 - **Owner Multi-Sig Recommended**: For mainnet deployment, owner authority should be held by a multi-sig account.
 
@@ -345,7 +381,7 @@ to compound yield during this window:
 | Function | Caller | Paused Behaviour | Rationale |
 |----------|--------|-----------------|-----------|
 | `deposit` | User | 🔴 BLOCKED | No new deposits accepted during an emergency |
-| `batch_deposit` | User | 🔴 BLOCKED | Same reason as `deposit` |
+| `batch_deposit` | Agent | 🔴 BLOCKED | Agent-submitted batch deposits move funds and stop while paused |
 | `withdraw` | User | 🔴 BLOCKED | See note below on withdrawal semantics |
 | `withdraw_all` | User | 🔴 BLOCKED | See note below on withdrawal semantics |
 | `rebalance` | Agent | 🔴 BLOCKED | No fund movement while vault is paused |
@@ -378,6 +414,42 @@ to compound yield during this window:
 | `set_user_strategy` | User | 🟢 ALLOWED | Preference storage; no fund movement |
 | `touch_user_ttl` | Anyone | 🟢 ALLOWED | Permissionless TTL maintenance; no fund movement |
 | `initialize` | Deployer | 🟢 ALLOWED | Initialization runs before pause is even possible |
+
+### Additional Public Mutators
+
+The following entries complete the inventory for the current public contract
+surface. “ALLOWED” means the method is not blocked by the main vault pause;
+the method's own state, authorization, and validation checks still apply.
+
+| Function | Allowed actor | Paused behaviour | Notes |
+|----------|---------------|------------------|-------|
+| `deposit_asset` | User | 🔴 BLOCKED | Same pause boundary as `deposit` |
+| `withdraw_asset` | User | 🔴 BLOCKED | Same pause boundary as `withdraw` |
+| `rebalance_multi` | Agent | 🔴 BLOCKED | No protocol movement while paused |
+| `migrate_shares` | User | 🟢 ALLOWED | Controlled by the separate migration-pause flag and target |
+| `lock_shares` | User | 🟢 ALLOWED | Share restriction only; does not move assets |
+| `unlock_shares` | User | 🟢 ALLOWED | Lock expiry and user authorization still apply |
+| `emergency_withdraw` | User | 🟢 ALLOWED | Explicit user recovery path during a pause |
+| `enable_multi_protocol` | Owner | 🟢 ALLOWED | Configuration only |
+| `set_protocol_apy` | Agent | 🟢 ALLOWED | Agent report, no direct fund movement |
+| `reset_circuit_breaker` | Owner | 🟢 ALLOWED | Owner recovery control |
+| `set_migration_target` | Owner | 🟢 ALLOWED | Migration configuration |
+| `set_migration_paused` | Owner | 🟢 ALLOWED | Independent migration safety switch |
+| `set_rate_limit` | Owner | 🟢 ALLOWED | Configuration only |
+| `set_rate_limit_config` | Owner | 🟢 ALLOWED | Alias for `set_rate_limit` |
+| `set_max_batch_size` | Owner | 🟢 ALLOWED | Configuration only |
+| `set_batch_size_limit` | Owner | 🟢 ALLOWED | Alias for `set_max_batch_size` |
+| `set_min_holding_period` | Owner | 🟢 ALLOWED | Configuration only |
+| `submit_mev_report` | Agent | 🟢 ALLOWED | Risk report and accounting metadata |
+| `set_max_acceptable_mev_loss` | Owner | 🟢 ALLOWED | Configuration only |
+| `submit_apy_prediction` | Agent | 🟢 ALLOWED | Prediction metadata |
+| `set_guardian` | Owner | 🟢 ALLOWED | Upgrade authorization configuration |
+| `remove_guardian` | Owner | 🟢 ALLOWED | Owner recovery path for upgrade signing |
+| `add_supported_asset` | Owner | 🟢 ALLOWED | Asset configuration only |
+| `update_asset_limits` | Owner | 🟢 ALLOWED | Asset configuration only |
+| `remove_supported_asset` | Owner | 🟢 ALLOWED | Only when that asset has no shares or assets |
+| `touch_user_ttl` | Anyone | 🟢 ALLOWED | Permissionless storage maintenance |
+| `batch_touch_ttl` | Anyone | 🟢 ALLOWED | Permissionless storage maintenance |
 
 ### Read-Only / View Functions
 

@@ -159,6 +159,18 @@ export const semanticColors = {
     strong:  '#334155',   // neutral-700
     subtle:  '#0f172a',   // neutral-900
   },
+  /** Keyboard focus indicators; use the dark value on the dashboard's dark surfaces. */
+  focus: {
+    light: '#047857',
+    dark: '#34d399',
+  },
+  /** Error copy colors selected for readable contrast on the corresponding surface. */
+  feedback: {
+    errorText: {
+      light: '#b91c1c',
+      dark: '#fca5a5',
+    },
+  },
 } as const;
 
 // ── Typography scale ─────────────────────────────────────────────────────────

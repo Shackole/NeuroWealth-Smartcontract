@@ -750,11 +750,100 @@ Tests will fail if:
 ## Version Compatibility
 
 Event schemas are versioned to ensure backward compatibility:
-- Adding new fields to existing events is allowed
-- Removing fields requires a major version bump
-- Changing field types requires a major version bump
+- Adding an optional field is compatible only when existing consumers ignore
+  unknown fields; update this document and generated clients before emitting it.
+- Removing or renaming a field, changing its type or meaning, changing topic
+  order, or changing a topic's type is breaking. Add a new event topic/schema
+  version and keep the old event decodable during a migration.
+- The current emitted event schema is **v1**. The version is a repository
+  compatibility contract; the current on-chain payload does not contain a
+  separate `schema_version` field.
 
-Current event schema version: **v1**
+## Decoding, pagination, and checkpoint recovery
+
+Soroban RPC returns `topic` and `value` as base64 XDR `ScVal` values. Decode
+them with the Stellar SDK before comparing symbols or reading payload fields.
+For example, a `DepositEvent` uses topic 0 `Symbol("deposit")`, topic 1 the
+indexed user `Address`, and an event value containing `user`, `amount`, and
+`shares`. Both integer amounts are raw contract units; see
+[`docs/MONETARY_UNITS.md`](docs/MONETARY_UNITS.md).
+
+```ts
+import { scValToNative, xdr } from '@stellar/stellar-sdk';
+
+function decodeVaultEvent(event: {
+  id: string;
+  ledger: number;
+  txHash: string;
+  topic: xdr.ScVal[];
+  value: xdr.ScVal;
+}) {
+  const topics = event.topic.map((topic) => scValToNative(topic));
+  const payload = scValToNative(event.value);
+  return {
+    id: event.id,             // idempotency key; do not key only by ledger
+    ledger: event.ledger,
+    txHash: event.txHash,
+    topics,
+    payload,
+  };
+}
+```
+
+### Backfill procedure
+
+1. Stop the current listener before running a repair so normal ingestion and
+   backfill do not race.
+2. Read the target network's RPC `getHealth` response and record its
+   `oldestLedger` and `latestLedger`. Confirm `VAULT_CONTRACT_ID` belongs to the
+   same network as `SOROBAN_RPC_URL`.
+3. Pick the first missing ledger as `startLedger` (inclusive) and a fixed
+   `endLedger` (exclusive). Query `getEvents` for the vault contract with a
+   page limit no greater than 10,000. Persist each decoded event and its
+   checkpoint atomically; use the event `id` as the deduplication key.
+4. For each additional page, pass the last returned event's opaque `cursor`
+   under `pagination.cursor` and omit `startLedger` and `endLedger`. Continue
+   until the fixed window has been consumed. Keep the RPC response cursor with
+   the checkpoint; do not synthesize one from ledger numbers.
+5. Verify no gaps between the requested ledger window and persisted rows, then
+   restart the service and reconcile current contract state against the
+   indexed events.
+
+Example first page (use the actual endpoint, network, ledger range, and contract
+ID; this example does not contain credentials):
+
+```sh
+curl -fsS "$SOROBAN_RPC_URL" \
+  -H 'Content-Type: application/json' \
+  --data-binary @- <<JSON
+{
+    "jsonrpc":"2.0","id":1,"method":"getEvents",
+    "params":{
+      "startLedger":1000000,"endLedger":1000100,
+      "filters":[{"type":"contract","contractIds":["${VAULT_CONTRACT_ID}"]}],
+      "pagination":{"limit":1000},"xdrFormat":"base64"
+    }
+}
+JSON
+```
+
+### Current listener limitations
+
+`agent/src/eventListener.ts` starts at the latest ledger when the process starts,
+polls every five seconds, requests at most 100 events, and stores event rows
+with `ON CONFLICT DO NOTHING`. It does not persist or restore a ledger/cursor
+checkpoint, does not paginate, and does not expose a backfill command. A restart
+therefore does **not** replay downtime. Use the manual backfill procedure above
+before resuming normal ingestion. The table insert is only idempotent if the
+database schema enforces uniqueness for `event_id`; verify that constraint in
+the deployment migration before relying on it.
+
+RPC history is bounded. If the first missing ledger is older than
+`oldestLedger`, do not silently jump to the oldest retained ledger: use an
+archive RPC provider or the team's verified event archive, record the gap, and
+reconcile against contract state. A cursor is an opaque RPC token and should
+only be resumed against the same network, contract filter, and fixed query
+window.
 
 ## Keeping This Document in Sync
 
@@ -776,6 +865,23 @@ When adding an event or a field:
   the `(TOPIC_*)` annotation next to the literal symbol.
 - If the event publishes indexed topics beyond position 0, add a topic-tuple
   table like the ones under `DepositEvent` and `WithdrawEvent`.
+
+## Ingestion checkpoint and recovery
+
+The agent listener polls the configured Soroban RPC every five seconds and
+pages event responses in batches of 1,000. Its current ledger checkpoint and
+Prometheus checkpoint-age metric are process-local: a process restart starts
+at the latest ledger and does not restore the prior ledger from the database.
+That means HTTP health can be green while an earlier outage has left an
+unreconciled event gap. Use the alert and recovery steps in
+[`docs/runbooks/event-ingestion.md`](docs/runbooks/event-ingestion.md).
+
+Before backfilling, inspect RPC `getHealth` for the retained ledger range, then
+query `getEvents` with a contract filter. Persist each event idempotently by
+`event.id`; for continuation pages use the last event's opaque `cursor` in
+`pagination.cursor` and omit `startLedger`/`endLedger`. If the gap predates RPC
+retention, use an approved archive source and record any unrecoverable range.
+The listener does not provide a repair CLI or durable checkpoint store today.
 
 ## Multi-Protocol Allocation Events (Phase 2)
 

@@ -3,6 +3,10 @@
 This directory contains the Prometheus instrumentation for the NeuroWealth AI
 agent service.
 
+For configured retention periods and storage limits across Prometheus,
+container logs, CloudWatch, CI artifacts, and backups, see
+[`../RETENTION.md`](../RETENTION.md).
+
 ## Integration
 
 Install the dependency in the agent package:

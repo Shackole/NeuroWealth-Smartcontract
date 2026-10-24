@@ -218,16 +218,46 @@ seconds. The health endpoint returns `503` when the agent is degraded.
    ```
 
 2. Check the Stellar network status and provider status page. Compare a
-   second approved RPC endpoint if configured; do not switch to an unapproved
-   endpoint during an incident.
+   second approved RPC endpoint if configured; confirm it reports the same
+   network passphrase before using it. Never fail over between testnet and
+   mainnet. In the agent, set `SOROBAN_RPC_URL_FALLBACK` only to an approved
+   endpoint and set `SOROBAN_NETWORK_PASSPHRASE`; the RPC client verifies the
+   passphrase for each endpoint. Without an explicit fallback, calls fail
+   closed. Automatic fallback retries are only enabled for idempotent event
+   reads (`getLatestLedger` and `getEvents`), not transaction submissions.
 3. Stop automated rebalances while RPC responses are stale, inconsistent, or
    timing out. Preserve the last known ledger and error responses.
-4. If an approved failover endpoint exists, update `SOROBAN_RPC_URL` through
-   the normal secret/configuration mechanism, restart one agent, and verify
-   `getLatestLedger` advances monotonically.
-5. Do not submit duplicate transactions after a timeout. Query the transaction
-   hash and ledger before retrying. Resolve after RPC is stable for 15 minutes,
-   event ingestion catches up, and no rebalance was duplicated.
+4. On an approved endpoint change, update the secret/configuration through the
+   normal deployment path and restart one agent. Query `getNetwork` and
+   `getLatestLedger`; verify the passphrase is unchanged and ledger sequence
+   advances monotonically before resuming work. The client circuit opens after
+   3 failures in 60 seconds and permits a probe after 30 seconds.
+5. For any transaction timeout, keep the original transaction hash and query
+   transaction status (`getTransaction`) and the ledger before deciding what
+   to do. A `NOT_FOUND` response during RPC degradation is inconclusive: wait
+   for a healthy endpoint and check again. Never blindly re-sign or submit a
+   duplicate transaction after an ambiguous timeout.
+6. Reconcile listener continuity before closing. Capture the chain's latest
+   ledger and run:
+
+   ```sql
+   SELECT MAX(ledger_sequence) AS last_stored_event_ledger,
+          COUNT(*) AS stored_events
+   FROM vault_events;
+   ```
+
+   The current listener starts at the latest ledger on process start and does
+   not persist a cursor, so it will not automatically backfill an outage gap.
+   Use the approved Stellar RPC `getEvents` API for the missing ledger range,
+   decode only the configured contract's relevant deposit/withdraw topics,
+   compare event IDs and transaction hashes, and insert with the existing
+   idempotent `ON CONFLICT DO NOTHING` behavior. Preserve an audit record of
+   requested range, returned paging tokens, inserted/skipped IDs, and final
+   chain ledger. If a complete range cannot be proven, record the unresolved
+   gap and keep the incident open/escalated.
+7. Resolve after RPC is stable for 15 minutes, event ingestion continuity is
+   reconciled through a recorded chain ledger, and no transaction or rebalance
+   was duplicated.
 
 ### 5.5 Vault paused unexpectedly (P0)
 

@@ -74,6 +74,70 @@ fn test_confirm_before_timelock_rejected() {
     client.confirm_agent_update();
 }
 
+#[test]
+fn test_agent_timelock_boundary_and_cancelled_proposal() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (contract_id, old_agent, _owner, _usdc_token) = setup_vault_with_token(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+    let proposed_agent = Address::generate(&env);
+    client.update_agent(&proposed_agent);
+
+    let (_, expiry) = client.get_pending_agent_update().unwrap();
+    env.as_contract(&contract_id, || {
+        env.storage().instance().extend_ttl(20_000, 20_000);
+    });
+    env.ledger().set_sequence_number(expiry - 1);
+
+    assert_eq!(
+        client.try_confirm_agent_update(),
+        Err(Ok(soroban_sdk::Error::from_contract_error(50))),
+        "confirmation one ledger before expiry must fail"
+    );
+    assert_eq!(client.get_agent(), old_agent);
+
+    env.ledger().set_sequence_number(expiry);
+    client.confirm_agent_update();
+    assert_eq!(client.get_agent(), proposed_agent);
+
+    let cancelled_agent = Address::generate(&env);
+    client.update_agent(&cancelled_agent);
+    client.cancel_agent_update();
+    assert_eq!(
+        client.try_confirm_agent_update(),
+        Err(Ok(soroban_sdk::Error::from_contract_error(49))),
+        "a cancelled agent proposal must not execute"
+    );
+}
+
+#[test]
+fn test_agent_replacement_starts_a_fresh_timelock() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (contract_id, _old_agent, _owner, _usdc_token) = setup_vault_with_token(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+    client.update_agent(&Address::generate(&env));
+
+    let (_, first_expiry) = client.get_pending_agent_update().unwrap();
+    let replacement_ledger = first_expiry - 1;
+    env.as_contract(&contract_id, || {
+        env.storage().instance().extend_ttl(40_000, 40_000);
+    });
+    env.ledger().set_sequence_number(replacement_ledger);
+    client.cancel_agent_update();
+
+    client.update_agent(&Address::generate(&env));
+    let (_, replacement_expiry) = client.get_pending_agent_update().unwrap();
+    assert_eq!(
+        replacement_expiry,
+        replacement_ledger + crate::AGENT_TIMELOCK_LEDGERS,
+        "replacement agent proposal must start the full delay"
+    );
+    assert!(replacement_expiry > first_expiry);
+}
+
 /// Confirming after the timelock window applies the update and clears pending state.
 #[test]
 fn test_confirm_after_timelock_applies_update() {

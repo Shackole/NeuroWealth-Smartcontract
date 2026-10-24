@@ -1,10 +1,9 @@
 /**
  * Resilient Stellar RPC client with circuit breaker and latency tracking (Issue #122).
  *
- * Supports a primary and a fallback RPC endpoint. If the primary fails 3 times
- * within a 60-second window the circuit opens and all requests are routed to
- * the fallback. After a 30-second reset interval the circuit half-opens and
- * probes the primary again.
+ * Supports a primary endpoint and an optional same-network fallback for
+ * explicitly opted-in idempotent reads. After 3 primary failures in a
+ * 60-second window the circuit opens; after 30 seconds it permits a probe.
  *
  * RPC latency is tracked via the existing MetricsEngine pattern and emitted as
  * structured log fields so the Prometheus scraper in infra/metrics/metrics.js
@@ -13,7 +12,8 @@
  *
  * Configuration via environment variables:
  *   SOROBAN_RPC_URL          Primary endpoint   (default: Stellar public testnet)
- *   SOROBAN_RPC_URL_FALLBACK Fallback endpoint  (default: Stellar public mainnet horizon)
+ *   SOROBAN_RPC_URL_FALLBACK Explicit fallback endpoint on the same network
+ *   SOROBAN_NETWORK_PASSPHRASE Expected network identity, required with fallback
  */
 
 import { rpc as SorobanRpc } from '@stellar/stellar-sdk';
@@ -25,9 +25,12 @@ import logger from './logger';
 
 const PRIMARY_RPC_URL =
   process.env.SOROBAN_RPC_URL ?? 'https://soroban-testnet.stellar.org';
-const FALLBACK_RPC_URL =
-  process.env.SOROBAN_RPC_URL_FALLBACK ??
-  'https://soroban-mainnet.stellar.org';
+const FALLBACK_RPC_URL = process.env.SOROBAN_RPC_URL_FALLBACK;
+const EXPECTED_NETWORK_PASSPHRASE = process.env.SOROBAN_NETWORK_PASSPHRASE;
+
+if (FALLBACK_RPC_URL && !EXPECTED_NETWORK_PASSPHRASE) {
+  throw new Error('SOROBAN_NETWORK_PASSPHRASE is required when an RPC fallback is configured');
+}
 
 /** Number of failures in the window before the circuit opens. */
 const FAILURE_THRESHOLD = 3;
@@ -48,6 +51,7 @@ interface EndpointState {
   state: CircuitState;
   failureTimes: number[];   // epoch ms of recent failures
   openedAt: number | null;  // epoch ms when circuit last opened
+  networkVerifiedAt: number;
 }
 
 function makeEndpoint(url: string): EndpointState {
@@ -57,11 +61,37 @@ function makeEndpoint(url: string): EndpointState {
     state: 'closed',
     failureTimes: [],
     openedAt: null,
+    networkVerifiedAt: 0,
   };
 }
 
 const primary: EndpointState = makeEndpoint(PRIMARY_RPC_URL);
-const fallback: EndpointState = makeEndpoint(FALLBACK_RPC_URL);
+const fallback: EndpointState | null = FALLBACK_RPC_URL
+  ? makeEndpoint(FALLBACK_RPC_URL)
+  : null;
+
+const NETWORK_VERIFICATION_TTL_MS = 5 * 60_000;
+
+function safeEndpointLabel(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.protocol}//${parsed.host}${parsed.pathname}`;
+  } catch {
+    return '<configured RPC endpoint>';
+  }
+}
+
+async function verifyNetwork(ep: EndpointState): Promise<void> {
+  if (!EXPECTED_NETWORK_PASSPHRASE) return;
+  if (Date.now() - ep.networkVerifiedAt < NETWORK_VERIFICATION_TTL_MS) return;
+
+  const network = await ep.server.getNetwork();
+  if (network.passphrase !== EXPECTED_NETWORK_PASSPHRASE) {
+    ep.networkVerifiedAt = 0;
+    throw new Error(`RPC network mismatch for ${safeEndpointLabel(ep.url)}; refusing to use a different Stellar network`);
+  }
+  ep.networkVerifiedAt = Date.now();
+}
 
 // ---------------------------------------------------------------------------
 // Circuit-breaker logic
@@ -75,7 +105,7 @@ function pruneOldFailures(ep: EndpointState): void {
 function recordSuccess(ep: EndpointState): void {
   ep.failureTimes = [];
   if (ep.state !== 'closed') {
-    logger.info({ rpcUrl: ep.url, previousState: ep.state }, 'RPC circuit closed — endpoint recovered');
+    logger.info({ rpcUrl: safeEndpointLabel(ep.url), previousState: ep.state }, 'RPC circuit closed — endpoint recovered');
   }
   ep.state = 'closed';
   ep.openedAt = null;
@@ -91,7 +121,7 @@ function recordFailure(ep: EndpointState): void {
     ep.openedAt = now;
     logger.warn(
       {
-        rpcUrl: ep.url,
+        rpcUrl: safeEndpointLabel(ep.url),
         failures: ep.failureTimes.length,
         windowMs: FAILURE_WINDOW_MS,
       },
@@ -106,7 +136,7 @@ function isAvailable(ep: EndpointState): boolean {
     const elapsed = Date.now() - (ep.openedAt ?? 0);
     if (elapsed >= RESET_INTERVAL_MS) {
       ep.state = 'half-open';
-      logger.info({ rpcUrl: ep.url, elapsedMs: elapsed }, 'RPC circuit half-open — probing primary');
+      logger.info({ rpcUrl: safeEndpointLabel(ep.url), elapsedMs: elapsed }, 'RPC circuit half-open — probing primary');
       return true;
     }
     return false;
@@ -164,6 +194,7 @@ async function timedCall<T>(
 ): Promise<T> {
   const start = Date.now();
   try {
+    await verifyNetwork(ep);
     const result = await fn(ep.server);
     const durationMs = Date.now() - start;
     recordLatency(ep.url, durationMs, true);
@@ -181,33 +212,20 @@ async function timedCall<T>(
 // Public API
 // ---------------------------------------------------------------------------
 
-/**
- * Returns the best available SorobanRpc.Server instance, routing through the
- * circuit breaker. If the primary circuit is open the fallback is used.
- *
- * Usage:
- *   const { server, endpoint } = getActiveEndpoint();
- *   const ledger = await server.getLatestLedger();
- */
+/** Returns the primary server. Fallback is only available through rpcCall. */
 export function getActiveEndpoint(): { server: SorobanRpc.Server; endpoint: string } {
   pruneOldFailures(primary);
-  if (isAvailable(primary)) {
-    return { server: primary.server, endpoint: primary.url };
-  }
-  logger.warn(
-    { primaryUrl: primary.url, fallbackUrl: fallback.url },
-    'Primary RPC unavailable — routing to fallback',
-  );
-  return { server: fallback.server, endpoint: fallback.url };
+  return { server: primary.server, endpoint: primary.url };
 }
 
 /**
- * Executes `fn` against the best available endpoint, tracking latency and
- * updating the circuit breaker on success/failure. Automatically retries once
- * on the fallback if the primary fails and is not yet circuited open.
+ * Executes `fn` against the primary endpoint and tracks its health. Retrying
+ * against an explicitly configured fallback is opt-in for idempotent reads;
+ * transaction submission must not be retried after an ambiguous timeout.
  */
 export async function rpcCall<T>(
   fn: (server: SorobanRpc.Server) => Promise<T>,
+  options: { retryOnFallback?: boolean } = {},
 ): Promise<T> {
   pruneOldFailures(primary);
 
@@ -215,15 +233,20 @@ export async function rpcCall<T>(
     try {
       return await timedCall(primary, fn);
     } catch (err) {
-      // Primary just tripped — try fallback immediately
+      // A timeout may have left a submission's status uncertain. Retrying is
+      // opt-in and reserved for idempotent reads only.
+      if (!fallback || !options.retryOnFallback) throw err;
       logger.warn(
-        { error: err instanceof Error ? err.message : String(err), fallbackUrl: fallback.url },
-        'Primary RPC call failed — retrying on fallback',
+        { error: err instanceof Error ? err.message : String(err), fallbackUrl: safeEndpointLabel(fallback.url) },
+        'Primary RPC call failed — retrying on the network-verified fallback',
       );
     }
   }
 
   // Fallback attempt
+  if (!fallback || !options.retryOnFallback) {
+    throw new Error('Primary RPC circuit is unavailable; automatic failover is disabled for this call');
+  }
   return timedCall(fallback, fn);
 }
 
@@ -232,18 +255,20 @@ export async function rpcCall<T>(
  * Callers that need a bare Server object (e.g. eventListener) can use this.
  */
 export function getRpcServer(): SorobanRpc.Server {
-  return getActiveEndpoint().server;
+  // Legacy callers receive primary only; all failover must pass through
+  // rpcCall so network verification and read-only retry policy are enforced.
+  return primary.server;
 }
 
 /** Exposes internal circuit state for health endpoints. */
 export function getRpcCircuitStatus(): {
   primary: { url: string; state: CircuitState; recentFailures: number };
-  fallback: { url: string; state: CircuitState; recentFailures: number };
+  fallback: { url: string; state: CircuitState; recentFailures: number } | null;
 } {
   pruneOldFailures(primary);
-  pruneOldFailures(fallback);
+  if (fallback) pruneOldFailures(fallback);
   return {
-    primary: { url: primary.url, state: primary.state, recentFailures: primary.failureTimes.length },
-    fallback: { url: fallback.url, state: fallback.state, recentFailures: fallback.failureTimes.length },
+    primary: { url: safeEndpointLabel(primary.url), state: primary.state, recentFailures: primary.failureTimes.length },
+    fallback: fallback ? { url: safeEndpointLabel(fallback.url), state: fallback.state, recentFailures: fallback.failureTimes.length } : null,
   };
 }

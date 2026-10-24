@@ -25,6 +25,11 @@ import {
   Horizon,
 } from '@stellar/stellar-sdk';
 import logger from './logger';
+import {
+  recordDeadLetterGrowth,
+  recordQueueSubmissionFailure,
+  setQueueMetrics,
+} from './operationalMetrics';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -319,6 +324,7 @@ transactionQueue.process(CONCURRENCY, async (job: Job<TransactionJobData>) => {
 
 // Move exhausted jobs to dead-letter queue with full error context
 transactionQueue.on('failed', async (job: Job<TransactionJobData>, err: Error) => {
+  recordQueueSubmissionFailure();
   if (job.attemptsMade >= (job.opts.attempts ?? 3)) {
     logger.error(
       {
@@ -340,6 +346,7 @@ transactionQueue.on('failed', async (job: Job<TransactionJobData>, err: Error) =
         jobId: `dlq:${job.id}`,
       },
     );
+    recordDeadLetterGrowth();
   }
 });
 
@@ -371,10 +378,11 @@ export interface QueueStats {
     waiting: number;
     failed: number;
   };
+  oldestPendingAgeSeconds: number;
 }
 
 export async function getQueueStats(): Promise<QueueStats> {
-  const [waiting, active, completed, failed, delayed, isPaused] =
+  const [waiting, active, completed, failed, delayed, isPaused, pendingJobs] =
     await Promise.all([
       transactionQueue.getWaitingCount(),
       transactionQueue.getActiveCount(),
@@ -382,12 +390,25 @@ export async function getQueueStats(): Promise<QueueStats> {
       transactionQueue.getFailedCount(),
       transactionQueue.getDelayedCount(),
       transactionQueue.isPaused(),
+      transactionQueue.getJobs(['waiting', 'delayed'], 0, 0),
     ]);
 
   const [dlqWaiting, dlqFailed] = await Promise.all([
     deadLetterQueue.getWaitingCount(),
     deadLetterQueue.getFailedCount(),
   ]);
+
+  const now = Date.now();
+  const oldestPendingAgeSeconds = pendingJobs.reduce(
+    (oldest, job) => Math.max(oldest, Math.max(0, now - job.timestamp) / 1000),
+    0,
+  );
+  setQueueMetrics({
+    pending: waiting + delayed,
+    oldestPendingAgeSeconds,
+    activeWorkers: active,
+    deadLetterJobs: dlqWaiting,
+  });
 
   return {
     queue: QUEUE_NAME,
@@ -396,6 +417,7 @@ export async function getQueueStats(): Promise<QueueStats> {
     completed,
     failed,
     delayed,
+    oldestPendingAgeSeconds,
     paused: isPaused,
     deadLetter: {
       queue: DLQ_NAME,

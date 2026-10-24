@@ -687,7 +687,11 @@ fn pause_matrix_cancel_upgrade_allowed_with_pending() {
     );
 }
 
-/// `update_total_assets` (increase) → ALLOWED while paused.
+/// `update_total_assets` (increase) → BLOCKED while paused (Issue #438).
+///
+/// The agent must not update share pricing while the vault is in an
+/// emergency-paused state. Any yield accrual or loss must be applied after
+/// the owner resolves the pause condition.
 #[test]
 fn pause_matrix_update_total_assets_increase_allowed() {
     let env = Env::default();
@@ -709,10 +713,9 @@ fn pause_matrix_update_total_assets_increase_allowed() {
     let new_total = current + 500_000_i128;
 
     let result = client.try_update_total_assets(&agent, &new_total, &false, &0_u32);
-    assert_not_paused_error(&result, "update_total_assets (increase)");
     assert!(
-        result.is_ok(),
-        "update_total_assets (increase) must succeed while paused"
+        result.is_err(),
+        "update_total_assets must be blocked while paused"
     );
 }
 
@@ -773,7 +776,10 @@ fn pause_matrix_emergency_pause_allowed_while_paused() {
     assert!(client.is_paused());
 }
 
-/// `update_agent` → ALLOWED while paused.
+/// `update_agent` → BLOCKED while paused (Issue #438).
+///
+/// Agent-rotation proposals must not be accepted while the vault is paused.
+/// The owner must resolve the pause condition first.
 #[test]
 fn pause_matrix_update_agent_allowed() {
     let env = Env::default();
@@ -785,8 +791,10 @@ fn pause_matrix_update_agent_allowed() {
 
     let new_agent = Address::generate(&env);
     let result = client.try_update_agent(&new_agent);
-    assert_not_paused_error(&result, "update_agent");
-    assert!(result.is_ok(), "update_agent must succeed while paused");
+    assert!(
+        result.is_err(),
+        "update_agent must be blocked while paused"
+    );
 }
 
 /// `cancel_agent_update` (with pending) → ALLOWED while paused.

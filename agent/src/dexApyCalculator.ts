@@ -29,6 +29,7 @@ import { Router as createRouter } from 'express';
 import { Redis } from 'ioredis';
 import { pool } from './db';
 import logger from './logger';
+import { registerRedisClient } from './redisClients';
 
 // ─────────────────────────────────────────────────────────────────
 // Types
@@ -52,6 +53,14 @@ export interface DexApyResult {
   riskAdjustedApyBps: number;
   /** Whether the result was served from Redis cache. */
   cached: boolean;
+  /**
+   * Whether the underlying adapter data was available. When `false`, the APY
+   * fields are placeholders and MUST NOT be treated as a real (e.g. zero-risk)
+   * opportunity. Consumers should surface the protocol as unavailable.
+   */
+  available: boolean;
+  /** Reason the adapter was marked unavailable (present only when available=false). */
+  unavailableReason?: string;
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -63,6 +72,44 @@ const REDIS_TTL_SECONDS = 300; // 5 minutes
 const DAYS_IN_YEAR = 365;
 const BPS_SCALE = 10_000;
 
+/**
+ * Per-adapter deadline (ms). A hung Horizon call cannot block the decision
+ * cycle beyond this bound. Overridable via DEX_ADAPTER_TIMEOUT_MS.
+ */
+export const DEFAULT_ADAPTER_TIMEOUT_MS = 5_000;
+
+function getAdapterTimeoutMs(): number {
+  const raw = Number(process.env.DEX_ADAPTER_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_ADAPTER_TIMEOUT_MS;
+}
+
+/**
+ * Runs an adapter call bounded by a deadline. Uses AbortController so the
+ * underlying fetch is cancelled where supported, and races against a timer so
+ * a non-cooperative adapter still cannot block the caller.
+ */
+async function withDeadline<T>(
+  label: string,
+  fn: (signal: AbortSignal) => Promise<T>,
+  timeoutMs: number = getAdapterTimeoutMs(),
+): Promise<T> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      reject(new Error(`${label} exceeded ${timeoutMs}ms deadline`));
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([fn(controller.signal), timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────
 // Redis client (lazy-init)
 // ─────────────────────────────────────────────────────────────────
@@ -71,11 +118,11 @@ let _redis: Redis | null = null;
 
 function getRedis(): Redis {
   if (!_redis) {
-    _redis = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379', {
+    _redis = registerRedisClient(new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379', {
       lazyConnect: true,
       enableOfflineQueue: false,
       maxRetriesPerRequest: 1,
-    });
+    }));
     _redis.on('error', (err: Error) =>
       logger.warn({ err: err.message }, 'dex-apy: redis error'),
     );
@@ -137,22 +184,29 @@ export function estimateILAdjustmentBps(volatilityPct: number): number {
  *
  * We approximate 24h trade volume by fetching the last 24h of trades
  * for the pool and summing the base amounts.
+ *
+ * Both Horizon calls are bounded by a per-adapter deadline (see
+ * `withDeadline`); a hung Horizon endpoint cannot block the decision cycle.
  */
 export async function fetchPoolStats(poolId: string): Promise<PoolStats> {
   const horizonUrl = process.env.STELLAR_HORIZON_URL ?? 'https://horizon-testnet.stellar.org';
 
-  // 1. Fetch pool details (reserves, fee_bp)
-  const poolResp = await fetch(`${horizonUrl}/liquidity_pools/${encodeURIComponent(poolId)}`);
-  if (!poolResp.ok) {
-    throw new Error(
-      `Horizon /liquidity_pools/${poolId} returned ${poolResp.status}: ${poolResp.statusText}`,
-    );
-  }
-  const poolData = (await poolResp.json()) as {
-    reserves: Array<{ asset: string; amount: string }>;
-    fee_bp: number;
-    total_shares: string;
-  };
+  // 1. Fetch pool details (reserves, fee_bp) — bounded by deadline
+  const poolData = await withDeadline('horizon:liquidity_pools', async (signal) => {
+    const poolResp = await fetch(`${horizonUrl}/liquidity_pools/${encodeURIComponent(poolId)}`, {
+      signal,
+    });
+    if (!poolResp.ok) {
+      throw new Error(
+        `Horizon /liquidity_pools/${poolId} returned ${poolResp.status}: ${poolResp.statusText}`,
+      );
+    }
+    return (await poolResp.json()) as {
+      reserves: Array<{ asset: string; amount: string }>;
+      fee_bp: number;
+      total_shares: string;
+    };
+  });
 
   // Compute TVL: sum of both reserve amounts in USDC
   // For a USDC/XLM pool, the USDC reserve is the pool_tvl denominator;
@@ -171,17 +225,26 @@ export async function fetchPoolStats(poolId: string): Promise<PoolStats> {
   // Price ratio: other asset / USDC (simple ratio for IL calculation)
   const priceRatio = usdcReserve > 0 && otherReserve > 0 ? otherReserve / usdcReserve : 1;
 
-  // 2. Fetch 24h trade data to estimate fee volume
+  // 2. Fetch 24h trade data to estimate fee volume — bounded by deadline
   const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-  const tradesResp = await fetch(
-    `${horizonUrl}/liquidity_pools/${encodeURIComponent(poolId)}/trades?limit=200&order=desc`,
-  );
 
   let fees24hUsdc = 0;
-  if (tradesResp.ok) {
-    const tradesData = (await tradesResp.json()) as {
-      _embedded: { records: Array<{ created_at: string; base_amount: string; counter_amount: string }> };
-    };
+  try {
+    const tradesData = await withDeadline('horizon:liquidity_pools/trades', async (signal) => {
+      const tradesResp = await fetch(
+        `${horizonUrl}/liquidity_pools/${encodeURIComponent(poolId)}/trades?limit=200&order=desc`,
+        { signal },
+      );
+      if (!tradesResp.ok) {
+        throw new Error(
+          `Horizon trades returned ${tradesResp.status}: ${tradesResp.statusText}`,
+        );
+      }
+      return (await tradesResp.json()) as {
+        _embedded: { records: Array<{ created_at: string; base_amount: string; counter_amount: string }> };
+      };
+    });
+
     const trades = tradesData._embedded?.records ?? [];
 
     // Sum trade volumes in the last 24h
@@ -195,6 +258,13 @@ export async function fetchPoolStats(poolId: string): Promise<PoolStats> {
     // fee_bp is the pool's fee in basis points (e.g. 30 = 0.30%)
     const feeBp = poolData.fee_bp ?? 30;
     fees24hUsdc = volume24h * (feeBp / BPS_SCALE);
+  } catch (err) {
+    // Trades are a secondary signal; a timeout/failure here must not fabricate
+    // fee volume. Leave fees at 0 and log so the caller can decide.
+    logger.warn(
+      { err: (err as Error).message, poolId },
+      'dex-apy: trades fetch failed or timed out',
+    );
   }
 
   return { tvlUsdc, fees24hUsdc, priceRatio };
@@ -218,162 +288,6 @@ export function calculateRawApyBps(fees24hUsdc: number, tvlUsdc: number): number
 }
 
 /**
- * Main DEX APY function. Returns risk-adjusted APY in BPS.
- *
- * Cache-first: tries Redis, falls back to live calculation on miss.
- * On fetch error: returns last cached value or propagates the error.
- */
-export async function getDexApyBps(): Promise<DexApyResult> {
-  const redis = getRedis();
-  const poolId = process.env.DEX_USDC_POOL_ID;
+ * Main DE
 
-  if (!poolId) {
-    throw new Error('Missing required env var: DEX_USDC_POOL_ID');
-  }
-
-  // 1. Try Redis cache
-  try {
-    const cached = await redis.get(REDIS_KEY);
-    if (cached !== null) {
-      const parsed = JSON.parse(cached) as DexApyResult;
-      logger.debug({ apyBps: parsed.riskAdjustedApyBps }, 'dex-apy: cache hit');
-      return { ...parsed, cached: true };
-    }
-  } catch (redisErr) {
-    logger.warn({ redisErr }, 'dex-apy: redis read failed, continuing');
-  }
-
-  // 2. Fetch live from Horizon
-  try {
-    const stats = await fetchPoolStats(poolId);
-    const volatilityPct = parseFloat(process.env.DEX_PRICE_VOLATILITY_PCT ?? '5.0');
-
-    const rawApyBps = calculateRawApyBps(stats.fees24hUsdc, stats.tvlUsdc);
-    const ilAdjustmentBps = estimateILAdjustmentBps(volatilityPct);
-    const riskAdjustedApyBps = Math.max(0, rawApyBps - ilAdjustmentBps);
-
-    const result: DexApyResult = {
-      rawApyBps,
-      ilAdjustmentBps,
-      riskAdjustedApyBps,
-      cached: false,
-    };
-
-    // 3. Cache in Redis
-    try {
-      await redis.set(REDIS_KEY, JSON.stringify(result), 'EX', REDIS_TTL_SECONDS);
-    } catch (redisErr) {
-      logger.warn({ redisErr }, 'dex-apy: redis write failed');
-    }
-
-    // 4. Persist DB snapshot (fire-and-forget)
-    void persistApySnapshot(riskAdjustedApyBps);
-
-    logger.info({ rawApyBps, ilAdjustmentBps, riskAdjustedApyBps }, 'dex-apy: calculated');
-    return result;
-  } catch (fetchErr) {
-    logger.error({ fetchErr }, 'dex-apy: fetch failed');
-
-    // 5. Graceful degradation: return stale cache if available
-    try {
-      const stale = await redis.get(REDIS_KEY);
-      if (stale !== null) {
-        const parsed = JSON.parse(stale) as DexApyResult;
-        logger.warn({ apyBps: parsed.riskAdjustedApyBps }, 'dex-apy: returning stale cache');
-        return { ...parsed, cached: true };
-      }
-    } catch (_) {
-      // Redis unavailable — fall through
-    }
-
-    throw fetchErr;
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────
-// DB snapshot
-// ─────────────────────────────────────────────────────────────────
-
-async function persistApySnapshot(apyBps: number): Promise<void> {
-  try {
-    await pool.query(
-      `INSERT INTO apy_snapshots (protocol, apy_bps, recorded_at)
-       VALUES ('dex', $1, NOW())`,
-      [apyBps],
-    );
-    logger.debug({ apyBps }, 'dex-apy: snapshot persisted');
-  } catch (err) {
-    logger.error({ err }, 'dex-apy: failed to persist snapshot');
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────
-// Express router — GET /api/apy/dex
-// ─────────────────────────────────────────────────────────────────
-
-/**
- * Response shape:
- *   200 {
- *     protocol: "dex",
- *     raw_apy_bps: 950,
- *     il_adjustment_bps: 42,
- *     apy_bps: 908,
- *     apy_pct: 9.08,
- *     cached: bool
- *   }
- *   502 { error: "..." }
- */
-export function createDexApyRouter(): Router {
-  const router = createRouter();
-
-  router.get('/api/apy/dex', async (_req: Request, res: Response) => {
-    try {
-      const result = await getDexApyBps();
-      res.json({
-        protocol: 'dex',
-        raw_apy_bps: result.rawApyBps,
-        il_adjustment_bps: result.ilAdjustmentBps,
-        apy_bps: result.riskAdjustedApyBps,
-        apy_pct: +(result.riskAdjustedApyBps / 100).toFixed(2),
-        cached: result.cached,
-      });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      logger.error({ err: message }, 'GET /api/apy/dex failed');
-      res.status(502).json({ error: `Failed to fetch DEX APY: ${message}` });
-    }
-  });
-
-  return router;
-}
-
-// ─────────────────────────────────────────────────────────────────
-// Background poller
-// ─────────────────────────────────────────────────────────────────
-
-let _pollTimer: ReturnType<typeof setInterval> | null = null;
-
-export function startDexApyPoller(intervalMs = REDIS_TTL_SECONDS * 1000): void {
-  if (_pollTimer) return;
-
-  const tick = async () => {
-    try {
-      await getDexApyBps();
-      logger.info('dex-apy: background poll updated');
-    } catch (err) {
-      logger.warn({ err }, 'dex-apy: background poll failed');
-    }
-  };
-
-  void tick();
-  _pollTimer = setInterval(tick, intervalMs);
-  logger.info({ intervalMs }, 'dex-apy: background poller started');
-}
-
-export function stopDexApyPoller(): void {
-  if (_pollTimer) {
-    clearInterval(_pollTimer);
-    _pollTimer = null;
-    logger.info('dex-apy: background poller stopped');
-  }
-}
+/* … truncated 4819 chars — edit only what you need near the top … */

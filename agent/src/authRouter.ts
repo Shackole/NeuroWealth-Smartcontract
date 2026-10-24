@@ -23,13 +23,14 @@ import {
   verifyAccessToken,
 } from './authService';
 import logger from './logger';
+import { registerRedisClient } from './redisClients';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Redis client (shared with transactionQueue if same REDIS_URL)
 // ─────────────────────────────────────────────────────────────────────────────
 
 const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
-const redis = new IORedis(REDIS_URL, { lazyConnect: true });
+const redis = registerRedisClient(new IORedis(REDIS_URL, { lazyConnect: true }));
 
 redis.on('error', (err) => {
   logger.error({ error: err.message }, 'Redis connection error (auth)');

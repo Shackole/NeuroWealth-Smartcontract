@@ -1,0 +1,85 @@
+name: Staging Database Restore Drill
+
+on:
+  schedule:
+    - cron: '0 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  restore-and-reconcile:
+    name: Restore sanitized backup into disposable PostgreSQL
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: restore_user
+          POSTGRES_PASSWORD: disposable_restore_password
+          POSTGRES_DB: restore_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U restore_user -d restore_db"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      STAGING_DATABASE_URL: postgres://restore_user:disposable_restore_password@127.0.0.1:5432/restore_db
+      STAGING_BACKUP_PATH: ${{ runner.temp }}/sanitized-backup.dump.enc
+      RESTORE_REPORT_PATH: ${{ runner.temp }}/restore-report.json
+      STELLAR_HORIZON_URL: https://horizon-testnet.stellar.org
+      AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION || 'us-east-1' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install PostgreSQL client
+        run: sudo apt-get update -q && sudo apt-get install -y postgresql-client jq
+
+      - name: Configure read-only staging backup credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.STAGING_AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.STAGING_AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_DEFAULT_REGION || 'us-east-1' }}
+
+      - name: Fetch the sanitized staging backup
+        env:
+          STAGING_BACKUP_S3_BUCKET: ${{ secrets.STAGING_BACKUP_S3_BUCKET }}
+          STAGING_BACKUP_S3_KEY: ${{ secrets.STAGING_BACKUP_S3_KEY }}
+        run: |
+          : "${STAGING_BACKUP_S3_BUCKET:?Configure a dedicated staging backup bucket}"
+          : "${STAGING_BACKUP_S3_KEY:?Configure the key for a sanitized testnet backup}"
+          case "$STAGING_BACKUP_S3_KEY" in staging-sanitized/*) ;; *) echo 'Backup key must be under staging-sanitized/' >&2; exit 2 ;; esac
+          aws s3 cp "s3://${STAGING_BACKUP_S3_BUCKET}/${STAGING_BACKUP_S3_KEY}" "$STAGING_BACKUP_PATH" --only-show-errors
+
+      - name: Restore, validate integrity, and reconcile testnet transactions
+        env:
+          BACKUP_ENCRYPTION_KEY: ${{ secrets.STAGING_BACKUP_ENCRYPTION_KEY }}
+        run: bash scripts/backup/restore-staging.sh
+
+      - name: Retain restore timing and outcome
+        if: always()
+        run: |
+          if [[ -f "$RESTORE_REPORT_PATH" ]]; then
+            cat "$RESTORE_REPORT_PATH" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            cat "$RESTORE_REPORT_PATH" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo '{"status":"failed","summary":"restore report was not produced"}' > "$RESTORE_REPORT_PATH"
+          fi
+
+      - name: Upload restore report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: staging-database-restore-report-${{ github.run_id }}
+          path: ${{ runner.temp }}/restore-report.json
+          retention-days: 90

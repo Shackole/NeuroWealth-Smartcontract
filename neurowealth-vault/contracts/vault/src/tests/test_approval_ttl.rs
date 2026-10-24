@@ -585,3 +585,176 @@ fn test_blend_approval_renewed_near_expiry_on_harvest() {
         near_expiry_ledger
     );
 }
+
+#[test]
+fn test_legacy_approval_ttl_rejects_values_above_maximum() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, _agent, owner) = setup_vault(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+
+    assert_eq!(
+        client.try_set_blend_approval_ttl(&owner, &500_001_u32),
+        Err(Ok(soroban_sdk::Error::from_contract_error(45))),
+        "legacy TTL setter must enforce the same maximum as the shared setter"
+    );
+}
+
+#[test]
+fn test_partial_blend_supply_clears_unspent_allowance() {
+    let env = Env::default();
+    let ttl = 2_000_u32;
+    let (contract_id, _usdc_token, blend_pool, client, token_client) =
+        setup_blend_position(&env, Some(ttl));
+    MockBlendPoolClient::new(&env, &blend_pool).set_max_supply_limit(&2_000_000_i128);
+
+    let sequence = env.ledger().sequence();
+    client.rebalance(&symbol_short!("blend"), &700_i128, &0_i128);
+
+    assert_eq!(
+        token_client.allowance(&contract_id, &blend_pool),
+        0,
+        "unused allowance from a partial Blend supply must be cleared"
+    );
+    assert_eq!(
+        token_client.allowance_expiration(&contract_id, &blend_pool),
+        sequence + ttl,
+        "the recorded expiration must remain the bounded configured ledger"
+    );
+}
+
+#[test]
+fn test_partial_dex_supply_clears_unspent_allowance() {
+    let env = Env::default();
+    let ttl = 2_000_u32;
+    let (contract_id, _usdc_token, dex_pool, client, token_client) =
+        setup_dex_position(&env, Some(ttl));
+    MockDexPoolClient::new(&env, &dex_pool).set_max_supply_limit(&2_000_000_i128);
+
+    let sequence = env.ledger().sequence();
+    client.rebalance(&symbol_short!("dex"), &700_i128, &0_i128);
+
+    assert_eq!(
+        token_client.allowance(&contract_id, &dex_pool),
+        0,
+        "unused allowance from a partial DEX supply must be cleared"
+    );
+    assert_eq!(
+        token_client.allowance_expiration(&contract_id, &dex_pool),
+        sequence + ttl,
+        "the recorded expiration must remain the bounded configured ledger"
+    );
+}
+
+#[test]
+fn test_failed_blend_supply_rolls_back_allowance_and_funds() {
+    let env = Env::default();
+    let (contract_id, usdc_token, blend_pool, client, token_client) =
+        setup_blend_position(&env, Some(2_000_u32));
+    let pool_client = MockBlendPoolClient::new(&env, &blend_pool);
+    pool_client.set_max_supply_limit(&2_000_000_i128);
+
+    let result = client.try_rebalance(&symbol_short!("blend"), &700_i128, &5_000_000_i128);
+
+    assert_eq!(
+        result,
+        Err(Ok(soroban_sdk::Error::from_contract_error(42))),
+        "a Blend supply below min_out must fail"
+    );
+    assert_eq!(token_client.allowance(&contract_id, &blend_pool), 0);
+    assert_eq!(token_client.balance(&contract_id), 10_000_000_i128);
+    assert_eq!(pool_client.supplied(&usdc_token), 0);
+}
+
+#[test]
+fn test_failed_dex_supply_rolls_back_allowance_and_funds() {
+    let env = Env::default();
+    let (contract_id, usdc_token, dex_pool, client, token_client) =
+        setup_dex_position(&env, Some(2_000_u32));
+    let pool_client = MockDexPoolClient::new(&env, &dex_pool);
+    pool_client.set_max_supply_limit(&2_000_000_i128);
+
+    let result = client.try_rebalance(&symbol_short!("dex"), &700_i128, &5_000_000_i128);
+
+    assert_eq!(
+        result,
+        Err(Ok(soroban_sdk::Error::from_contract_error(42))),
+        "a DEX supply below min_out must fail"
+    );
+    assert_eq!(token_client.allowance(&contract_id, &dex_pool), 0);
+    assert_eq!(token_client.balance(&contract_id), 10_000_000_i128);
+    assert_eq!(pool_client.balance(&usdc_token, &contract_id), 0);
+}
+
+#[test]
+fn test_blend_pool_replacement_revokes_retired_pool_allowance() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, _agent, owner, usdc_token, old_pool) =
+        setup_vault_with_token_and_blend(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+    let token_client = TestTokenClient::new(&env, &usdc_token);
+    client.set_blend_pool(&owner, &old_pool);
+
+    token_client.approve(
+        &contract_id,
+        &old_pool,
+        &1_000_000_i128,
+        &env.ledger().sequence().saturating_add(10_000),
+    );
+    let new_pool = env.register_contract(None, MockBlendPool);
+    client.set_blend_pool(&owner, &new_pool);
+
+    assert_eq!(token_client.allowance(&contract_id, &old_pool), 0);
+}
+
+#[test]
+fn test_dex_pool_replacement_revokes_retired_pool_allowance() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, _agent, owner, usdc_token, old_pool) =
+        setup_vault_with_token_and_dex(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+    let token_client = TestTokenClient::new(&env, &usdc_token);
+    client.set_dex_pool(&owner, &old_pool);
+
+    token_client.approve(
+        &contract_id,
+        &old_pool,
+        &1_000_000_i128,
+        &env.ledger().sequence().saturating_add(10_000),
+    );
+    let new_pool = env.register_contract(None, MockDexPool);
+    client.set_dex_pool(&owner, &new_pool);
+
+    assert_eq!(token_client.allowance(&contract_id, &old_pool), 0);
+}
+
+#[test]
+fn test_emergency_withdraw_revokes_pool_allowances() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, _agent, owner, usdc_token, blend_pool) =
+        setup_vault_with_token_and_blend(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+    let token_client = TestTokenClient::new(&env, &usdc_token);
+    client.set_blend_pool(&owner, &blend_pool);
+
+    let user = Address::generate(&env);
+    mint_and_deposit(&env, &client, &usdc_token, &user, 5_000_000_i128);
+    token_client.approve(
+        &contract_id,
+        &blend_pool,
+        &1_000_000_i128,
+        &env.ledger().sequence().saturating_add(10_000),
+    );
+
+    client.pause(&owner);
+    client.emergency_withdraw(&user, &1_000_000_i128);
+
+    assert_eq!(
+        token_client.allowance(&contract_id, &blend_pool),
+        0,
+        "emergency exit must revoke lingering pool spend authority"
+    );
+}

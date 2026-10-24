@@ -24,8 +24,9 @@ export const WithdrawForm: React.FC<WithdrawFormProps> = ({
   const [successTx, setSuccessTx] = useState<string | null>(null);
 
   const numAmount = parseFloat(amount);
+  const hasExcessPrecision = /\.\d{8,}/.test(amount);
   const isPositive = !isNaN(numAmount) && numAmount > 0;
-  const isWithinBalance = isPositive && numAmount <= balance;
+  const isWithinBalance = isPositive && numAmount <= balance && !hasExcessPrecision;
   const canWithdrawPartial = isWithinBalance && !!userPublicKey;
   const canWithdrawAll = balance > 0 && !!userPublicKey;
 
@@ -95,13 +96,13 @@ export const WithdrawForm: React.FC<WithdrawFormProps> = ({
       <div>
         <div className="flex justify-between text-xs text-slate-400 mb-1 font-medium">
           <label htmlFor="withdraw-amount-input">Amount (USDC)</label>
-          <span>Available: {balance.toFixed(2)} USDC</span>
+          <span>Available: {balance.toFixed(7)} USDC</span>
         </div>
         <div className="relative">
           <input
             id="withdraw-amount-input"
             type="number"
-            step="0.01"
+            step="0.0000001"
             min="0.01"
             max={balance}
             value={amount}
@@ -109,18 +110,26 @@ export const WithdrawForm: React.FC<WithdrawFormProps> = ({
             placeholder="0.00"
             aria-label="Withdraw Amount"
             aria-invalid={amount !== '' && !isWithinBalance}
-            aria-describedby={error ? 'withdraw-error' : undefined}
+            aria-describedby={error ? 'withdraw-error' : hasExcessPrecision ? 'withdraw-precision-error' : undefined}
             className="w-full bg-slate-900 border border-slate-700 rounded-xl py-2.5 px-3 text-white font-mono text-base focus:outline-none focus:border-indigo-500 transition-colors"
           />
           <button
             type="button"
-            onClick={() => setAmount(balance.toString())}
+            onClick={() => setAmount(balance.toFixed(7))}
             aria-label="Set maximum withdraw amount"
             className="absolute right-2.5 top-2.5 text-xs font-semibold text-indigo-400 hover:text-indigo-300 bg-indigo-500/10 px-2 py-0.5 rounded"
           >
             MAX
           </button>
         </div>
+        <p className="mt-1.5 text-xs text-slate-500">
+          Up to 7 decimal places. 0.0000001 USDC is the smallest unit; amounts are not silently rounded.
+        </p>
+        {hasExcessPrecision && (
+          <p id="withdraw-precision-error" className="mt-1 text-xs text-rose-400" role="alert">
+            Use no more than 7 decimal places; the amount was not rounded.
+          </p>
+        )}
       </div>
 
       {/* Preview Section */}
@@ -138,8 +147,8 @@ export const WithdrawForm: React.FC<WithdrawFormProps> = ({
           <span className="text-indigo-400">{estimatedSharesBurned} NV-SHARES</span>
         </div>
         <div className="flex justify-between">
-          <span className="text-slate-400">Network Fee:</span>
-          <span className="text-slate-400">&lt; 0.00001 XLM</span>
+          <span className="text-slate-400">Network fee (separate):</span>
+          <span className="text-slate-400">Paid in XLM; wallet shows the final fee</span>
         </div>
       </div>
 

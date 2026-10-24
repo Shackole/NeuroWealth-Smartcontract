@@ -7,6 +7,7 @@ import { getSorobanServer } from "@/lib/stellar";
 import { Bot, AlertTriangle, CheckCircle } from "lucide-react";
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { formatDistance } from "date-fns";
+import { ActionReview } from "./ActionReview";
 
 interface AgentManagementProps {
   client: VaultClient;
@@ -29,6 +30,11 @@ export function AgentManagement({
   const [error, setError] = useState<string | null>(null);
   const [txHash, setTxHash] = useState<string | null>(null);
   const [showUpdateConfirm, setShowUpdateConfirm] = useState(false);
+  const [reviewedAgent, setReviewedAgent] = useState<string | null>(null);
+  const [reviewedPendingAction, setReviewedPendingAction] = useState<{
+    kind: "confirm" | "cancel";
+    agent: string;
+  } | null>(null);
   const [activeTab, setActiveTab] = useState<"update" | "confirm" | "cancel">(
     "update",
   );
@@ -57,8 +63,8 @@ export function AgentManagement({
     }
   };
 
-  const handleUpdateAgent = async () => {
-    if (!newAgent.startsWith("G")) {
+  const handleUpdateAgent = async (proposal: string) => {
+    if (!proposal.startsWith("G")) {
       setError("Invalid Stellar address (must start with G)");
       return;
     }
@@ -71,7 +77,7 @@ export function AgentManagement({
       const result = await client.update_agent(
         signer,
         signer.publicKey(),
-        newAgent,
+        proposal,
       );
       setTxHash(result.hash);
       setShowUpdateConfirm(false);
@@ -89,12 +95,17 @@ export function AgentManagement({
     }
   };
 
-  const handleConfirmAgent = async () => {
+  const handleConfirmAgent = async (reviewedValue: string) => {
     setLoading(true);
     setError(null);
     setTxHash(null);
 
     try {
+      const current = await client.get_pending_agent_update(signer.publicKey());
+      const currentAgent = current && typeof current === "object" ? String((current as any).agent || "") : "";
+      const expiry = current && typeof current === "object" ? Number((current as any).expiry || 0) : 0;
+      if (currentAgent !== reviewedValue) throw new Error("The pending agent changed. Refresh and review the current proposal.");
+      if (!expiry || currentLedger < expiry) throw new Error("The agent timelock has not expired. Refresh the ledger and review again.");
       const result = await client.confirm_agent_update(
         signer,
         signer.publicKey(),
@@ -115,6 +126,7 @@ export function AgentManagement({
 
       // Fetch updated info
       await fetchAgentInfo();
+      setReviewedPendingAction(null);
     } catch (err) {
       setError(
         err instanceof Error ? err.message : "Failed to confirm agent update",
@@ -124,12 +136,15 @@ export function AgentManagement({
     }
   };
 
-  const handleCancelAgent = async () => {
+  const handleCancelAgent = async (reviewedValue: string) => {
     setLoading(true);
     setError(null);
     setTxHash(null);
 
     try {
+      const current = await client.get_pending_agent_update(signer.publicKey());
+      const currentAgent = current && typeof current === "object" ? String((current as any).agent || "") : "";
+      if (currentAgent !== reviewedValue) throw new Error("The pending agent changed. Refresh and review the current proposal.");
       const result = await client.cancel_agent_update(
         signer,
         signer.publicKey(),
@@ -150,6 +165,7 @@ export function AgentManagement({
 
       // Fetch updated info
       await fetchAgentInfo();
+      setReviewedPendingAction(null);
     } catch (err) {
       setError(
         err instanceof Error ? err.message : "Failed to cancel agent update",
@@ -269,7 +285,15 @@ export function AgentManagement({
                     Confirm Agent Update
                   </p>
                   <p className="text-sm text-red-200 mt-1">
-                    New agent: <span className="font-mono">{newAgent}</span>
+                    Current agent: <span className="font-mono">{agent || "Not configured"}</span>
+                    <br />
+                    Proposed agent: <span className="font-mono">{reviewedAgent || "Not reviewed"}</span>
+                    <br />
+                    Network: {String(network)}
+                    <br />
+                    Required signer role: contract administrator
+                    <br />
+                    Signing account: <span className="font-mono break-all">{signer.publicKey()}</span>
                     <br />
                     <br />
                     The update will be locked for 24 hours. After that, you can
@@ -279,14 +303,14 @@ export function AgentManagement({
               </div>
               <div className="flex gap-2">
                 <button
-                  onClick={handleUpdateAgent}
-                  disabled={loading}
+                  onClick={() => reviewedAgent && void handleUpdateAgent(reviewedAgent)}
+                  disabled={loading || !reviewedAgent}
                   className="button-danger px-4 py-2 disabled:opacity-50"
                 >
                   {loading ? "Processing..." : "Initiate Update"}
                 </button>
                 <button
-                  onClick={() => setShowUpdateConfirm(false)}
+                  onClick={() => { setShowUpdateConfirm(false); setReviewedAgent(null); }}
                   disabled={loading}
                   className="button-secondary px-4 py-2"
                 >
@@ -296,7 +320,7 @@ export function AgentManagement({
             </div>
           ) : (
             <button
-              onClick={() => setShowUpdateConfirm(true)}
+              onClick={() => { setReviewedAgent(newAgent); setShowUpdateConfirm(true); }}
               disabled={!newAgent || loading}
               className="button-primary w-full py-3 disabled:opacity-50"
             >
@@ -313,9 +337,15 @@ export function AgentManagement({
               Confirm the pending agent update to:
               <br />
               <span className="font-mono text-emerald-100">{pendingAgent}</span>
+              <br />
+              Network: {String(network)} · required signer role: contract owner
+              <br />
+              Signing account: <span className="font-mono break-all">{signer.publicKey()}</span>
+              <br />
+              Timelock expires at ledger {pendingExpiry ?? "unknown"}.
             </p>
             <button
-              onClick={handleConfirmAgent}
+              onClick={() => setReviewedPendingAction({ kind: "confirm", agent: pendingAgent })}
               disabled={loading || !canConfirmAgent}
               className="button-primary w-full py-3 disabled:opacity-50"
             >
@@ -338,7 +368,7 @@ export function AgentManagement({
               <span className="font-mono text-slate-100">{pendingAgent}</span>
             </p>
             <button
-              onClick={handleCancelAgent}
+              onClick={() => setReviewedPendingAction({ kind: "cancel", agent: pendingAgent })}
               disabled={loading}
               className="button-danger w-full py-3 disabled:opacity-50"
             >
@@ -346,6 +376,32 @@ export function AgentManagement({
             </button>
           </div>
         </div>
+      )}
+
+      {reviewedPendingAction && (
+        <ActionReview
+          title={reviewedPendingAction.kind === "confirm" ? "Confirm agent update" : "Cancel agent update"}
+          network={String(network)}
+          signer={signer.publicKey()}
+          requiredAuthority="Contract owner"
+          timelock={reviewedPendingAction.kind === "confirm"
+            ? `Confirmation unlocks at ledger ${pendingExpiry ?? "unknown"}; current ledger ${currentLedger}.`
+            : `Pending update is subject to its ledger ${pendingExpiry ?? "unknown"} expiry.`}
+          changes={[{
+            label: "Signing agent",
+            current: agent || "Unknown",
+            proposed: reviewedPendingAction.kind === "confirm"
+              ? `Confirm this exact agent: ${reviewedPendingAction.agent}`
+              : `Cancel the proposal for: ${reviewedPendingAction.agent}`,
+          }]}
+          loading={loading}
+          onCancel={() => setReviewedPendingAction(null)}
+          onConfirm={() => {
+            const proposal = reviewedPendingAction;
+            if (proposal.kind === "confirm") void handleConfirmAgent(proposal.agent);
+            else void handleCancelAgent(proposal.agent);
+          }}
+        />
       )}
 
       {txHash && (

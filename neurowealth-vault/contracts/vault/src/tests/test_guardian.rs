@@ -1,7 +1,10 @@
 //! Tests for the guardian key second-signature feature — Issue #44.
 
 use super::utils::*;
-use soroban_sdk::{testutils::Address as _, Address, BytesN, Env};
+use soroban_sdk::{
+    testutils::{Address as _, MockAuth, MockAuthInvoke},
+    Address, BytesN, Env, IntoVal,
+};
 
 #[test]
 fn test_get_guardian_none_by_default() {
@@ -125,6 +128,79 @@ fn test_cancel_upgrade_is_owner_only_even_with_guardian_set() {
     // cancel_upgrade should work with owner auth only
     client.cancel_upgrade(&owner);
     assert!(client.get_pending_upgrade().is_none());
+}
+
+#[test]
+fn test_guardian_mutation_is_blocked_while_upgrade_is_pending() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, _agent, owner) = setup_vault(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+    let guardian = Address::generate(&env);
+    let replacement_guardian = Address::generate(&env);
+    client.set_guardian(&guardian);
+    client.schedule_upgrade(&owner, &BytesN::from_array(&env, &[4u8; 32]));
+
+    assert_eq!(
+        client.try_set_guardian(&replacement_guardian),
+        Err(Ok(soroban_sdk::Error::from_contract_error(48))),
+        "guardian replacement must not change approvals for a pending proposal"
+    );
+    assert_eq!(
+        client.try_remove_guardian(),
+        Err(Ok(soroban_sdk::Error::from_contract_error(48))),
+        "guardian removal must not bypass approval for a pending proposal"
+    );
+    assert_eq!(client.get_guardian(), Some(guardian));
+
+    client.cancel_upgrade(&owner);
+    client.remove_guardian();
+    assert!(client.get_guardian().is_none());
+}
+
+#[test]
+fn test_upgrade_authorization_for_an_old_hash_cannot_approve_new_hash() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, _agent, owner) = setup_vault(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+    let guardian = Address::generate(&env);
+    client.set_guardian(&guardian);
+
+    let stale_hash = BytesN::from_array(&env, &[5u8; 32]);
+    let pending_hash = BytesN::from_array(&env, &[6u8; 32]);
+    client.schedule_upgrade(&owner, &pending_hash);
+    let (_, expiry) = client.get_pending_upgrade().unwrap();
+    env.as_contract(&contract_id, || {
+        env.storage().instance().extend_ttl(20_000, 20_000);
+    });
+    env.ledger().set_sequence_number(expiry);
+
+    env.mock_auths(&[
+        MockAuth {
+            address: &owner,
+            invoke: &MockAuthInvoke {
+                contract: &contract_id,
+                fn_name: "execute_upgrade",
+                args: (owner.clone(), pending_hash.clone()).into_val(&env),
+                sub_invokes: &[],
+            },
+        },
+        MockAuth {
+            address: &guardian,
+            invoke: &MockAuthInvoke {
+                contract: &contract_id,
+                fn_name: "execute_upgrade",
+                args: (owner.clone(), stale_hash).into_val(&env),
+                sub_invokes: &[],
+            },
+        },
+    ]);
+
+    assert!(
+        client.try_execute_upgrade(&owner).is_err(),
+        "guardian authorization for a different WASM hash must not satisfy execution"
+    );
 }
 
 /// Guardian cannot pause the vault (no special privilege beyond execute_upgrade).

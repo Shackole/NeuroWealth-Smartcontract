@@ -11,10 +11,12 @@ name: CD — Vercel Deploy
 # On merge to main:
 #   - Deploys to the production Vercel URL.
 #
-# Prerequisites (GitHub repository secrets):
+# Prerequisites (GitHub Actions environments):
 #   VERCEL_TOKEN          — Vercel personal access token (Settings → Tokens)
 #   VERCEL_ORG_ID         — Found in Vercel project settings
 #   VERCEL_PROJECT_ID     — Found in Vercel project settings
+#   Configure preview values in `vercel-preview` and production values in
+#   `vercel-production`; the production environment should allow only `main`.
 #
 # Optional:
 #   LHCI_GITHUB_APP_TOKEN — Lighthouse CI GitHub App token for rich PR annotations
@@ -37,6 +39,12 @@ permissions:
   contents: read
   pull-requests: write   # needed to post preview URL comment
 
+# Serialize revisions within each ref. Do not cancel an active production
+# deployment; later main revisions remain queued for the same group.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   # ───────────────────────────────────────────────────────────────────────────
   # Build & deploy
@@ -44,6 +52,8 @@ jobs:
   deploy:
     name: Build & Deploy to Vercel
     runs-on: ubuntu-latest
+    environment:
+      name: ${{ github.ref == 'refs/heads/main' && 'vercel-production' || 'vercel-preview' }}
     outputs:
       preview_url: ${{ steps.deploy.outputs.preview_url }}
       is_production: ${{ steps.context.outputs.is_production }}
@@ -114,6 +124,55 @@ jobs:
         env:
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
+      - name: Set up Rust for release contract artifact
+        if: steps.context.outputs.is_production == 'true'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Build the contract WASM included in release provenance
+        if: steps.context.outputs.is_production == 'true'
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/neurowealth-target
+        run: |
+          cargo build \
+            --manifest-path neurowealth-vault/Cargo.toml \
+            -p neurowealth-vault \
+            --target wasm32-unknown-unknown \
+            --release
+
+      - name: Package immutable deployment evidence
+        if: steps.context.outputs.is_production == 'true'
+        env:
+          DEPLOYMENT_URL: ${{ steps.deploy.outputs.preview_url }}
+          CARGO_TARGET_DIR: ${{ runner.temp }}/neurowealth-target
+        run: |
+          mkdir -p "$RUNNER_TEMP/release-provenance"
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
+            -czf "$RUNNER_TEMP/release-provenance/vercel-output.tar.gz" \
+            -C frontend .vercel/output
+          cp "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/neurowealth_vault.wasm" \
+            "$RUNNER_TEMP/release-provenance/neurowealth_vault.wasm"
+          {
+            echo "commit_sha=$GITHUB_SHA"
+            echo "workflow_run_id=$GITHUB_RUN_ID"
+            echo "deployment_url=$DEPLOYMENT_URL"
+            echo "vercel_output_sha256=$(sha256sum "$RUNNER_TEMP/release-provenance/vercel-output.tar.gz" | cut -d' ' -f1)"
+            echo "contract_wasm_sha256=$(sha256sum "$RUNNER_TEMP/release-provenance/neurowealth_vault.wasm" | cut -d' ' -f1)"
+            echo "frontend_lockfile_sha256=$(sha256sum frontend/package-lock.json | cut -d' ' -f1)"
+            echo "agent_image_digest=not-applicable (this workflow deploys a Vercel build artifact, not a container image)"
+            echo "configuration_file_hashes:"
+            sha256sum .github/workflows/cd.yml frontend/package-lock.json agent/Dockerfile infra/docker-compose.monitoring.yml
+          } > "$RUNNER_TEMP/release-provenance/manifest.txt"
+
+      - name: Retain immutable deployment evidence
+        if: steps.context.outputs.is_production == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-provenance-${{ github.sha }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/release-provenance/
+          retention-days: 90
 
   # ───────────────────────────────────────────────────────────────────────────
   # Post preview URL as a PR comment

@@ -196,6 +196,35 @@ fn test_initialize_owner_and_agent_are_distinct() {
     );
 }
 
+/// Initialization must reject configurations that collapse owner and agent
+/// authority into one key (#446).
+#[test]
+#[should_panic(expected = "Error(Contract, #83)")]
+fn test_initialize_rejects_same_owner_and_agent() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let deployer = Address::generate(&env);
+    let salt = BytesN::from_array(&env, &[0u8; 32]);
+    let contract_id = env
+        .deployer()
+        .with_address(deployer.clone(), salt.clone())
+        .deployed_address();
+    env.register_contract(&contract_id, NeuroWealthVault);
+
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+    let owner_and_agent = Address::generate(&env);
+    let usdc_token = Address::generate(&env);
+
+    client.initialize(
+        &deployer,
+        &owner_and_agent,
+        &owner_and_agent,
+        &usdc_token,
+        &salt,
+    );
+}
+
 /// Verifies that the init event includes both the owner and agent addresses so
 /// off-chain observers can confirm role separation without reading storage.
 #[test]

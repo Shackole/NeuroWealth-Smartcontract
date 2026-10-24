@@ -346,6 +346,47 @@ fn test_withdrawal_pulls_from_both_protocols_proportionally() {
 }
 
 #[test]
+fn test_withdrawal_obligation_survives_reallocation_and_cannot_settle_twice() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let amount = 100_000_000_i128;
+    let (_vault_id, client, usdc, _blend, _dex, user) = setup_multi_funded(&env, amount);
+    let token = TestTokenClient::new(&env, &usdc);
+
+    client.rebalance_multi(&6_000, &4_000, &0_i128);
+    client.withdraw(&user, &20_000_000_i128);
+
+    let shares_after_partial = client.get_shares(&user);
+    let assets_after_partial = client.get_total_assets();
+    assert_eq!(token.balance(&user), 20_000_000_i128);
+    assert_eq!(shares_after_partial, 80_000_000_i128);
+    assert_eq!(assets_after_partial, 80_000_000_i128);
+
+    client.rebalance_multi(&4_000, &6_000, &0_i128);
+    assert_eq!(
+        client.get_shares(&user),
+        shares_after_partial,
+        "reallocation must not consume a user's remaining withdrawal claim"
+    );
+    assert_eq!(
+        client.get_total_assets(),
+        assets_after_partial,
+        "strategy changes must preserve the assets backing remaining shares"
+    );
+
+    let returned = client.withdraw_all(&user);
+    assert_eq!(returned, 80_000_000_i128);
+    assert_eq!(token.balance(&user), amount);
+    assert_eq!(client.get_shares(&user), 0);
+    assert_eq!(client.get_total_assets(), 0);
+    assert!(
+        client.try_withdraw(&user, &1_i128).is_err(),
+        "a settled withdrawal cannot be paid again after all shares are burned"
+    );
+    assert_eq!(token.balance(&user), amount);
+}
+
+#[test]
 fn test_withdraw_all_exits_both_protocols() {
     let env = Env::default();
     env.mock_all_auths();

@@ -150,3 +150,26 @@ model AuditLog {
   @@index([createdAt(sort: Desc)])
   @@map("audit_logs")
 }
+
+model EventListenerCheckpoint {
+  network          String   @db.Text
+  contractId       String   @map("contract_id") @db.Text
+  nextLedger       BigInt   @map("next_ledger")
+  paginationCursor String?  @map("pagination_cursor") @db.Text
+  recoveryRequired Boolean  @default(false) @map("recovery_required")
+  updatedAt        DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  @@id([network, contractId])
+  @@index([updatedAt(sort: Desc)])
+  @@map("event_listener_checkpoints")
+}
+
+model VaultEvent {
+  eventId        String   @id @map("event_id") @db.Text
+  eventType      String   @map("event_type") @db.Text
+  ledgerSequence BigInt   @map("ledger_sequence")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([ledgerSequence(sort: Desc)])
+  @@map("vault_events")
+}

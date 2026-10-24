@@ -62,6 +62,21 @@ This directory contains fuzz testing harnesses for the NeuroWealth Vault contrac
 2. `TotalAssets` does not decrease after a `harvest()` call (yield can only be non-negative)
 3. No unexpected panics from any harvest code path
 
+### `asset_lifecycle` (Issue #476)
+**Purpose**: Fuzz supported-asset registration, duplicate and invalid metadata,
+deposits, withdrawals, removals, and re-registration across two independent
+asset share pools.
+**Input format**: 3-byte chunks where byte 0 selects an operation, byte 1
+selects the asset, and byte 2 selects a positive multiple of the minimum unit.
+**Invariants checked**: user shares and aggregate accounting remain
+non-negative; outstanding shares/assets prevent removal; successful
+re-registration starts with zero aggregate position; duplicate symbols and
+negative limits are rejected.
+**Crash retention**: preserve each minimized reproducer under
+`fuzz/artifacts/asset_lifecycle/` and add a short regression note with the
+operation sequence and invariant violated. No corpus artifact is claimed for
+this change because fuzzing was not run.
+
 ## Running Fuzz Tests
 
 ```bash

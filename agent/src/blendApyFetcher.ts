@@ -10,6 +10,10 @@
  * Graceful degradation: if the Blend contract call fails, the last cached
  * value is returned instead. If there is no cache, the error is propagated.
  *
+ * Freshness (Issue #422): every sample carries the observation timestamp and
+ * source identifier so downstream yield comparison can reject stale APY
+ * before making allocation decisions.
+ *
  * Environment variables required:
  *   BLEND_POOL_ADDRESS   — Soroban contract ID of the Blend lending pool
  *   BLEND_USDC_ASSET     — Soroban USDC contract ID used by the pool
@@ -23,6 +27,7 @@ import { Router as createRouter } from 'express';
 import { Redis } from 'ioredis';
 import { pool } from './db';
 import logger from './logger';
+import { registerRedisClient } from './redisClients';
 
 // ─────────────────────────────────────────────────────────────────
 // Constants
@@ -31,6 +36,26 @@ import logger from './logger';
 const REDIS_KEY = 'apy:blend';
 const REDIS_TTL_SECONDS = 300; // 5 minutes
 const BPS_MULTIPLIER = 10_000; // 1.0 = 10_000 BPS
+const SOURCE_ID = 'blend';
+
+// ─────────────────────────────────────────────────────────────────
+// Types
+// ─────────────────────────────────────────────────────────────────
+
+/**
+ * An APY observation carrying provenance so freshness can be validated
+ * before allocation decisions (Issue #422).
+ */
+export interface ApySample {
+  /** APY in basis points (e.g. 850 = 8.50%). */
+  apyBps: number;
+  /** Source identifier, e.g. "blend". */
+  source: string;
+  /** ISO-8601 timestamp of when the sample was observed. */
+  observedAt: string;
+  /** True when the value came from cache rather than a live fetch. */
+  cached: boolean;
+}
 
 // ─────────────────────────────────────────────────────────────────
 // Redis client (lazy-initialised to avoid import-time side-effects)
@@ -40,11 +65,11 @@ let _redis: Redis | null = null;
 
 function getRedis(): Redis {
   if (!_redis) {
-    _redis = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379', {
+    _redis = registerRedisClient(new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379', {
       lazyConnect: true,
       enableOfflineQueue: false,
       maxRetriesPerRequest: 1,
-    });
+    }));
     _redis.on('error', (err: Error) =>
       logger.warn({ err: err.message }, 'blend-apy: redis error'),
     );
@@ -143,32 +168,66 @@ async function persistApySnapshot(apyBps: number): Promise<void> {
 }
 
 /**
+ * Reads the cached sample (value + observation timestamp) from Redis.
+ * Returns null when no cache entry exists or Redis is unavailable.
+ */
+async function readCachedSample(): Promise<ApySample | null> {
+  try {
+    const cached = await getRedis().get(REDIS_KEY);
+    if (cached === null) return null;
+    const parsed = JSON.parse(cached) as { apyBps: number; observedAt: string };
+    return {
+      apyBps: parsed.apyBps,
+      source: SOURCE_ID,
+      observedAt: parsed.observedAt,
+      cached: true,
+    };
+  } catch (redisErr) {
+    logger.warn({ redisErr }, 'blend-apy: redis read failed, continuing');
+    return null;
+  }
+}
+
+/**
  * Main APY fetch function. Returns BPS from Redis cache when available,
  * otherwise fetches from the contract, caches, and snapshots.
  *
  * On contract error, returns the last cached value if one exists.
  */
 export async function getBlendApyBps(): Promise<number> {
+  const sample = await getBlendApySample();
+  return sample.apyBps;
+}
+
+/**
+ * Returns an APY sample carrying its observation timestamp and source so
+ * callers can validate freshness before allocation decisions (Issue #422).
+ *
+ * On contract error, returns the last cached sample if one exists.
+ */
+export async function getBlendApySample(): Promise<ApySample> {
   const redis = getRedis();
 
   // 1. Try Redis cache first
-  try {
-    const cached = await redis.get(REDIS_KEY);
-    if (cached !== null) {
-      logger.debug({ apyBps: cached }, 'blend-apy: cache hit');
-      return parseInt(cached, 10);
-    }
-  } catch (redisErr) {
-    logger.warn({ redisErr }, 'blend-apy: redis read failed, continuing');
+  const cachedSample = await readCachedSample();
+  if (cachedSample !== null) {
+    logger.debug({ apyBps: cachedSample.apyBps }, 'blend-apy: cache hit');
+    return cachedSample;
   }
 
   // 2. Fetch from Blend contract
   try {
     const apyBps = await fetchBlendApyFromContract();
+    const observedAt = new Date().toISOString();
 
-    // 3. Cache in Redis
+    // 3. Cache in Redis (value + observation timestamp)
     try {
-      await redis.set(REDIS_KEY, apyBps.toString(), 'EX', REDIS_TTL_SECONDS);
+      await redis.set(
+        REDIS_KEY,
+        JSON.stringify({ apyBps, observedAt }),
+        'EX',
+        REDIS_TTL_SECONDS,
+      );
     } catch (redisErr) {
       logger.warn({ redisErr }, 'blend-apy: redis write failed');
     }
@@ -176,20 +235,19 @@ export async function getBlendApyBps(): Promise<number> {
     // 4. Persist DB snapshot (fire-and-forget)
     void persistApySnapshot(apyBps);
 
-    logger.info({ apyBps }, 'blend-apy: fetched and cached');
-    return apyBps;
+    logger.info({ apyBps, observedAt }, 'blend-apy: fetched and cached');
+    return { apyBps, source: SOURCE_ID, observedAt, cached: false };
   } catch (contractErr) {
     logger.error({ contractErr }, 'blend-apy: contract fetch failed');
 
     // 5. Graceful degradation: return stale cache if available
-    try {
-      const stale = await redis.get(REDIS_KEY);
-      if (stale !== null) {
-        logger.warn({ apyBps: stale }, 'blend-apy: returning stale cache on error');
-        return parseInt(stale, 10);
-      }
-    } catch (_) {
-      // Redis unavailable — fall through to re-throw original error
+    const stale = await readCachedSample();
+    if (stale !== null) {
+      logger.warn(
+        { apyBps: stale.apyBps, observedAt: stale.observedAt },
+        'blend-apy: returning stale cache on error',
+      );
+      return stale;
     }
 
     throw contractErr;
@@ -204,7 +262,8 @@ export async function getBlendApyBps(): Promise<number> {
  * Mounts the /api/apy/blend endpoint on the provided Express router.
  *
  * Response shape:
- *   200 { protocol: "blend", apy_bps: 850, apy_pct: 8.50, cached: bool }
+ *   200 { protocol: "blend", apy_bps: 850, apy_pct: 8.50, cached: bool,
+ *         source: "blend", observed_at: ISO-8601 }
  *   502 { error: "..." }
  */
 export function createBlendApyRouter(): Router {
@@ -212,15 +271,15 @@ export function createBlendApyRouter(): Router {
 
   router.get('/api/apy/blend', async (_req: Request, res: Response) => {
     try {
-      const redis = getRedis();
-      const cached = await redis.get(REDIS_KEY).catch(() => null);
-      const apyBps = await getBlendApyBps();
+      const sample = await getBlendApySample();
 
       res.json({
         protocol: 'blend',
-        apy_bps: apyBps,
-        apy_pct: +(apyBps / 100).toFixed(2),
-        cached: cached !== null,
+        apy_bps: sample.apyBps,
+        apy_pct: +(sample.apyBps / 100).toFixed(2),
+        cached: sample.cached,
+        source: sample.source,
+        observed_at: sample.observedAt,
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -234,39 +293,6 @@ export function createBlendApyRouter(): Router {
 
 // ─────────────────────────────────────────────────────────────────
 // Background poller — refreshes cache every 5 minutes
-// ─────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
 
-let _pollTimer: ReturnType<typeof setInterval> | null = null;
-
-/**
- * Starts a background interval that refreshes the Blend APY cache.
- * Call once at agent startup; call stopBlendApyPoller() on shutdown.
- */
-export function startBlendApyPoller(intervalMs = REDIS_TTL_SECONDS * 1000): void {
-  if (_pollTimer) return;
-
-  const tick = async () => {
-    try {
-      const apyBps = await fetchBlendApyFromContract();
-      const redis = getRedis();
-      await redis.set(REDIS_KEY, apyBps.toString(), 'EX', REDIS_TTL_SECONDS);
-      void persistApySnapshot(apyBps);
-      logger.info({ apyBps }, 'blend-apy: background poll updated');
-    } catch (err) {
-      logger.warn({ err }, 'blend-apy: background poll failed (stale cache retained)');
-    }
-  };
-
-  // Run immediately on start, then on interval
-  void tick();
-  _pollTimer = setInterval(tick, intervalMs);
-  logger.info({ intervalMs }, 'blend-apy: background poller started');
-}
-
-export function stopBlendApyPoller(): void {
-  if (_pollTimer) {
-    clearInterval(_pollTimer);
-    _pollTimer = null;
-    logger.info('blend-apy: background poller stopped');
-  }
-}
+/* … truncated 1123 chars — edit only what you need near the top … */

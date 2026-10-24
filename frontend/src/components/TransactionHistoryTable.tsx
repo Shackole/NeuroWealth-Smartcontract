@@ -21,8 +21,10 @@ import {
   ChevronLeft,
   ChevronRight,
   ArrowUpDown,
+  Copy,
+  Check,
 } from 'lucide-react';
-import { getTransactions, type TransactionRecord } from '@/lib/database';
+import { getRecentTransactions, type TransactionRecord } from '@/lib/database';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -188,17 +190,32 @@ export const TransactionHistoryTable: React.FC<TransactionHistoryTableProps> = (
     { id: 'timestamp', desc: true },
   ]);
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([]);
+  const [copiedValue, setCopiedValue] = useState<string | null>(null);
+
+  const copyValue = async (value: string) => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopiedValue(value);
+      window.setTimeout(() => setCopiedValue(null), 1800);
+    } catch {
+      setCopiedValue(null);
+    }
+  };
 
   // Load transactions whenever wallet connects / changes
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    getTransactions(publicKey ?? undefined).then((txs) => {
-      if (!cancelled) {
-        setData(txs);
-        setLoading(false);
-      }
-    });
+    getRecentTransactions(publicKey ?? undefined)
+      .then((txs) => {
+        if (!cancelled) setData(txs);
+      })
+      .catch(() => {
+        if (!cancelled) setData([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
     return () => {
       cancelled = true;
     };
@@ -248,8 +265,8 @@ export const TransactionHistoryTable: React.FC<TransactionHistoryTableProps> = (
   return (
     <div className="glass-panel rounded-2xl p-6">
       {/* Header */}
-      <div className="flex items-center justify-between mb-4">
-        <div>
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+        <div className="min-w-0">
           <h3 className="text-lg font-bold text-white tracking-tight">
             Transaction History
           </h3>
@@ -257,7 +274,7 @@ export const TransactionHistoryTable: React.FC<TransactionHistoryTableProps> = (
         </div>
         <button
           onClick={() => exportToCsv(filteredData)}
-          className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 hover:bg-emerald-500/20 rounded-lg transition-colors"
+          className="flex min-h-11 items-center gap-2 px-3 py-1.5 text-xs font-medium text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 hover:bg-emerald-500/20 rounded-lg transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400"
           aria-label="Export transactions to CSV"
         >
           <Download size={14} />
@@ -274,7 +291,7 @@ export const TransactionHistoryTable: React.FC<TransactionHistoryTableProps> = (
               setActiveFilter(value);
               table.setPageIndex(0);
             }}
-            className={`px-3 py-1 rounded-full text-xs font-medium border transition-all ${
+            className={`min-h-11 px-3 py-1 rounded-full text-xs font-medium border transition-all focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400 ${
               activeFilter === value
                 ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
                 : 'bg-slate-800/60 text-slate-400 border-slate-700 hover:text-white'
@@ -292,7 +309,7 @@ export const TransactionHistoryTable: React.FC<TransactionHistoryTableProps> = (
         </div>
       ) : (
         <>
-          <div className="overflow-x-auto">
+          <div className="hidden md:block overflow-x-auto">
             <table className="w-full text-left border-collapse" role="table">
               <thead>
                 {table.getHeaderGroups().map((hg) => (
@@ -325,8 +342,35 @@ export const TransactionHistoryTable: React.FC<TransactionHistoryTableProps> = (
             </table>
           </div>
 
+          <ul className="md:hidden space-y-3" aria-label="Transactions">
+            {table.getRowModel().rows.map((row) => {
+              const transaction = row.original;
+              const fullHash = transaction.txHash;
+              return (
+                <li key={row.id} className="min-w-0 rounded-xl border border-slate-800 bg-slate-900/50 p-4">
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <TypeCell type={transaction.type} />
+                    <StatusBadge status={transaction.status} />
+                  </div>
+                  <p className="mt-3 break-words font-mono text-lg font-semibold text-white">
+                    {transaction.amount.toLocaleString()} {transaction.asset || 'USDC'}
+                  </p>
+                  <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+                    <dt className="text-slate-400">Date</dt><dd className="min-w-0 break-words text-slate-200">{transaction.timestamp}</dd>
+                    <dt className="text-slate-400">Strategy</dt><dd className="min-w-0 break-words text-slate-200">{transaction.strategy || 'Not specified'}</dd>
+                    {transaction.address && <><dt className="text-slate-400">Wallet address</dt><dd className="flex min-w-0 items-start gap-1 text-slate-200"><span className="break-all font-mono">{transaction.address}</span><button type="button" onClick={() => void copyValue(transaction.address!)} className="min-h-11 min-w-11 shrink-0 rounded p-3 text-slate-300 hover:bg-slate-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400" aria-label={copiedValue === transaction.address ? 'Wallet address copied' : 'Copy wallet address'}>{copiedValue === transaction.address ? <Check size={15} /> : <Copy size={15} />}</button></dd></>}
+                  </dl>
+                  <div className="mt-3 flex min-w-0 items-center gap-2 border-t border-slate-800 pt-3">
+                    <a href={`https://stellar.expert/explorer/testnet/tx/${fullHash}`} target="_blank" rel="noreferrer" className="min-w-0 flex-1 break-all font-mono text-xs text-emerald-300 underline underline-offset-2">{fullHash}<span className="sr-only"> (open transaction in Stellar Expert)</span></a>
+                    <button type="button" onClick={() => void copyValue(fullHash)} className="min-h-11 min-w-11 shrink-0 rounded-lg border border-slate-700 p-3 text-slate-200 hover:bg-slate-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400" aria-label={copiedValue === fullHash ? 'Transaction hash copied' : 'Copy transaction hash'}>{copiedValue === fullHash ? <Check size={16} /> : <Copy size={16} />}</button>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+
           {/* Pagination */}
-          <div className="flex items-center justify-between mt-4 pt-4 border-t border-slate-800">
+          <div className="flex flex-wrap items-center justify-between gap-3 mt-4 pt-4 border-t border-slate-800">
             <p className="text-xs text-slate-400">
               Page{' '}
               <strong className="text-slate-200">
@@ -341,7 +385,7 @@ export const TransactionHistoryTable: React.FC<TransactionHistoryTableProps> = (
               <button
                 onClick={() => table.previousPage()}
                 disabled={!table.getCanPreviousPage()}
-                className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-800 text-slate-300 hover:bg-slate-700 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                className="flex min-h-11 items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-800 text-slate-300 hover:bg-slate-700 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400"
                 aria-label="Previous page"
               >
                 <ChevronLeft size={14} /> Prev
@@ -349,7 +393,7 @@ export const TransactionHistoryTable: React.FC<TransactionHistoryTableProps> = (
               <button
                 onClick={() => table.nextPage()}
                 disabled={!table.getCanNextPage()}
-                className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-800 text-slate-300 hover:bg-slate-700 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                className="flex min-h-11 items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-800 text-slate-300 hover:bg-slate-700 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400"
                 aria-label="Next page"
               >
                 Next <ChevronRight size={14} />

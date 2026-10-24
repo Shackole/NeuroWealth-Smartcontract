@@ -116,8 +116,8 @@ export default function DepositPage() {
                 <span className="text-white font-mono font-medium">{estimatedShares} NV-SHARES</span>
               </div>
               <div className="flex justify-between text-slate-400">
-                <span>Network Fee:</span>
-                <span className="text-emerald-400 font-mono font-medium">~0.00001 XLM</span>
+                <span>Network fee (paid separately):</span>
+                <span className="text-emerald-400 font-mono font-medium">Freighter shows the final fee in XLM</span>
               </div>
             </div>
 
