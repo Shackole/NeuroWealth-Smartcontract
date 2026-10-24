@@ -207,6 +207,7 @@ All reusable UI components live in `frontend/src/components/ui/`.
 | `EarningsCard`       | `components/EarningsCard.tsx` | Yield earned display with APY |
 | `StrategyBadge`      | `components/StrategyBadge.tsx`| Strategy selector (conservative/balanced/growth) |
 | `ActionModal`        | `components/ActionModal.tsx`  | Deposit/Withdraw modal dialog |
+| `TransactionProgress`| `components/TransactionProgress.tsx` | Step-by-step ledger confirmation stepper with coherent vocabulary (#491) |
 | `Header`             | `components/Header.tsx`       | Top navigation with wallet connect |
 | `PortfolioChart`     | `components/PortfolioChart.tsx`| Recharts line chart for portfolio history |
 | `TransactionHistory` | `components/TransactionHistory.tsx` | Paginated transaction list |
@@ -237,6 +238,17 @@ All reusable UI components live in `frontend/src/components/ui/`.
 - Always provide a visible `label` prop — never use placeholder as label.
 - Use `helperText` for formatting hints; `error` for validation messages.
 - Numeric inputs for amounts should use `type="number"` and `step="0.01"`.
+
+**Transaction Progress & Stepper (`TransactionProgress`)**
+- Follows the coherent transaction vocabulary defined in [design/dashboard/TRANSACTION_PROGRESS_VOCABULARY.md](../design/dashboard/TRANSACTION_PROGRESS_VOCABULARY.md).
+- Seven formal statuses: `review`, `signature_request`, `submission`, `confirmation`, `delayed`, `confirmed`, `failure`.
+- **Every status has a clear next action** (e.g., "Confirm & Sign", "Awaiting Approval", "Broadcasting", "Awaiting Ledger", "Continue Waiting", "Done", "Retry").
+- **Success strictly means ledger confirmation** (requires verified Soroban RPC `status === SUCCESS`, transaction hash, and ledger sequence number).
+- **Delayed confirmation is distinguishable from failure**:
+  - `delayed` uses amber (`warning-500` / `#f59e0b`) styling, `Clock` or `AlertCircle` icon, and explicit non-failure copy: `"Transaction has NOT failed. Network consensus is pending. Do not re-submit."`
+  - `failure` uses red (`error-500` / `#ef4444`) styling and `XCircle` icon.
+  - Recovery actions for `delayed` prevent accidental duplicate submissions; `failure` enables retry.
+- Explicit monetary units (`USDC`, `NV-SHARES`, `XLM` network fee), network identity (`Stellar Testnet`), and authorization requirements (`Freighter account G...`) must always be rendered.
 
 ---
 

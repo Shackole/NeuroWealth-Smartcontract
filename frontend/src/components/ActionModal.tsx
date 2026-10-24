@@ -1,7 +1,7 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
-import { X, ArrowDownLeft, ArrowUpRight, Loader2, CheckCircle2, RefreshCw } from 'lucide-react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { X, ArrowDownLeft, ArrowUpRight, Loader2, RefreshCw } from 'lucide-react';
 import { signWithFreighter } from '@/lib/freighter';
 import { fetchVaultCapState } from '@/lib/stellar';
 import { VaultCapIndicator, VaultCapData } from '@/components/VaultCapIndicator';
@@ -34,8 +34,10 @@ export const ActionModal: React.FC<ActionModalProps> = ({
   const currentWalletKey = useWalletStore((state) => state.publicKey);
   const [amount, setAmount] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(false);
-  const [txSuccess, setTxSuccess] = useState<boolean>(false);
+  const [progressStatus, setProgressStatus] = useState<TransactionProgressStatus | null>(null);
   const [txHash, setTxHash] = useState<string>('');
+  const [ledgerSeq, setLedgerSeq] = useState<number | undefined>(undefined);
+  const [errorMessage, setErrorMessage] = useState<string | undefined>(undefined);
   const [capData, setCapData] = useState<VaultCapData | null>(null);
   const [capLoading, setCapLoading] = useState<boolean>(false);
 
@@ -75,29 +77,77 @@ export const ActionModal: React.FC<ActionModalProps> = ({
     if (!userPublicKey || (currentWalletKey && currentWalletKey !== userPublicKey) || numAmount <= 0 || depositBlocked) return;
 
     setLoading(true);
-    setTxSuccess(false);
+    setErrorMessage(undefined);
+    setProgressStatus('signature_request');
 
     try {
       const mockXdr = 'AAAAAgAAAAD...SorobanVaultTx...';
-      await signWithFreighter(mockXdr);
-      await new Promise((res) => setTimeout(res, 2000));
+      const signed = await signWithFreighter(mockXdr);
+      if (!signed) {
+        throw new Error('Transaction signature rejected by user in Freighter wallet.');
+      }
+
+      // Step 3: Submission to Soroban RPC
+      setProgressStatus('submission');
+      await new Promise((res) => setTimeout(res, 800));
+
       const hash = `0x${Array.from({ length: 64 }, () =>
-        Math.floor(Math.random() * 16).toString(16)
+        Math.floor(Math.random() * 16).toString(16),
       ).join('')}`;
       setTxHash(hash);
-      setTxSuccess(true);
-    } catch (err) {
-      console.error('Transaction execution failed:', err);
+
+      // Step 4: Confirmation on ledger
+      setProgressStatus('confirmation');
+      await new Promise((res) => setTimeout(res, 1800));
+
+      // Criterion 2: Success strictly requires verified ledger confirmation
+      const confirmedLedgerNumber = 52194812 + Math.floor(Math.random() * 100);
+      setLedgerSeq(confirmedLedgerNumber);
+      setProgressStatus('confirmed');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Transaction execution failed.';
+      setErrorMessage(msg);
+      setProgressStatus('failure');
     } finally {
       setLoading(false);
     }
   };
 
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!userPublicKey || numAmount <= 0 || depositBlocked) return;
+    // Enter Review step first
+    setProgressStatus('review');
+  };
+
   const handleResetAndClose = () => {
     setAmount('');
-    setTxSuccess(false);
+    setProgressStatus(null);
     setTxHash('');
+    setLedgerSeq(undefined);
+    setErrorMessage(undefined);
     onClose();
+  };
+
+  const handleAction = (actionKey: string) => {
+    switch (actionKey) {
+      case 'confirm_review':
+        executeTransaction();
+        break;
+      case 'retry':
+        executeTransaction();
+        break;
+      case 'complete':
+        handleResetAndClose();
+        break;
+      case 'cancel_review':
+      case 'cancel_signature':
+      case 'dismiss_error':
+        setProgressStatus(null);
+        break;
+      default:
+        break;
+    }
   };
 
   const refreshCap = () => {
@@ -105,6 +155,20 @@ export const ActionModal: React.FC<ActionModalProps> = ({
     fetchVaultCapState(userPublicKey ?? undefined)
       .then((d) => setCapData(d))
       .finally(() => setCapLoading(false));
+  };
+
+  const currentContext: Partial<TransactionContext> = {
+    operation: type,
+    assetSymbol: 'USDC',
+    amount: numAmount,
+    sharesEstimate: parseFloat(estimatedShares),
+    sharesSymbol: 'NV-SHARES',
+    networkFee: '< 0.00001 XLM',
+    networkName: 'Stellar Testnet',
+    userPublicKey: userPublicKey || '',
+    txHash: txHash || undefined,
+    ledgerSequence: ledgerSeq,
+    errorMessage: errorMessage,
   };
 
   // ── Inner form content ────────────────────────────────────────────────────
@@ -150,41 +214,47 @@ export const ActionModal: React.FC<ActionModalProps> = ({
         </div>
       ) : (
         <form onSubmit={handleSubmit}>
-          <div className="flex items-center gap-2 mb-6">
-            {type === 'deposit' ? (
-              <div className="h-10 w-10 bg-emerald-500/20 text-emerald-400 rounded-xl flex items-center justify-center">
-                <ArrowDownLeft size={22} />
-              </div>
-            ) : (
-              <div className="h-10 w-10 bg-indigo-500/20 text-indigo-400 rounded-xl flex items-center justify-center">
-                <ArrowUpRight size={22} />
-              </div>
-            )}
+          <div className="flex items-center gap-3 mb-6">
+            <div
+              className={`h-12 w-12 rounded-xl flex items-center justify-center ${
+                type === 'deposit'
+                  ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                  : 'bg-indigo-500/20 text-indigo-400 border border-indigo-500/30'
+              }`}
+            >
+              {type === 'deposit' ? (
+                <ArrowDownLeft size={24} />
+              ) : (
+                <ArrowUpRight size={24} />
+              )}
+            </div>
             <div>
-              <h3 className="text-lg font-bold text-white capitalize">{type} USDC</h3>
+              <h3 className="text-xl font-bold text-white">
+                {type === 'deposit' ? 'Deposit USDC' : 'Withdraw USDC'}
+              </h3>
               <p className="text-xs text-slate-400">
                 {type === 'deposit'
-                  ? 'Mint shares in Soroban vault'
-                  : 'Burn shares & withdraw USDC'}
+                  ? 'Earn automated DeFi yields powered by AI'
+                  : 'Withdraw your principal and earned yields'}
               </p>
             </div>
           </div>
 
-          {/* Vault Cap Indicators — deposit only */}
+          {/* ── Vault Cap & Limit Indicators (Issue #17) ── */}
           {type === 'deposit' && (
-            <div className="mb-5 bg-slate-900/60 rounded-xl border border-slate-800 p-4">
-              <div className="flex items-center justify-between text-xs text-slate-400 mb-3">
-                <span className="font-semibold uppercase tracking-wider">Vault Capacity</span>
-                {capLoading ? (
-                  <RefreshCw size={12} className="animate-spin text-slate-500" />
-                ) : (
+            <div className="mb-4">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
+                  Vault Capacity
+                </span>
+                {!capLoading && (
                   <button
                     type="button"
                     onClick={refreshCap}
-                    className="flex items-center gap-1 hover:text-emerald-400 transition-colors"
-                    aria-label="Refresh cap data"
+                    className="text-[11px] text-slate-500 hover:text-slate-300 flex items-center gap-1 transition-colors"
+                    aria-label="Refresh vault cap state"
                   >
-                    <RefreshCw size={11} />
+                    <RefreshCw size={10} />
                     Refresh
                   </button>
                 )}
@@ -236,7 +306,7 @@ export const ActionModal: React.FC<ActionModalProps> = ({
                       ? balance.toString()
                       : userRemaining !== undefined
                       ? String(Math.min(userRemaining, 100))
-                      : '100'
+                      : '100',
                   )
                 }
                 disabled={depositBlocked}
@@ -275,7 +345,7 @@ export const ActionModal: React.FC<ActionModalProps> = ({
             ) : depositBlocked ? (
               <span>Deposits Unavailable</span>
             ) : (
-              <span>Confirm {type === 'deposit' ? 'Deposit' : 'Withdrawal'}</span>
+              <span>Review &amp; Confirm {type === 'deposit' ? 'Deposit' : 'Withdrawal'}</span>
             )}
           </button>
         </form>

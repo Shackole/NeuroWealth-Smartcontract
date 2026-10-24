@@ -10,5 +10,5 @@
     "noImplicitAny": false,
     "useUnknownInCatchVariables": false
   },
-  "include": ["test/**/*"]
+  "include": ["test/**/*", "frontend/src/lib/transactionProgress.ts"]
 }
