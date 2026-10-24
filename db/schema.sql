@@ -64,3 +64,36 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     details JSONB,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Issue #655 / #527: Agent state checkpointing, event ingestion, and idempotent queue recovery
+CREATE TABLE IF NOT EXISTS agent_state (
+    key TEXT PRIMARY KEY,
+    value JSONB NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS vault_events (
+    event_id TEXT PRIMARY KEY,
+    event_type TEXT NOT NULL CHECK (event_type IN ('deposit', 'withdraw', 'rebalance', 'harvest')),
+    ledger_sequence BIGINT NOT NULL,
+    tx_hash TEXT,
+    idempotency_key TEXT UNIQUE,
+    amount_stroops BIGINT NOT NULL DEFAULT 0,
+    shares_stroops BIGINT NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS queued_transactions (
+    job_id TEXT PRIMARY KEY,
+    idempotency_key TEXT UNIQUE NOT NULL,
+    action TEXT NOT NULL CHECK (action IN ('deposit', 'withdraw', 'rebalance', 'harvest')),
+    amount_stroops BIGINT NOT NULL CHECK (amount_stroops >= 0),
+    network_passphrase TEXT NOT NULL,
+    contract_id TEXT NOT NULL,
+    authorized_actor TEXT NOT NULL,
+    required_role TEXT NOT NULL CHECK (required_role IN ('user', 'agent', 'owner')),
+    ledger_checkpoint BIGINT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('queued', 'in_flight', 'confirmed', 'skipped_duplicate', 'blocked')),
+    tx_hash TEXT UNIQUE,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);

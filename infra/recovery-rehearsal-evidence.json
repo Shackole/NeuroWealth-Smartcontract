@@ -1,0 +1,178 @@
+{
+  "rehearsedAt": "2026-10-23T16:18:39.196Z",
+  "environment": "staging-testnet-isolated",
+  "networkPassphrase": "Test SDF Network ; September 2015",
+  "contractId": "CBREHEARSAL527VAULTSTAGINGTESTNET00000000000000000000000",
+  "scenarios": {
+    "duplicatePreventionAndBackfill": {
+      "status": "recovered",
+      "recoveryComplete": true,
+      "workerResumed": true,
+      "networkPassphrase": "Test SDF Network ; September 2015",
+      "contractId": "CBREHEARSAL527VAULTSTAGINGTESTNET00000000000000000000000",
+      "monetaryUnit": "stroops (7 decimals, 1 USDC = 10,000,000 stroops)",
+      "checkpoint": {
+        "previousLedger": 50100,
+        "chainLatestLedger": 50105,
+        "reconciledLedger": 50105,
+        "backfilledEventCount": 1
+      },
+      "queueSummary": {
+        "totalInspected": 4,
+        "duplicateActionsPrevented": [
+          "job_deposit_250_usdc",
+          "job_rebalance_500_usdc",
+          "job_deposit_250_usdc_retry_dup"
+        ],
+        "executedActions": [
+          {
+            "jobId": "job_rebalance_100_usdc_pending",
+            "idempotencyKey": "idem_c7c13bb4cc8fc00892618401140f8517",
+            "txHash": "0xtx_executed_job_rebalance_100_usdc_pending",
+            "amountStroops": 1000000000
+          }
+        ],
+        "blockedActions": []
+      },
+      "accounting": {
+        "onChainTotalAssetsStroops": 12500000000,
+        "dbTotalAssetsStroops": 12500000000,
+        "onChainTotalSharesStroops": 12500000000,
+        "dbTotalSharesStroops": 12500000000,
+        "assetsDeltaStroops": 0,
+        "sharesDeltaStroops": 0
+      },
+      "unresolvedGaps": [],
+      "timing": {
+        "outageDetectedAtMs": 1792771200000,
+        "recoveryStartedAtMs": 1792771212400,
+        "recoveryFinishedAtMs": 1792771214110,
+        "redisReconnectDurationMs": 180,
+        "dbReconnectDurationMs": 240,
+        "checkpointRestoreDurationMs": 95,
+        "eventBackfillDurationMs": 430,
+        "queueDeduplicationDurationMs": 150,
+        "chainReconciliationDurationMs": 110,
+        "workerRestartDurationMs": 505,
+        "totalRecoveryDurationMs": 14110,
+        "rtoBudgetMs": 300000,
+        "withinRtoBudget": true
+      }
+    },
+    "blockedOnUnresolvedDataGap": {
+      "status": "blocked_by_data_gaps",
+      "recoveryComplete": false,
+      "workerResumed": false,
+      "networkPassphrase": "Test SDF Network ; September 2015",
+      "contractId": "CBREHEARSAL527VAULTSTAGINGTESTNET00000000000000000000000",
+      "monetaryUnit": "stroops (7 decimals, 1 USDC = 10,000,000 stroops)",
+      "checkpoint": {
+        "previousLedger": 50105,
+        "chainLatestLedger": 50110,
+        "reconciledLedger": 50105,
+        "backfilledEventCount": 0
+      },
+      "queueSummary": {
+        "totalInspected": 0,
+        "duplicateActionsPrevented": [],
+        "executedActions": [],
+        "blockedActions": []
+      },
+      "accounting": {
+        "onChainTotalAssetsStroops": 13250000000,
+        "dbTotalAssetsStroops": 12500000000,
+        "onChainTotalSharesStroops": 13250000000,
+        "dbTotalSharesStroops": 12500000000,
+        "assetsDeltaStroops": 750000000,
+        "sharesDeltaStroops": 750000000
+      },
+      "unresolvedGaps": [
+        {
+          "kind": "missing_ledger_events",
+          "severity": "critical",
+          "description": "Unable to fetch events for 1 ledger(s) during backfill window [50106, 50110]",
+          "details": {
+            "missingLedgers": [
+              50108
+            ],
+            "windowStart": 50106,
+            "windowEnd": 50110
+          }
+        },
+        {
+          "kind": "accounting_mismatch",
+          "severity": "critical",
+          "description": "Unreconciled accounting gap after event backfill: assets delta=750000000 stroops, shares delta=750000000 stroops",
+          "details": {
+            "onChainTotalAssetsStroops": 13250000000,
+            "dbTotalAssetsStroops": 12500000000,
+            "onChainTotalSharesStroops": 13250000000,
+            "dbTotalSharesStroops": 12500000000,
+            "assetsDeltaStroops": 750000000,
+            "sharesDeltaStroops": 750000000
+          }
+        }
+      ],
+      "timing": {
+        "outageDetectedAtMs": 1792771219110,
+        "recoveryStartedAtMs": 1792771227310,
+        "recoveryFinishedAtMs": 1792771228070,
+        "redisReconnectDurationMs": 140,
+        "dbReconnectDurationMs": 190,
+        "checkpointRestoreDurationMs": 80,
+        "eventBackfillDurationMs": 260,
+        "queueDeduplicationDurationMs": 0,
+        "chainReconciliationDurationMs": 90,
+        "workerRestartDurationMs": 0,
+        "totalRecoveryDurationMs": 8960,
+        "rtoBudgetMs": 300000,
+        "withinRtoBudget": true
+      }
+    },
+    "resolvedAfterGapBackfill": {
+      "status": "recovered",
+      "recoveryComplete": true,
+      "workerResumed": true,
+      "networkPassphrase": "Test SDF Network ; September 2015",
+      "contractId": "CBREHEARSAL527VAULTSTAGINGTESTNET00000000000000000000000",
+      "monetaryUnit": "stroops (7 decimals, 1 USDC = 10,000,000 stroops)",
+      "checkpoint": {
+        "previousLedger": 50105,
+        "chainLatestLedger": 50110,
+        "reconciledLedger": 50110,
+        "backfilledEventCount": 1
+      },
+      "queueSummary": {
+        "totalInspected": 0,
+        "duplicateActionsPrevented": [],
+        "executedActions": [],
+        "blockedActions": []
+      },
+      "accounting": {
+        "onChainTotalAssetsStroops": 13250000000,
+        "dbTotalAssetsStroops": 13250000000,
+        "onChainTotalSharesStroops": 13250000000,
+        "dbTotalSharesStroops": 13250000000,
+        "assetsDeltaStroops": 0,
+        "sharesDeltaStroops": 0
+      },
+      "unresolvedGaps": [],
+      "timing": {
+        "outageDetectedAtMs": 1792771230070,
+        "recoveryStartedAtMs": 1792771233570,
+        "recoveryFinishedAtMs": 1792771234500,
+        "redisReconnectDurationMs": 140,
+        "dbReconnectDurationMs": 190,
+        "checkpointRestoreDurationMs": 80,
+        "eventBackfillDurationMs": 360,
+        "queueDeduplicationDurationMs": 0,
+        "chainReconciliationDurationMs": 90,
+        "workerRestartDurationMs": 70,
+        "totalRecoveryDurationMs": 4430,
+        "rtoBudgetMs": 300000,
+        "withinRtoBudget": true
+      }
+    }
+  },
+  "allCriteriaPassed": true
+}
