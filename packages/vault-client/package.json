@@ -12,7 +12,7 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@stellar/stellar-sdk": "^17.2.1",
+    "@stellar/stellar-sdk": "^17.3.0",
     "soroban-client": "^1.0.0"
   },
   "devDependencies": {
