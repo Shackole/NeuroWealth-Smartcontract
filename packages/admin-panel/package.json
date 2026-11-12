@@ -15,7 +15,7 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "zustand": "^5.0.15",
-    "framer-motion": "^10.16.0",
+    "framer-motion": "^14.6.0",
     "lucide-react": "^0.263.1",
     "clsx": "^2.0.0",
     "date-fns": "^2.30.0"
