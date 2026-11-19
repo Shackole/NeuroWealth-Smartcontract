@@ -254,3 +254,5 @@ jobs:
             --upload.target=temporary-public-storage
         env:
           LHCI_GITHUB_APP_TOKEN: ${{ secrets.LHCI_GITHUB_APP_TOKEN }}
+
+# Release artifact name validation and concurrency diagnostics (issues #790, #792)
