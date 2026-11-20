@@ -88,12 +88,22 @@ jobs:
 
       - name: Determine deployment context
         id: context
+        env:
+          NEXT_PUBLIC_NETWORK_PASSPHRASE: ${{ vars.NEXT_PUBLIC_NETWORK_PASSPHRASE || 'Test SDF Network ; September 2015' }}
         run: |
           if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
             echo "is_production=true" >> "$GITHUB_OUTPUT"
           else
             echo "is_production=false" >> "$GITHUB_OUTPUT"
           fi
+          network=$(printf '%s' "$NEXT_PUBLIC_NETWORK_PASSPHRASE" \
+            | tr '[:upper:]' '[:lower:]' \
+            | sed -E 's/[^a-z0-9]+/-/g; s/^-|-$//g')
+          if [[ -z "$network" ]]; then
+            echo "Network passphrase must produce a non-empty artifact name." >&2
+            exit 1
+          fi
+          echo "network=$network" >> "$GITHUB_OUTPUT"
 
       # Pull Vercel project settings so `vercel deploy` knows the project.
       - name: Pull Vercel project settings
@@ -170,7 +180,7 @@ jobs:
         if: steps.context.outputs.is_production == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: deployment-provenance-${{ github.sha }}-${{ github.run_id }}
+          name: deployment-provenance-${{ steps.context.outputs.network }}-${{ github.sha }}-${{ github.run_id }}
           path: ${{ runner.temp }}/release-provenance/
           retention-days: 90
 
