@@ -127,14 +127,27 @@ function AssetBreakdownBar({
   );
 }
 
-// ── Auto-refresh client wrapper ───────────────────────────────────────────────
-// We use a simple <meta http-equiv="refresh"> trick in the layout; the ISR handles
-// the server data. For the client-side countdown we inject a small script.
+type StatsSearchParams = Record<string, string | string[] | undefined>;
 
-// ── Page ─────────────────────────────────────────────────────────────────────
-
-export default async function VaultStatsPage() {
-  const stats = await fetchVaultStats();
+export default async function VaultStatsPage({
+  searchParams,
+}: {
+  searchParams: Promise<StatsSearchParams>;
+}) {
+  const [filters, stats] = await Promise.all([searchParams, fetchVaultStats()]);
+  const period = filters.period === '7d' ? '7d' : '30d';
+  const asset = filters.asset === 'nv-share' ? 'nv-share' : 'usdc';
+  const days = period === '7d' ? 7 : 30;
+  const unit = asset === 'usdc' ? 'USDC per NV-SHARE' : 'NV-SHARE per USDC';
+  const rateHistory = stats.rateHistory.slice(-days).map((point) => ({
+    ...point,
+    rate: asset === 'usdc' ? point.rate : 1 / point.rate,
+  }));
+  const firstRate = rateHistory[0]?.rate;
+  const lastRate = rateHistory.at(-1)?.rate;
+  const periodChange = firstRate && lastRate && rateHistory.length > 1
+    ? ((lastRate / firstRate - 1) * 100).toFixed(2)
+    : null;
 
   const fetchedTime = new Date(stats.fetchedAt).toLocaleTimeString('en-US', {
     hour: '2-digit',
@@ -247,17 +260,44 @@ export default async function VaultStatsPage() {
         <div className="glass-panel rounded-2xl p-5 border border-slate-800">
           <div className="flex items-start justify-between mb-5">
             <div>
-              <h3 className="text-sm font-bold text-white mb-1">Exchange Rate — Last 30 Days</h3>
+              <h3 className="text-sm font-bold text-white mb-1">Exchange Rate — Last {days} Days</h3>
               <p className="text-xs text-slate-400">
-                NV-SHARE → USDC conversion rate. Rising rate = growing yield.
+                {unit}
               </p>
             </div>
-            <span className="text-xs font-mono text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-1 rounded-lg">
-              +{(((stats.exchangeRate - 1) / 1) * 100).toFixed(2)}% 30d
-            </span>
+            {periodChange !== null && (
+              <span className="text-xs font-mono text-slate-300 bg-slate-800 px-2 py-1 rounded-lg">
+                {Number(periodChange) > 0 ? '+' : ''}{periodChange}% {period}
+              </span>
+            )}
           </div>
-          {stats.rateHistory.length > 0 ? (
-            <ExchangeRateChart data={stats.rateHistory} />
+          <form method="get" className="mb-5 flex flex-wrap items-end gap-3">
+            {Object.entries(filters).flatMap(([name, value]) =>
+              name === 'period' || name === 'asset' || value === undefined ? [] :
+                [value].flat().map((entry, index) => (
+                  <input key={`${name}-${index}`} type="hidden" name={name} value={entry} />
+                )),
+            )}
+            <label className="grid gap-1 text-xs text-slate-300">
+              Time period
+              <select key={period} name="period" defaultValue={period} className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2">
+                <option value="7d">Last 7 days</option>
+                <option value="30d">Last 30 days</option>
+              </select>
+            </label>
+            <label className="grid gap-1 text-xs text-slate-300">
+              Quote asset
+              <select key={asset} name="asset" defaultValue={asset} className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2">
+                <option value="usdc">USDC</option>
+                <option value="nv-share">NV-SHARE</option>
+              </select>
+            </label>
+            <button type="submit" className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs font-semibold text-white">
+              Apply filters
+            </button>
+          </form>
+          {rateHistory.length > 0 ? (
+            <ExchangeRateChart data={rateHistory} unit={unit} />
           ) : (
             <div className="h-64 flex items-center justify-center text-slate-500 text-sm">
               No rate history available yet.

@@ -17,7 +17,10 @@ export interface RateDataPoint {
   rate: number;
 }
 
-export function ExchangeRateChart({ data }: { data: RateDataPoint[] }) {
+export function ExchangeRateChart({ data, unit = 'USDC per NV-SHARE' }: {
+  data: RateDataPoint[];
+  unit?: string;
+}) {
   const reducedMotion = useReducedMotion();
   return (
     <div className="h-64 w-full">
@@ -47,7 +50,7 @@ export function ExchangeRateChart({ data }: { data: RateDataPoint[] }) {
               boxShadow: '0 10px 25px -5px rgba(0,0,0,0.5)',
               fontSize: '12px',
             }}
-            formatter={(val: number) => [`${val.toFixed(4)} USDC/share`, 'Exchange Rate']}
+            formatter={(val: number) => [`${val.toFixed(4)} ${unit}`, 'Exchange Rate']}
           />
           <Line
             type="monotone"
