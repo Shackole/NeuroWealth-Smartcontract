@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "pretest": "tsx src/apyRetryBudget.test.ts",
+    "pretest": "tsx --test src/apy*.test.ts",
     "build": "tsc",
     "test": "tsx src/openAiKeyManager.test.ts && tsx src/rateLimiter.test.ts && tsx src/db.test.ts",
     "start:prod": "npx ts-node src/index.ts",
