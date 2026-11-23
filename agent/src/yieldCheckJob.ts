@@ -19,6 +19,7 @@
  */
 
 import { Pool } from 'pg';
+import { ApyRetryBudget } from './apyRetryBudget';
 import logger from './logger';
 import { YieldComparisonEngine, ProtocolYieldData } from './yieldComparison';
 
@@ -545,11 +546,12 @@ export class YieldCheckJob {
     protocolIds: string[],
   ): Promise<ProtocolYieldData[]> {
     const results: ProtocolYieldData[] = [];
+    const retryBudget = new ApyRetryBudget(this.dependencyTimeoutMs());
 
     await Promise.allSettled(
       protocolIds.map(async (id) => {
         try {
-          const data = await withTimeout(this.hooks.apyFetchers[id](id), `APY fetch for ${id}`, this.dependencyTimeoutMs());
+          const data = await retryBudget.run(() => this.hooks.apyFetchers[id](id));
           if (!this.isUsableApy(data, id)) {
             logger.warn({ jobId, protocolId: id }, 'Invalid or stale APY observation — skipping protocol');
             return;
@@ -575,7 +577,7 @@ export class YieldCheckJob {
     const fetcher = this.hooks.apyFetchers[protocolId];
     if (!fetcher) return null;
     try {
-      const data = await withTimeout(fetcher(protocolId), `APY fetch for ${protocolId}`, this.dependencyTimeoutMs());
+      const data = await new ApyRetryBudget(this.dependencyTimeoutMs()).run(() => fetcher(protocolId));
       return this.isUsableApy(data, protocolId) ? data : null;
     } catch {
       return null;

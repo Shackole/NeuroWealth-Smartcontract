@@ -26,6 +26,7 @@ import type { Request, Response, Router } from 'express';
 import { Router as createRouter } from 'express';
 import { Redis } from 'ioredis';
 import { pool } from './db';
+import { ApyRetryBudget } from './apyRetryBudget';
 import logger from './logger';
 import { registerRedisClient } from './redisClients';
 
@@ -217,7 +218,7 @@ export async function getBlendApySample(): Promise<ApySample> {
 
   // 2. Fetch from Blend contract
   try {
-    const apyBps = await fetchBlendApyFromContract();
+    const apyBps = await new ApyRetryBudget().run(fetchBlendApyFromContract);
     const observedAt = new Date().toISOString();
 
     // 3. Cache in Redis (value + observation timestamp)
