@@ -3,6 +3,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Layers, ChevronDown, ChevronUp, HelpCircle, RefreshCw } from 'lucide-react';
 import { fetchShareData, ShareData, STROOP } from '@/lib/stellar';
+import { SHARE_CARD_SIZE } from './dashboardCardLayout';
 
 interface ShareRateCardProps {
   /** Wallet public key — used to call preview_shares_to_assets */
@@ -42,16 +43,16 @@ function formatUsdc(value: number): string {
 function ShareRateSkeleton() {
   return (
     <div
-      className="glass-panel-interactive rounded-2xl p-6 relative overflow-hidden"
+      className={`glass-panel-interactive rounded-2xl p-6 relative overflow-hidden ${SHARE_CARD_SIZE}`}
       aria-label="Loading share data…"
       role="status"
     >
-      <div className="flex items-center justify-between mb-4">
-        <div className="h-4 w-40 animate-pulse bg-slate-200 dark:bg-slate-700/50 rounded" aria-hidden="true" />
-        <div className="h-6 w-24 animate-pulse bg-slate-200 dark:bg-slate-700/50 rounded-full" aria-hidden="true" />
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
+        <div className="h-4 w-2/5 animate-pulse bg-slate-200 dark:bg-slate-700/50 rounded" aria-hidden="true" />
+        <div className="h-6 w-1/4 animate-pulse bg-slate-200 dark:bg-slate-700/50 rounded-full" aria-hidden="true" />
       </div>
       <div className="space-y-3">
-        <div className="h-10 w-56 animate-pulse bg-slate-200 dark:bg-slate-700/50 rounded" aria-hidden="true" />
+        <div className="h-10 w-3/4 animate-pulse bg-slate-200 dark:bg-slate-700/50 rounded" aria-hidden="true" />
         <div className="h-4 w-44 animate-pulse bg-slate-200 dark:bg-slate-700/50 rounded" aria-hidden="true" />
         <div className="h-4 w-36 animate-pulse bg-slate-200 dark:bg-slate-700/50 rounded" aria-hidden="true" />
       </div>
@@ -120,7 +121,7 @@ function ShareMechanicsPanel({ onClose }: { onClose: () => void }) {
  */
 export function ShareRateCard({ publicKey, refreshKey = 0 }: ShareRateCardProps) {
   const [data, setData] = useState<ShareData | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [infoOpen, setInfoOpen] = useState(false);
   const mountedRef = useRef(true);
@@ -155,7 +156,7 @@ export function ShareRateCard({ publicKey, refreshKey = 0 }: ShareRateCardProps)
   const usdcEquivalent = data?.usdcEquivalent ?? 0;
 
   return (
-    <div className="glass-panel-interactive rounded-2xl p-6 relative overflow-hidden">
+    <div className={`glass-panel-interactive rounded-2xl p-6 relative overflow-hidden ${SHARE_CARD_SIZE}`}>
       {/* Ambient glow */}
       <div
         className="absolute top-0 right-0 w-40 h-40 bg-indigo-500/10 rounded-full blur-3xl pointer-events-none"
@@ -163,7 +164,7 @@ export function ShareRateCard({ publicKey, refreshKey = 0 }: ShareRateCardProps)
       />
 
       {/* Header row */}
-      <div className="flex items-center justify-between mb-4">
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
         <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
           <Layers size={14} className="text-indigo-400" aria-hidden="true" />
           Vault Shares
@@ -207,9 +208,9 @@ export function ShareRateCard({ publicKey, refreshKey = 0 }: ShareRateCardProps)
 
       {/* Primary value — shares held */}
       <div className="mb-4">
-        <div className="flex items-baseline gap-2">
+        <div className="flex flex-wrap items-baseline gap-2">
           <span
-            className="text-3xl font-extrabold tracking-tight text-slate-900 dark:text-white font-mono"
+            className="break-all text-3xl font-extrabold tracking-tight text-slate-900 dark:text-white font-mono"
             aria-label={`${formatShares(isConnected ? shares : 0)} shares`}
           >
             {isConnected ? formatShares(shares) : '0.0000000'}

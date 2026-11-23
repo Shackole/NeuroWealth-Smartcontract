@@ -2,6 +2,7 @@
 
 import React from 'react';
 import { DollarSign, ArrowUpRight, ArrowDownLeft, ShieldCheck } from 'lucide-react';
+import { SUMMARY_CARD_SIZE } from './dashboardCardLayout';
 
 interface BalanceCardProps {
   balance: number;
@@ -21,10 +22,10 @@ export const BalanceCard: React.FC<BalanceCardProps> = ({
   isConnected
 }) => {
   return (
-    <div className="glass-panel-interactive rounded-2xl p-6 relative overflow-hidden">
+    <div className={`glass-panel-interactive rounded-2xl p-4 sm:p-6 relative overflow-hidden ${SUMMARY_CARD_SIZE}`}>
       <div className="absolute top-0 right-0 w-48 h-48 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none" />
       
-      <div className="flex items-center justify-between mb-4">
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
         <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
           <DollarSign size={14} className="text-emerald-400" /> Total Portfolio Value
         </span>
@@ -34,8 +35,8 @@ export const BalanceCard: React.FC<BalanceCardProps> = ({
       </div>
 
       <div className="mb-6">
-        <div className="flex items-baseline gap-2">
-          <span className="text-4xl font-extrabold tracking-tight text-white font-mono">
+        <div className="flex flex-wrap items-baseline gap-2">
+          <span className="break-all text-4xl font-extrabold tracking-tight text-white font-mono">
             {isConnected ? balance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00'}
           </span>
           <span className="text-lg font-bold text-emerald-400">USDC</span>
@@ -50,7 +51,7 @@ export const BalanceCard: React.FC<BalanceCardProps> = ({
         <button
           onClick={onOpenDeposit}
           disabled={!isConnected}
-          className="flex items-center justify-center gap-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold py-3 px-4 min-h-[44px] rounded-xl transition-all shadow-glow-emerald disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus-dark focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950"
+          className="flex items-center justify-center gap-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold py-3 px-2 sm:px-4 min-h-[44px] rounded-xl transition-all shadow-glow-emerald disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus-dark focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950"
         >
           <ArrowDownLeft size={18} aria-hidden="true" />
           <span>Deposit</span>
@@ -59,7 +60,7 @@ export const BalanceCard: React.FC<BalanceCardProps> = ({
         <button
           onClick={onOpenWithdraw}
           disabled={!isConnected}
-          className="flex items-center justify-center gap-2 bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold py-3 px-4 min-h-[44px] rounded-xl border border-slate-700 transition-all disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus-dark focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950"
+          className="flex items-center justify-center gap-2 bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold py-3 px-2 sm:px-4 min-h-[44px] rounded-xl border border-slate-700 transition-all disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus-dark focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950"
         >
           <ArrowUpRight size={18} aria-hidden="true" />
           <span>Withdraw</span>
