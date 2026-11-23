@@ -3,6 +3,8 @@
 import React, { useState, useMemo } from 'react';
 import { ArrowDownLeft, ArrowUpRight, RefreshCw, ExternalLink, Download, Filter, ChevronDown } from 'lucide-react';
 import { TransactionRecord } from '@/lib/database';
+import { getExplorerUrl } from '@/lib/explorer';
+import { useWalletStore } from '@/lib/walletStore';
 
 interface TransactionHistoryProps {
   transactions: TransactionRecord[];
@@ -91,6 +93,8 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({ transact
     const filtered = filterTransactions(transactions, typeFilter);
     return sortTransactions(filtered, sortField, sortDirection);
   }, [transactions, typeFilter, sortField, sortDirection]);
+
+  const network = useWalletStore((state) => state.network);
 
   const earnings = useMemo(() => {
     return calculateEarnings(transactions, earningsPeriod);
@@ -210,15 +214,7 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({ transact
                   {tx.amount.toLocaleString()} USDC
                 </td>
                 <td className="py-3 px-4 text-slate-400">
-                  <a
-                    href={`https://stellar.expert/explorer/testnet/tx/${tx.txHash}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="flex items-center gap-1 hover:text-emerald-400 transition-colors"
-                  >
-                    <span>{tx.txHash}</span>
-                    <ExternalLink size={12} />
-                  </a>
+                  <ActivityTransactionLink hash={tx.txHash} network={network} />
                 </td>
                 <td className="py-3 px-4 text-slate-400">{tx.timestamp}</td>
                 <td className="py-3 px-4 text-right">
@@ -240,3 +236,20 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({ transact
     </div>
   );
 };
+
+function ActivityTransactionLink({ hash, network }: { hash?: string; network: string }) {
+  const url = getExplorerUrl(hash, network);
+  if (!url) return <span>{hash || '—'}</span>;
+
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noreferrer"
+      className="flex items-center gap-1 hover:text-emerald-400 transition-colors"
+    >
+      <span>{hash}</span>
+      <ExternalLink size={12} aria-hidden="true" />
+    </a>
+  );
+}

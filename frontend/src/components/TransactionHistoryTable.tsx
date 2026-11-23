@@ -26,6 +26,9 @@ import {
 } from 'lucide-react';
 import { getRecentTransactions, type TransactionRecord } from '@/lib/database';
 
+import { getExplorerUrl } from '@/lib/explorer';
+import { useWalletStore } from '@/lib/walletStore';
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function shortenHash(hash: string): string {
@@ -147,18 +150,7 @@ const columns = [
   }),
   col.accessor('txHash', {
     header: 'Explorer',
-    cell: (info) => (
-      <a
-        href={`https://stellar.expert/explorer/testnet/tx/${info.getValue()}`}
-        target="_blank"
-        rel="noreferrer"
-        className="flex items-center gap-1 text-slate-400 hover:text-emerald-400 transition-colors font-mono text-xs"
-        aria-label={`View transaction ${info.getValue()} on Stellar Expert`}
-      >
-        {shortenHash(info.getValue())}
-        <ExternalLink size={12} />
-      </a>
-    ),
+    cell: (info) => <HistoryTransactionLink hash={info.getValue()} />,
     enableSorting: false,
   }),
 ];
@@ -361,7 +353,7 @@ export const TransactionHistoryTable: React.FC<TransactionHistoryTableProps> = (
                     {transaction.address && <><dt className="text-slate-400">Wallet address</dt><dd className="flex min-w-0 items-start gap-1 text-slate-200"><span className="break-all font-mono">{transaction.address}</span><button type="button" onClick={() => void copyValue(transaction.address!)} className="min-h-11 min-w-11 shrink-0 rounded p-3 text-slate-300 hover:bg-slate-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400" aria-label={copiedValue === transaction.address ? 'Wallet address copied' : 'Copy wallet address'}>{copiedValue === transaction.address ? <Check size={15} /> : <Copy size={15} />}</button></dd></>}
                   </dl>
                   <div className="mt-3 flex min-w-0 items-center gap-2 border-t border-slate-800 pt-3">
-                    <a href={`https://stellar.expert/explorer/testnet/tx/${fullHash}`} target="_blank" rel="noreferrer" className="min-w-0 flex-1 break-all font-mono text-xs text-emerald-300 underline underline-offset-2">{fullHash}<span className="sr-only"> (open transaction in Stellar Expert)</span></a>
+                    <HistoryTransactionLink hash={fullHash} showFullHash />
                     <button type="button" onClick={() => void copyValue(fullHash)} className="min-h-11 min-w-11 shrink-0 rounded-lg border border-slate-700 p-3 text-slate-200 hover:bg-slate-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400" aria-label={copiedValue === fullHash ? 'Transaction hash copied' : 'Copy transaction hash'}>{copiedValue === fullHash ? <Check size={16} /> : <Copy size={16} />}</button>
                   </div>
                 </li>
@@ -405,3 +397,26 @@ export const TransactionHistoryTable: React.FC<TransactionHistoryTableProps> = (
     </div>
   );
 };
+
+function HistoryTransactionLink({ hash, showFullHash = false }: { hash: string; showFullHash?: boolean }) {
+  const network = useWalletStore((state) => state.network);
+  const url = getExplorerUrl(hash, network);
+  const label = showFullHash ? hash : shortenHash(hash);
+
+  if (!url) return <span className="min-w-0 break-all font-mono text-xs text-slate-400">{label || '—'}</span>;
+
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noreferrer"
+      className={showFullHash
+        ? 'min-w-0 flex-1 break-all font-mono text-xs text-emerald-300 underline underline-offset-2'
+        : 'flex items-center gap-1 font-mono text-xs text-slate-400 hover:text-emerald-400 transition-colors'}
+      aria-label={`View transaction ${hash} on Stellar Expert`}
+    >
+      {label}
+      {!showFullHash && <ExternalLink size={12} aria-hidden="true" />}
+    </a>
+  );
+}

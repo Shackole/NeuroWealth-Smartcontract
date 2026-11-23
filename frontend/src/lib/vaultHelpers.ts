@@ -18,6 +18,7 @@ import {
   scValToNative,
 } from '@stellar/stellar-sdk';
 
+import { getExplorerUrl } from './explorer';
 import { signWithFreighter } from '@/lib/freighter';
 import type { Strategy } from '@/lib/depositSchema';
 import { getVaultErrorPresentation } from '@/lib/vaultErrors';
@@ -33,12 +34,9 @@ const VAULT_CONTRACT_ID =
   process.env.NEXT_PUBLIC_VAULT_CONTRACT_ID ||
   'CDLZFC3SYJYD7M6LJEFAPCHRLHAFKP6WYTHRF3EGO5CYD3EP4GZGM37T';
 
-// ─── Stellar testnet explorer ─────────────────────────────────────────────────
-export const EXPLORER_BASE_URL = 'https://stellar.expert/explorer/testnet/tx';
-
-/** Build a Stellar Expert link for a transaction hash. */
-export function explorerUrl(txHash: string): string {
-  return `${EXPLORER_BASE_URL}/${txHash}`;
+/** Build an explorer link for the same network used to submit vault transactions. */
+export function explorerUrl(txHash: string): string | undefined {
+  return getExplorerUrl(txHash, NETWORK_PASSPHRASE);
 }
 
 // ─── Unit helpers ─────────────────────────────────────────────────────────────
