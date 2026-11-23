@@ -33,23 +33,24 @@ export class ApyRetryBudget {
     const remaining = this.deadline - performance.now();
     if (remaining <= 0) throw new Error('APY provider retry window expired');
 
+    let backoff: number;
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       return await Promise.race([
         new Promise<never>((_, reject) => {
-          timer = setTimeout(() => reject(new Error('APY provider retry window expired')), remaining);
+          timer = setTimeout(() => reject(new Error('APY provider retry window expired')), Math.ceil(remaining));
         }),
         request(),
       ]);
     } catch (error) {
       if (!isRetryable(error) || this.retriesRemaining === 0) throw error;
-      const backoff = this.retriesRemaining === 2 ? 100 : 200;
+      backoff = this.retriesRemaining === 2 ? 100 : 200;
       if (this.deadline - performance.now() <= backoff) throw error;
       this.retriesRemaining--;
-      await delay(backoff);
     } finally {
       clearTimeout(timer);
     }
+    await delay(backoff);
     return this.run(request);
   }
 }
