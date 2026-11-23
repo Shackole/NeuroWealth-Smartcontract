@@ -137,6 +137,18 @@ export default async function VaultStatsPage({
   const [filters, stats] = await Promise.all([searchParams, fetchVaultStats()]);
   const period = filters.period === '7d' ? '7d' : '30d';
   const asset = filters.asset === 'nv-share' ? 'nv-share' : 'usdc';
+  const filterHref = (nextPeriod: string, nextAsset: string) => {
+    const query = new URLSearchParams();
+    for (const [name, value] of Object.entries(filters)) {
+      if (name === 'period' || name === 'asset' || value === undefined) continue;
+      for (const entry of [value].flat()) query.append(name, entry);
+    }
+    query.set('period', nextPeriod);
+    query.set('asset', nextAsset);
+    return `?${query.toString()}`;
+  };
+  const filterClassName = 'rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300 hover:bg-slate-800 aria-[current=true]:border-emerald-500 aria-[current=true]:bg-emerald-500/10 aria-[current=true]:text-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400';
+
   const days = period === '7d' ? 7 : 30;
   const unit = asset === 'usdc' ? 'USDC per NV-SHARE' : 'NV-SHARE per USDC';
   const rateHistory = stats.rateHistory.slice(-days).map((point) => ({
@@ -271,31 +283,28 @@ export default async function VaultStatsPage({
               </span>
             )}
           </div>
-          <form method="get" className="mb-5 flex flex-wrap items-end gap-3">
-            {Object.entries(filters).flatMap(([name, value]) =>
-              name === 'period' || name === 'asset' || value === undefined ? [] :
-                [value].flat().map((entry, index) => (
-                  <input key={`${name}-${index}`} type="hidden" name={name} value={entry} />
-                )),
-            )}
-            <label className="grid gap-1 text-xs text-slate-300">
-              Time period
-              <select key={period} name="period" defaultValue={period} className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2">
-                <option value="7d">Last 7 days</option>
-                <option value="30d">Last 30 days</option>
-              </select>
-            </label>
-            <label className="grid gap-1 text-xs text-slate-300">
-              Quote asset
-              <select key={asset} name="asset" defaultValue={asset} className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2">
-                <option value="usdc">USDC</option>
-                <option value="nv-share">NV-SHARE</option>
-              </select>
-            </label>
-            <button type="submit" className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs font-semibold text-white">
-              Apply filters
-            </button>
-          </form>
+          <nav aria-label="Exchange rate filters" className="mb-5 flex flex-wrap gap-4">
+            <div role="group" aria-label="Time period" className="grid gap-1">
+              <span className="text-xs text-slate-300">Time period</span>
+              <div className="flex flex-wrap gap-1">
+                {(['7d', '30d'] as const).map((option) => (
+                  <a key={option} href={filterHref(option, asset)} aria-current={period === option} className={filterClassName}>
+                    {option === '7d' ? 'Last 7 days' : 'Last 30 days'}
+                  </a>
+                ))}
+              </div>
+            </div>
+            <div role="group" aria-label="Quote asset" className="grid gap-1">
+              <span className="text-xs text-slate-300">Quote asset</span>
+              <div className="flex flex-wrap gap-1">
+                {(['usdc', 'nv-share'] as const).map((option) => (
+                  <a key={option} href={filterHref(period, option)} aria-current={asset === option} className={filterClassName}>
+                    {option.toUpperCase()}
+                  </a>
+                ))}
+              </div>
+            </div>
+          </nav>
           {rateHistory.length > 0 ? (
             <ExchangeRateChart data={rateHistory} unit={unit} />
           ) : (
