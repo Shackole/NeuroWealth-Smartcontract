@@ -18,9 +18,9 @@
  *  - Uses @stellar/stellar-sdk to submit the rebalance transaction
  */
 
+import { recordYieldSkip, type YieldSkipReason } from './operationalMetrics';
 import { Pool } from 'pg';
 import logger from './logger';
-import { recordYieldSkip, type YieldSkipReason } from './operationalMetrics';
 import { YieldComparisonEngine, ProtocolYieldData } from './yieldComparison';
 
 // A 1,000% APY is the upper sanity bound for automated allocation inputs.
