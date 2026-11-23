@@ -4,6 +4,7 @@ import React from 'react';
 import { Wallet, LogOut } from 'lucide-react';
 import { shortenAddress } from '@/lib/stellar';
 import { useWalletStore } from '@/lib/walletStore';
+import { AccountAddress } from './AccountAddress';
 
 interface WalletConnectProps {
   publicKey: string | null;
@@ -35,7 +36,7 @@ export const WalletConnect: React.FC<WalletConnectProps> = ({
           <summary className="cursor-pointer underline underline-offset-2">Account details</summary>
           <div className="absolute right-0 top-6 z-50 w-72 rounded-lg border border-slate-700 bg-slate-950 p-3 shadow-xl">
             <p className="mb-1 font-semibold">{network === 'unknown' ? 'Network not confirmed' : network}</p>
-            <p className="break-all font-mono text-slate-400">{publicKey}</p>
+            <AccountAddress key={publicKey} address={publicKey} />
           </div>
         </details>
         <button
