@@ -64,6 +64,35 @@ export interface ReconciliationMismatch {
   delta: bigint;
 }
 
+export interface ReconciliationAssetSummary {
+  asset: string;
+  mismatchCount: number;
+  /** Net DB minus on-chain shares as a signed, fixed 7-decimal string. */
+  netDelta: string;
+}
+
+export function summarizeDiscrepancies(
+  mismatches: readonly ReconciliationMismatch[],
+): ReconciliationAssetSummary[] {
+  const totals = new Map<string, { mismatchCount: number; delta: bigint }>();
+  for (const { asset, delta } of mismatches) {
+    const total = totals.get(asset) ?? { mismatchCount: 0, delta: 0n };
+    total.mismatchCount += 1;
+    total.delta += delta;
+    totals.set(asset, total);
+  }
+
+  return [...totals.keys()].sort().map((asset) => {
+    const { mismatchCount, delta } = totals.get(asset)!;
+    const magnitude = (delta < 0n ? -delta : delta).toString().padStart(8, '0');
+    return {
+      asset,
+      mismatchCount,
+      netDelta: `${delta < 0n ? '-' : ''}${magnitude.slice(0, -7)}.${magnitude.slice(-7)}`,
+    };
+  });
+}
+
 /** Summary returned by a full reconciliation run. */
 export interface ReconciliationResult {
   /** Ledger sequence used as the comparison pin for this run. */
@@ -74,6 +103,7 @@ export interface ReconciliationResult {
   mismatchCount: number;
   /** All mismatches found during this run. */
   mismatches: ReconciliationMismatch[];
+  discrepanciesByAsset: ReconciliationAssetSummary[];
   /** Wall-clock duration of the run in milliseconds. */
   durationMs: number;
 }
@@ -351,6 +381,7 @@ export async function reconcilePositions(
     addressesChecked: dbPositions.size,
     mismatchCount: mismatches.length,
     mismatches,
+    discrepanciesByAsset: summarizeDiscrepancies(mismatches),
     durationMs,
   };
 
@@ -359,6 +390,7 @@ export async function reconcilePositions(
       ledger,
       addressesChecked: result.addressesChecked,
       mismatchCount: result.mismatchCount,
+      discrepanciesByAsset: result.discrepanciesByAsset,
       durationMs,
     },
     'reconcile: pass complete',

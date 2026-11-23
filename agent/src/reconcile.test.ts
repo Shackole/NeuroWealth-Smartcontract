@@ -16,6 +16,7 @@ import {
   ReconciliationMismatch,
   ReconciliationResult,
   ReconcileOptions,
+  summarizeDiscrepancies,
 } from './reconcile';
 
 // ---------------------------------------------------------------------------
@@ -90,6 +91,7 @@ describe('ReconciliationResult shape (Issue #425)', () => {
       addressesChecked: 100,
       mismatchCount: 3,
       mismatches: [],
+      discrepanciesByAsset: [],
       durationMs: 450,
     };
 
@@ -124,6 +126,7 @@ describe('ReconciliationResult shape (Issue #425)', () => {
       addressesChecked: 50,
       mismatchCount: mismatches.length,
       mismatches,
+      discrepanciesByAsset: summarizeDiscrepancies(mismatches),
       durationMs: 120,
     };
     assert.strictEqual(result.mismatchCount, result.mismatches.length);
@@ -175,4 +178,21 @@ describe('Read-only guarantee (Issue #425)', () => {
       }
     }
   });
+});
+
+it('summarizes mismatches in asset order with exact signed decimal totals', () => {
+  const mismatch = (asset: string, delta: bigint): ReconciliationMismatch => ({
+    asset, delta, address: 'G_FIXTURE', ledger: 1, dbShares: 0n, onchainShares: -delta,
+  });
+  assert.deepStrictEqual(summarizeDiscrepancies([
+    mismatch('Z', -1n),
+    mismatch('A', 9_007_199_254_740_991_234_567n),
+    mismatch('A', -7n),
+    mismatch('B', -10n),
+    mismatch('B', 10n),
+  ]), [
+    { asset: 'A', mismatchCount: 2, netDelta: '900719925474099.1234560' },
+    { asset: 'B', mismatchCount: 2, netDelta: '0.0000000' },
+    { asset: 'Z', mismatchCount: 1, netDelta: '-0.0000001' },
+  ]);
 });
