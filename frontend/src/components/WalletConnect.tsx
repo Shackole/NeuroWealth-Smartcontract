@@ -10,13 +10,15 @@ interface WalletConnectProps {
   onConnect: () => void;
   onDisconnect: () => void;
   isConnecting?: boolean;
+  canRetry?: boolean;
 }
 
 export const WalletConnect: React.FC<WalletConnectProps> = ({
   publicKey,
   onConnect,
   onDisconnect,
-  isConnecting
+  isConnecting,
+  canRetry,
 }) => {
   const network = useWalletStore((state) => state.network);
   if (publicKey) {
@@ -56,7 +58,7 @@ export const WalletConnect: React.FC<WalletConnectProps> = ({
       className="relative group flex items-center gap-2 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-slate-950 font-semibold px-5 py-2.5 min-h-[44px] rounded-full transition-all shadow-glow-emerald hover:shadow-lg disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950"
     >
       <Wallet size={18} className="text-slate-950" aria-hidden="true" />
-      <span>{isConnecting ? 'Connecting...' : 'Connect Wallet'}</span>
+      <span>{isConnecting ? 'Connecting...' : canRetry ? 'Retry Wallet Connection' : 'Connect Wallet'}</span>
     </button>
   );
 };
