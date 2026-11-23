@@ -4,11 +4,11 @@
   "description": "",
   "main": "index.js",
   "scripts": {
+    "pretest": "tsx --test src/apy*.test.ts",
     "build": "tsc",
     "test": "tsx src/openAiKeyManager.test.ts && tsx src/rateLimiter.test.ts && tsx src/db.test.ts",
     "start:prod": "npx ts-node src/index.ts",
-    "start:dev": "ts-node src/index.ts",
-    "posttest": "tsx src/providerTimestamp.test.ts"
+    "start:dev": "ts-node src/index.ts"
   },
   "keywords": [],
   "author": "",
