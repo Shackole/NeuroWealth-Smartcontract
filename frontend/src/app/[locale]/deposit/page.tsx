@@ -1,5 +1,7 @@
 'use client';
 
+import { AssetAmountInput } from '@/components/AssetAmountInput';
+
 import React, { useState } from 'react';
 import { Header } from '@/components/Header';
 import { Zap, ShieldCheck, ArrowRight } from 'lucide-react';
@@ -59,9 +61,9 @@ export default function DepositPage() {
                 Deposit Amount (USDC)
               </label>
               <div className="relative">
-                <input
+                <AssetAmountInput
                   id="deposit-amount"
-                  type="number"
+                  onPasteAmount={setAmount}
                   min="1"
                   step="any"
                   required

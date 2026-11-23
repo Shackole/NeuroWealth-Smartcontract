@@ -1,5 +1,7 @@
 'use client';
 
+import { AssetAmountInput } from '@/components/AssetAmountInput';
+
 import React, { useState, useEffect, useCallback } from 'react';
 import { X, ArrowDownLeft, ArrowUpRight, Loader2, RefreshCw } from 'lucide-react';
 import { signWithFreighter } from '@/lib/freighter';
@@ -280,8 +282,8 @@ export const ActionModal: React.FC<ActionModalProps> = ({
               </span>
             </div>
             <div className="relative">
-              <input
-                type="number"
+              <AssetAmountInput
+                onPasteAmount={setAmount}
                 step="0.01"
                 min="1"
                 max={
