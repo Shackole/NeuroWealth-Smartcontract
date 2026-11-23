@@ -12,6 +12,16 @@ export interface ProtocolYieldData {
   fetchedAt?: number;
 }
 
+// Bump when ranking or the rebalance decision formula changes.
+export const YIELD_MODEL_REVISION = 'yield-ranking-v1';
+
+export interface StrategyDecisionInputs {
+  modelRevision: string;
+  riskFreeRate: number;
+  minImprovementThreshold: number;
+  observations: Array<Omit<ProtocolYieldData, 'fetchedAt'> & { fetchedAt: number | null }>;
+}
+
 export interface YieldOpportunity {
   protocolId: string;
   name: string;
@@ -27,6 +37,18 @@ export class YieldComparisonEngine {
   constructor(minImprovementThreshold = 0.005, riskFreeRate = 0.04) {
     this.minImprovementThreshold = minImprovementThreshold;
     this.riskFreeRate = riskFreeRate;
+  }
+
+  public snapshotInputs(protocols: readonly ProtocolYieldData[]): StrategyDecisionInputs {
+    return {
+      modelRevision: YIELD_MODEL_REVISION,
+      riskFreeRate: this.riskFreeRate,
+      minImprovementThreshold: this.minImprovementThreshold,
+      observations: protocols.map((protocol) => ({
+        ...protocol,
+        fetchedAt: protocol.fetchedAt ?? null,
+      })),
+    };
   }
 
   public calculateSharpeRatio(apy: number, volatility: number): number {

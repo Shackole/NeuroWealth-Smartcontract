@@ -20,7 +20,7 @@
 
 import { Pool } from 'pg';
 import logger from './logger';
-import { YieldComparisonEngine, ProtocolYieldData } from './yieldComparison';
+import { YieldComparisonEngine, ProtocolYieldData, type StrategyDecisionInputs } from './yieldComparison';
 
 // A 1,000% APY is the upper sanity bound for automated allocation inputs.
 const MAX_APY_DECIMAL = 10;
@@ -145,20 +145,37 @@ const CREATE_TABLE_SQL = `
     error          TEXT,
     created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
   );
+  ALTER TABLE yield_check_history ADD COLUMN IF NOT EXISTS input_snapshot JSONB;
 `;
 
 async function ensureTable(pool: Pool): Promise<void> {
   await pool.query(CREATE_TABLE_SQL);
 }
 
-async function storeResult(pool: Pool, result: YieldCheckResult): Promise<void> {
+/** Read the saved inputs by history row ID. Older decisions may have no snapshot. */
+export async function readStrategyDecisionInputs(
+  pool: Pool,
+  historyId: string,
+): Promise<StrategyDecisionInputs | null> {
+  const { rows } = await pool.query<{ input_snapshot: StrategyDecisionInputs | null }>(
+    'SELECT input_snapshot FROM yield_check_history WHERE id = $1',
+    [historyId],
+  );
+  return rows[0]?.input_snapshot ?? null;
+}
+
+async function storeResult(
+  pool: Pool,
+  result: YieldCheckResult,
+  inputSnapshot?: StrategyDecisionInputs,
+): Promise<void> {
   const sql = `
     INSERT INTO yield_check_history (
       job_id, checked_at, current_protocol, current_apy, best_protocol, best_apy,
       rebalance_triggered, skip_reason, tx_hash, min_out, deployed_amount,
-      cooldown_remaining, error
+      cooldown_remaining, error, input_snapshot
     ) VALUES (
-      $1, to_timestamp($2 / 1000.0), $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
+      $1, to_timestamp($2 / 1000.0), $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb
     )
   `;
   await pool.query(sql, [
@@ -175,6 +192,7 @@ async function storeResult(pool: Pool, result: YieldCheckResult): Promise<void> 
     result.deployedAmount ?? null,
     result.cooldownLedgersRemaining ?? null,
     result.error ?? null,
+    inputSnapshot ? JSON.stringify(inputSnapshot) : null,
   ]);
 }
 
@@ -229,9 +247,10 @@ export class YieldCheckJob {
 
     logger.info({ jobId }, 'Yield check job started');
 
+    let inputSnapshot: StrategyDecisionInputs | undefined;
     let result: YieldCheckResult;
     try {
-      result = await this.execute(jobId, checkedAt);
+      result = await this.execute(jobId, checkedAt, (snapshot) => { inputSnapshot = snapshot; });
     } catch (err) {
       result = {
         jobId,
@@ -248,7 +267,7 @@ export class YieldCheckJob {
 
     // Persist regardless of outcome
     try {
-      await withTimeout(storeResult(this.pool, result), 'database result persistence', this.dependencyTimeoutMs());
+      await withTimeout(storeResult(this.pool, result, inputSnapshot), 'database result persistence', this.dependencyTimeoutMs());
     } catch (err) {
       const persistError = `result_persist_failed: ${err instanceof Error ? err.message : String(err)}`;
       result.error = result.error ? `${result.error}; ${persistError}` : persistError;
@@ -293,7 +312,11 @@ export class YieldCheckJob {
 
   // ── Core execution ────────────────────────────────────────────────────────
 
-  private async execute(jobId: string, checkedAt: number): Promise<YieldCheckResult> {
+  private async execute(
+    jobId: string,
+    checkedAt: number,
+    captureInputs: (snapshot: StrategyDecisionInputs) => void,
+  ): Promise<YieldCheckResult> {
     // 1. Fetch current protocol and deployed amount
     const { protocolId: currentProtocol, deployedAmountStroops } = await withTimeout(
       this.hooks.getCurrentProtocol(), 'current vault state', this.dependencyTimeoutMs(),
@@ -382,6 +405,7 @@ export class YieldCheckJob {
     }
     const currentApy = currentSnapshot.currentApy;
 
+    captureInputs(this.engine.snapshotInputs(yieldSnapshots));
     const ranked = this.engine.rankOpportunities(yieldSnapshots).filter(
       (opportunity) => Number.isFinite(opportunity.netApy) && Number.isFinite(opportunity.riskAdjustedScore),
     );
