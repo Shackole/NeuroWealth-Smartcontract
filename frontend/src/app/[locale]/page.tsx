@@ -2,6 +2,7 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
+import { useLocale } from 'next-intl';
 import {
   ArrowRight,
   Bot,
@@ -126,6 +127,7 @@ function FaqItem({ q, a }: { q: string; a: string }) {
 // ─── Main landing page ────────────────────────────────────────────────────────
 
 export default function LandingPage() {
+  const locale = useLocale();
   const [stats, setStats] = useState<PlatformStats>({
     tvl: 2_840_000,
     avgApy: 8.4,
@@ -222,7 +224,7 @@ export default function LandingPage() {
 
             <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
               <Link
-                href="/dashboard"
+                href={`/${locale}/dashboard`}
                 className="flex items-center gap-2 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-slate-950 font-bold px-8 py-3.5 rounded-full transition-all shadow-[0_0_25px_-5px_rgba(16,185,129,0.5)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400"
               >
                 Start Earning <ArrowRight size={18} aria-hidden="true" />
@@ -397,7 +399,7 @@ export default function LandingPage() {
 
             <div className="mt-8 text-center">
               <Link
-                href="/dashboard"
+                href={`/${locale}/dashboard`}
                 className="inline-flex items-center gap-2 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-slate-950 font-bold px-8 py-3.5 rounded-full transition-all focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400"
               >
                 Start Earning <ArrowRight size={18} aria-hidden="true" />
@@ -507,7 +509,7 @@ export default function LandingPage() {
               No lock-ups. No minimums beyond 1 USDC.
             </p>
             <Link
-              href="/dashboard"
+              href={`/${locale}/dashboard`}
               className="inline-flex items-center gap-2 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-slate-950 font-bold px-10 py-4 rounded-full text-lg transition-all shadow-[0_0_35px_-5px_rgba(16,185,129,0.5)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400"
             >
               Start Earning <ArrowRight size={20} aria-hidden="true" />
@@ -559,17 +561,17 @@ export default function LandingPage() {
               </h3>
               <ul className="space-y-3 text-sm text-slate-400">
                 <li>
-                  <Link href="/dashboard" className="hover:text-white transition-colors">
+                  <Link href={`/${locale}/dashboard`} className="hover:text-white transition-colors">
                     Dashboard
                   </Link>
                 </li>
                 <li>
-                  <Link href="/learn" className="hover:text-white transition-colors">
+                  <Link href={`/${locale}/learn`} className="hover:text-white transition-colors">
                     Learn
                   </Link>
                 </li>
                 <li>
-                  <Link href="/stats" className="hover:text-white transition-colors">
+                  <Link href={`/${locale}/stats`} className="hover:text-white transition-colors">
                     Stats
                   </Link>
                 </li>
