@@ -26,9 +26,9 @@ Use dark text, light paper backgrounds and visible row dividers so the record re
 
 ## Example
 
-**Vault activity summary**  
-USDC Vault · Stellar Mainnet · full vault contract ID and public account address  
-1–31 Oct 2026 · UTC · All activity types and statuses · Newest first  
+**Vault activity summary**<br>
+USDC Vault · Stellar Mainnet · full vault contract ID and public account address<br>
+1–31 Oct 2026 · UTC · All activity types and statuses · Newest first<br>
 Generated 1 Nov 2026, 09:00 UTC · 42 events
 
 | Date and time (UTC) | Activity | Amount | Status |
