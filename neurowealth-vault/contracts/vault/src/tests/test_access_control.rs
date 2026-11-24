@@ -633,22 +633,27 @@ fn test_transfer_ownership_can_be_overwritten() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, _owner, _usdc_token) = setup_vault_with_token(&env);
+    let (contract_id, _agent, owner, _usdc_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
     let first_candidate = Address::generate(&env);
     let second_candidate = Address::generate(&env);
 
     client.transfer_ownership(&first_candidate);
-    assert_eq!(client.get_pending_owner().unwrap(), first_candidate);
+    let first = client.get_pending_ownership().expect("first proposal");
+    assert_eq!(first.pending_owner, first_candidate);
+    assert_eq!(first.timelock_expiry, 0);
 
-    // Overwrite with a different candidate
     client.transfer_ownership(&second_candidate);
-    assert_eq!(
-        client.get_pending_owner().unwrap(),
-        second_candidate,
-        "Pending owner should be updated to the latest candidate"
-    );
+    let replacement = client.get_pending_ownership().expect("replacement proposal");
+    assert_eq!(replacement.pending_owner, second_candidate);
+    assert_eq!(replacement.timelock_expiry, 0);
+    assert_eq!(client.get_owner(), owner);
+
+    assert!(client.try_accept_ownership(&first_candidate).is_err());
+    client.accept_ownership(&second_candidate);
+    assert_eq!(client.get_owner(), second_candidate);
+    assert!(client.get_pending_ownership().is_none());
 }
 
 #[test]
