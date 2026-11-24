@@ -28,14 +28,16 @@ import logger from './logger';
 import {
   recordDeadLetterGrowth,
   recordQueueSubmissionFailure,
-  setQueueMetrics,
+  type TransactionJobClass,
 } from './operationalMetrics';
+import { readQueueStats, QUEUE_NAME, DLQ_NAME, type QueueStats } from './queueStats';
+export type { QueueStats } from './queueStats';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
 
-export type TransactionType = 'deposit' | 'withdrawal' | 'rebalance';
+export type TransactionType = TransactionJobClass;
 
 export interface TransactionJobData {
   /** Unique key used for deduplication — same key within TTL is skipped. */
@@ -72,8 +74,6 @@ const NETWORK_PASSPHRASE =
     : Networks.TESTNET;
 const AGENT_SECRET = process.env.AGENT_SECRET_KEY || '';
 
-const QUEUE_NAME = 'transactions';
-const DLQ_NAME = 'transactions:failed';
 const CONCURRENCY = 5;
 const MAX_SEQUENCE_RETRIES = 3;
 const DEDUP_TTL_MS = 60_000; // 60 seconds
@@ -365,66 +365,8 @@ transactionQueue.on('error', (err: Error) => {
 // Stats helper — used by the /api/queue/stats endpoint
 // ─────────────────────────────────────────────────────────────────────────────
 
-export interface QueueStats {
-  queue: string;
-  waiting: number;
-  active: number;
-  completed: number;
-  failed: number;
-  delayed: number;
-  paused: boolean;
-  deadLetter: {
-    queue: string;
-    waiting: number;
-    failed: number;
-  };
-  oldestPendingAgeSeconds: number;
-}
-
-export async function getQueueStats(): Promise<QueueStats> {
-  const [waiting, active, completed, failed, delayed, isPaused, pendingJobs] =
-    await Promise.all([
-      transactionQueue.getWaitingCount(),
-      transactionQueue.getActiveCount(),
-      transactionQueue.getCompletedCount(),
-      transactionQueue.getFailedCount(),
-      transactionQueue.getDelayedCount(),
-      transactionQueue.isPaused(),
-      transactionQueue.getJobs(['waiting', 'delayed'], 0, 0),
-    ]);
-
-  const [dlqWaiting, dlqFailed] = await Promise.all([
-    deadLetterQueue.getWaitingCount(),
-    deadLetterQueue.getFailedCount(),
-  ]);
-
-  const now = Date.now();
-  const oldestPendingAgeSeconds = pendingJobs.reduce(
-    (oldest, job) => Math.max(oldest, Math.max(0, now - job.timestamp) / 1000),
-    0,
-  );
-  setQueueMetrics({
-    pending: waiting + delayed,
-    oldestPendingAgeSeconds,
-    activeWorkers: active,
-    deadLetterJobs: dlqWaiting,
-  });
-
-  return {
-    queue: QUEUE_NAME,
-    waiting,
-    active,
-    completed,
-    failed,
-    delayed,
-    oldestPendingAgeSeconds,
-    paused: isPaused,
-    deadLetter: {
-      queue: DLQ_NAME,
-      waiting: dlqWaiting,
-      failed: dlqFailed,
-    },
-  };
+export function getQueueStats(): Promise<QueueStats> {
+  return readQueueStats(transactionQueue, deadLetterQueue);
 }
 
 /**

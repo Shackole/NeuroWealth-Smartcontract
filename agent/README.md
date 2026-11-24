@@ -113,9 +113,9 @@ There are parallel source modules that are not wired into this entrypoint:
 - `src/metricsApi.ts` exports `startMetricsServer`; `src/index.ts` does not call
   it. Metrics routes are therefore not part of the production HTTP process
   unless another launcher starts that server.
-- `src/queueRouter.ts` and additional workers/utilities are not mounted from
-  `index.ts`; check imports before treating them as live HTTP endpoints or
-  background jobs.
+- With `REDIS_URL` set, the agent exposes `GET /api/queue/stats` and Prometheus
+  metrics at `GET /metrics`. The monitor reads the transaction and dead-letter
+  queues without starting a transaction worker.
 
 The event listener polls Soroban RPC every five seconds and begins at the
 latest ledger after process startup. It does not restore a durable event

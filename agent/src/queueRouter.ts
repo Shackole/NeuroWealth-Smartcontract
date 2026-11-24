@@ -6,41 +6,43 @@
  */
 
 import { Router, Request, Response } from 'express';
-import { getQueueStats } from './transactionQueue';
+import Bull from 'bull';
+import { readQueueStats, QUEUE_NAME, DLQ_NAME } from './queueStats';
+import { renderOperationalMetrics } from './operationalMetrics';
 import logger from './logger';
 
-const queueRouter = Router();
+export function createQueueMonitor(redisUrl: string) {
+  const queueRouter = Router();
+  const transactions = new Bull(QUEUE_NAME, redisUrl);
+  const deadLetter = new Bull(DLQ_NAME, redisUrl);
+  const getQueueStats = () => readQueueStats(transactions, deadLetter);
 
-/**
- * GET /api/queue/stats
- *
- * Response shape:
- * ```json
- * {
- *   "queue": "transactions",
- *   "waiting": 3,
- *   "active": 1,
- *   "completed": 120,
- *   "failed": 2,
- *   "delayed": 0,
- *   "paused": false,
- *   "deadLetter": {
- *     "queue": "transactions:failed",
- *     "waiting": 2,
- *     "failed": 0
- *   }
- * }
- * ```
- */
-queueRouter.get('/api/queue/stats', async (_req: Request, res: Response) => {
-  try {
-    const stats = await getQueueStats();
-    res.json(stats);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    logger.error({ error: message }, 'Failed to fetch queue stats');
-    res.status(503).json({ error: 'Queue stats unavailable', detail: message });
+  for (const queue of [transactions, deadLetter]) {
+    queue.on('error', (err: Error) => logger.error({ err, queue: queue.name }, 'Queue monitor error'));
   }
-});
 
-export default queueRouter;
+  queueRouter.get('/api/queue/stats', async (_req: Request, res: Response) => {
+    try {
+      res.json(await getQueueStats());
+    } catch (err) {
+      logger.error({ err }, 'Failed to fetch queue stats');
+      res.status(503).json({ error: 'Queue stats unavailable' });
+    }
+  });
+
+  queueRouter.get('/metrics', async (_req: Request, res: Response) => {
+    try {
+      await getQueueStats();
+      res.set('Content-Type', 'text/plain; version=0.0.4; charset=utf-8');
+      res.send(renderOperationalMetrics());
+    } catch (err) {
+      logger.error({ err }, 'Failed to collect operational metrics');
+      res.sendStatus(503);
+    }
+  });
+
+  return {
+    router: queueRouter,
+    close: () => Promise.all([transactions.close(), deadLetter.close()]),
+  };
+}

@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "build": "tsc",
-    "test": "ts-node --transpile-only src/openAiKeyManager.test.ts && ts-node --transpile-only src/rateLimiter.test.ts && ts-node --transpile-only src/db.test.ts",
+    "test": "ts-node --transpile-only src/openAiKeyManager.test.ts && ts-node --transpile-only src/rateLimiter.test.ts && ts-node --transpile-only src/db.test.ts && ts-node --transpile-only src/operationalMetrics.test.ts",
     "start:prod": "npx ts-node src/index.ts",
     "start:dev": "ts-node src/index.ts"
   },
@@ -22,6 +22,7 @@
     "@opentelemetry/sdk-trace-node": "^2.11.0",
     "@opentelemetry/semantic-conventions": "^1.18.1",
     "@stellar/stellar-sdk": "^17.2.1",
+    "bull": "^4.16.5",
     "dotenv": "^18.0.3",
     "express": "^5.2.1",
     "express-rate-limit": "^8.7.0",
@@ -30,6 +31,7 @@
     "pino": "^10.3.1"
   },
   "devDependencies": {
+    "@types/bull": "^4.10.4",
     "@types/express": "^5.0.6",
     "@types/mocha": "^10.0.10",
     "@types/node": "^26.1.2",
