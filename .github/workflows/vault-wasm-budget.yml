@@ -23,18 +23,16 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: wasm32-unknown-unknown
+          targets: wasm32v1-none
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: neurowealth-vault
       - name: Build release vault WASM
-        env:
-          RUSTFLAGS: -C target-cpu=mvp
-        run: cargo build --locked -p neurowealth-vault --target wasm32-unknown-unknown --release
+        run: cargo build --locked -p neurowealth-vault --target wasm32v1-none --release
       - name: Record batch deposit budget
         shell: bash
         run: |
           set -euo pipefail
-          export VAULT_BUDGET_WASM="$PWD/target/wasm32-unknown-unknown/release/neurowealth_vault.wasm"
+          export VAULT_BUDGET_WASM="$PWD/target/wasm32v1-none/release/neurowealth_vault.wasm"
           cargo test --locked -p neurowealth-vault --test batch_deposit_wasm_budget -- --ignored --nocapture | tee budget.log
           grep '^|' budget.log >> "$GITHUB_STEP_SUMMARY"

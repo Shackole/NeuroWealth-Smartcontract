@@ -19,14 +19,14 @@ maximum rounded up, and the maximum (currently 1, 25, and 50 entries).
 
 ```sh
 cd neurowealth-vault
-RUSTFLAGS="-C target-cpu=mvp" cargo build --locked -p neurowealth-vault \
-  --target wasm32-unknown-unknown --release
-VAULT_BUDGET_WASM="$PWD/${CARGO_TARGET_DIR:-target}/wasm32-unknown-unknown/release/neurowealth_vault.wasm" \
+rustup target add wasm32v1-none
+cargo build --locked -p neurowealth-vault \
+  --target wasm32v1-none --release
+VAULT_BUDGET_WASM="${CARGO_TARGET_DIR:-$PWD/target}/wasm32v1-none/release/neurowealth_vault.wasm" \
   cargo test --locked -p neurowealth-vault --test batch_deposit_wasm_budget -- --ignored --nocapture
 ```
 
-Use an absolute WASM path if you override the Cargo target directory. Each
-sample runs the release WASM against a fresh vault and Stellar Asset Contract,
+Each sample runs the release WASM against a fresh vault and Stellar Asset Contract,
 with distinct first-time depositors and funded deposits. Setup and verification
 are outside the measured interval. Unlimited metering captures costs even when
 they exceed a transaction's budget. The **Vault WASM Budget** workflow publishes
