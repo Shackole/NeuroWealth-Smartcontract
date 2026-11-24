@@ -1,62 +1,79 @@
+import assert from 'node:assert/strict';
+import { mock, test } from 'node:test';
+import Module from 'node:module';
 import { getListenerHealth } from '../healthState';
 
-jest.mock('../db', () => ({ pool: { query: jest.fn() } }));
-jest.mock('../yieldComparison', () => ({ evaluateYield: jest.fn() }));
-jest.mock('../alertEngine', () => ({ processEventForAlerts: jest.fn() }));
-jest.mock('../logger', () => ({ __esModule: true, default: { info: jest.fn(), warn: jest.fn(), error: jest.fn() } }));
-jest.mock('../retry', () => ({ withRetry: (operation: () => Promise<unknown>) => operation() }));
-jest.mock('../rpcClient', () => {
-  const server = { getLatestLedger: jest.fn(), getEvents: jest.fn() };
-  return { getRpcServer: () => server, rpcCall: (operation: (rpc: typeof server) => unknown) => operation(server) };
-});
-
-it('recovers listener transport and processing health independently', async () => {
-  jest.useFakeTimers();
+test('recovers listener transport and processing health independently', async () => {
   const previousVault = process.env.VAULT_CONTRACT_ID;
   const previousDatabase = process.env.DATABASE_URL;
   process.env.VAULT_CONTRACT_ID = 'fixture-vault';
   process.env.DATABASE_URL = 'fixture-database';
+  const rpc = { getLatestLedger: mock.fn<() => Promise<unknown>>(), getEvents: mock.fn<() => Promise<unknown>>() };
+  const pool = { query: mock.fn<() => Promise<unknown>>() };
+  const dependencies: Record<string, unknown> = {
+    './db': { pool },
+    './yieldComparison': {},
+    './alertEngine': { processEventForAlerts: async () => {} },
+    './logger': { info() {}, warn() {}, error() {} },
+    './retry': { withRetry: (operation: () => Promise<unknown>) => operation() },
+    './rpcClient': {
+      getRpcServer: () => rpc,
+      rpcCall: (operation: (server: typeof rpc) => unknown) => operation(rpc),
+    },
+  };
+  const loader = Module as unknown as {
+    _load(request: string, parent: NodeModule, isMain: boolean): unknown;
+  };
+  const load = loader._load;
+  const listenerPath = require.resolve('../eventListener');
+  const stub = mock.method(loader, '_load', function (request, parent, isMain) {
+    return parent?.filename === listenerPath && Object.hasOwn(dependencies, request)
+      ? dependencies[request]
+      : load.call(this, request, parent, isMain);
+  });
   const { startEventListener, stopEventListener } = require('../eventListener');
-  const { getRpcServer } = require('../rpcClient');
-  const { pool } = require('../db');
-  const rpc = getRpcServer();
+  stub.mock.restore();
+  let poll!: () => Promise<void>;
+  const interval = mock.method(globalThis, 'setInterval', (callback: () => Promise<void>) => {
+    poll = callback;
+    return -1 as unknown as NodeJS.Timeout;
+  });
   const page = {
     latestLedger: 100,
     events: [{ id: 'fixture-event', ledger: 100, topic: ['withdraw'] }],
   };
-  const poll = () => jest.advanceTimersByTimeAsync(5000);
 
   try {
-    rpc.getLatestLedger.mockRejectedValueOnce(new Error('startup outage'))
-      .mockResolvedValue({ sequence: 100 });
+    rpc.getLatestLedger.mock.mockImplementationOnce(async () => { throw new Error('startup outage'); });
+    rpc.getLatestLedger.mock.mockImplementation(async () => ({ sequence: 100 }));
     await startEventListener();
-    expect(getListenerHealth()).toEqual({ transport: 'error', processing: 'unknown' });
+    assert.deepEqual(getListenerHealth(), { transport: 'error', processing: 'unknown' });
 
-    rpc.getEvents.mockResolvedValueOnce(page);
-    pool.query.mockRejectedValueOnce(new Error('storage outage'));
+    rpc.getEvents.mock.mockImplementationOnce(async () => page);
+    pool.query.mock.mockImplementationOnce(async () => { throw new Error('storage outage'); });
     await poll();
-    expect(getListenerHealth()).toEqual({ transport: 'ok', processing: 'error' });
+    assert.deepEqual(getListenerHealth(), { transport: 'ok', processing: 'error' });
 
-    rpc.getEvents.mockRejectedValueOnce(new Error('poll outage'));
+    rpc.getEvents.mock.mockImplementationOnce(async () => { throw new Error('poll outage'); });
     await poll();
-    expect(getListenerHealth()).toEqual({ transport: 'error', processing: 'error' });
+    assert.deepEqual(getListenerHealth(), { transport: 'error', processing: 'error' });
 
-    rpc.getEvents.mockResolvedValueOnce(page);
-    pool.query.mockRejectedValueOnce(new Error('storage still unavailable'));
+    rpc.getEvents.mock.mockImplementationOnce(async () => page);
+    pool.query.mock.mockImplementationOnce(async () => { throw new Error('storage still unavailable'); });
     await poll();
-    expect(getListenerHealth()).toEqual({ transport: 'ok', processing: 'error' });
+    assert.deepEqual(getListenerHealth(), { transport: 'ok', processing: 'error' });
 
-    rpc.getEvents.mockResolvedValueOnce(page);
-    pool.query.mockResolvedValueOnce({});
+    rpc.getEvents.mock.mockImplementationOnce(async () => page);
+    pool.query.mock.mockImplementationOnce(async () => ({}));
     await poll();
-    expect(getListenerHealth()).toEqual({ transport: 'ok', processing: 'ok' });
+    assert.deepEqual(getListenerHealth(), { transport: 'ok', processing: 'ok' });
 
-    rpc.getEvents.mockRejectedValueOnce(new Error('poll outage'));
+    rpc.getEvents.mock.mockImplementationOnce(async () => { throw new Error('poll outage'); });
     await poll();
-    expect(getListenerHealth()).toEqual({ transport: 'error', processing: 'ok' });
+    assert.deepEqual(getListenerHealth(), { transport: 'error', processing: 'ok' });
   } finally {
     stopEventListener();
-    jest.useRealTimers();
+    interval.mock.restore();
     if (previousVault === undefined) delete process.env.VAULT_CONTRACT_ID;
     else process.env.VAULT_CONTRACT_ID = previousVault;
     if (previousDatabase === undefined) delete process.env.DATABASE_URL;
