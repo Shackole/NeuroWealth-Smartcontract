@@ -39,3 +39,6 @@ jobs:
       - name: Run the discovered agent test suite
         working-directory: agent
         run: npm test
+      - name: Verify historical date range boundaries
+        working-directory: agent
+        run: npx ts-node --transpile-only src/historyDateRange.test.ts
