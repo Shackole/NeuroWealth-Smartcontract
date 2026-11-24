@@ -1023,6 +1023,7 @@ Soroban RPC. Missing event coverage requires the RPC backfill procedure in
 | `UnexplainedTvlDropCritical` | TVL drops >5% over 1 min without a matching withdrawal or authorized asset-decrease counter; >5% is the immediate loss-signature threshold. | Treat as possible loss: pause/emergency-pause through approved owner process, stop agent, compare `get_total_assets`, `get_total_shares`, protocol balances, events and transaction hashes using the explicit network/RPC invocation above. | Protocol lead + Security lead | Root cause reconciled to authorized events/balances; invariant checks pass and monitoring is healthy for 15 min. |
 | `AssetsUpdatedSustainedBleedDrain` | Cumulative reported asset decreases >300 bps over 24 h; captures a sustained >3% decline even when each update is individually small. | Review `update_total_assets` calls, protocol balances, agent key and yield source; stop agent and pause if unexplained. Rotate credentials only under key-compromise procedure. | Security lead + Protocol lead | Decrease is explained and reconciled, compromised/misconfigured source is contained, and asset trend is stable for 15 min. |
 | `ShareSupplyUnaccountedDrift` | Total shares change in 1 min without deposit/withdraw counters; any unexplained supply mutation violates accounting invariants, so it pages immediately (`for: 0m`). | Query `get_total_shares`, `get_total_assets`, and affected users' `get_shares`/`get_balance` on the explicit network; treat as accounting invariant failure, pause, and preserve ledger/transaction evidence. | Protocol lead + Security lead | Every share change is accounted for, balances reconcile, and read-only invariant checks remain healthy for 15 min. |
+| `RpcTlsCertificateExpired` / `RpcTlsCertificateExpiryCritical` | The configured RPC endpoint certificate has expired, or has < 7 days remaining, per the `rpc_tls_certificate` job. TLS-validating RPC calls fail once the certificate lapses. | Check `openssl s_client -connect <host>:<port> -servername <host> </dev/null 2>/dev/null \| openssl x509 -noout -dates`; contact the RPC provider or renew the certificate; if renewal cannot land in time, move `SOROBAN_RPC_URL`/`RPC_TLS_ENDPOINTS` to a healthy endpoint and verify RPC calls. | Platform on-call | Endpoint presents a certificate with > 21 days remaining (`neurowealth_rpc_tls_certificate_expiry_timestamp_seconds - time()`) and the probe succeeds. See [§16](#16-rpc-tls-certificate-expiry). |
 
 For every alert, record the firing time, observed metric/value, network and
 contract, diagnosis commands/results, action owner, and the recovery evidence.
@@ -1179,3 +1180,75 @@ These require immediate action without waiting for root cause analysis.
 | [`docs/ISSUER_FREEZE_CONTINGENCY.md`](ISSUER_FREEZE_CONTINGENCY.md) | USDC issuer freezes the vault wallet |
 | [`docs/BLEND_INTEGRATION_RESEARCH.md`](BLEND_INTEGRATION_RESEARCH.md) | Blend bad-debt event response |
 | [`SECURITY.md`](../SECURITY.md) | Trust model and threat analysis |
+
+---
+
+## 16. RPC TLS Certificate Expiry
+
+The `rpc-tls-exporter` (`infra/metrics/rpc-tls-exporter.js`) opens a TLS
+handshake with every configured RPC endpoint once per probe interval and
+reports the leaf certificate's `notAfter` date. It is scraped by the
+`rpc_tls_certificate` job in [`infra/prometheus.yml`](../infra/prometheus.yml)
+and does not require Agent code changes.
+
+### Metrics
+
+| Metric | Type | Labels | Description |
+| --- | --- | --- | --- |
+| `neurowealth_rpc_tls_certificate_expiry_timestamp_seconds` | Gauge | `endpoint` | Unix timestamp of the certificate's `notAfter` date from the last successful probe |
+| `neurowealth_rpc_tls_probe_success` | Gauge | `endpoint` | 1 = TLS handshake succeeded, 0 = probe failed |
+| `neurowealth_rpc_tls_probe_duration_seconds` | Gauge | `endpoint` | Duration of the last probe |
+
+### Thresholds and alerts
+
+| Alert | Condition | Severity | Action |
+| --- | --- | --- | --- |
+| `RpcTlsCertificateExpiryWarning` | ≤ 21 days remaining | warning | Confirm who owns renewal and schedule it |
+| `RpcTlsCertificateExpiryCritical` | < 7 days remaining | critical | Renew now or switch `SOROBAN_RPC_URL`/`RPC_TLS_ENDPOINTS` |
+| `RpcTlsCertificateExpired` | ≤ 0 seconds remaining | critical | RPC over TLS is failing; rotate or switch endpoints immediately |
+| `RpcTlsProbeFailing` | `neurowealth_rpc_tls_probe_success == 0` for 10 min | warning | Expiry is unknown; check reachability and exporter logs |
+
+The exporter also logs a warning line with the remaining lifetime once a
+certificate crosses the warning or critical threshold. Thresholds default to
+21/7 days and are configurable with `RPC_TLS_WARNING_DAYS` and
+`RPC_TLS_CRITICAL_DAYS`.
+
+### Running the exporter
+
+```bash
+# Local (Node 18+; prom-client is declared in infra/metrics/package.json)
+cd infra/metrics && npm install && \
+  RPC_TLS_ENDPOINTS="https://soroban-testnet.stellar.org" npm run exporter
+
+# With the monitoring stack (Prometheus + Grafana + Alertmanager)
+RPC_TLS_ENDPOINTS="https://soroban-testnet.stellar.org" \
+  docker compose -f infra/docker-compose.monitoring.yml up -d
+```
+
+### Tests
+
+The probe and exporter are tested against a controlled endpoint: a local HTTPS
+server with a freshly generated, short-lived self-signed certificate. No
+external network access is required.
+
+```bash
+cd infra/metrics && npm test
+```
+
+### Response steps when an alert fires
+
+1. Confirm the expiry and the endpoint currently serving traffic:
+
+   ```bash
+   openssl s_client -connect <host>:443 -servername <host> </dev/null 2>/dev/null \
+     | openssl x509 -noout -subject -dates -issuer
+   ```
+
+2. For a provider-managed certificate, open a renewal request with the RPC
+   provider and track it against the expiry date.
+3. For a self-managed certificate, renew and reload it before expiry.
+4. If renewal cannot complete before the expiry date, switch
+   `SOROBAN_RPC_URL` and `RPC_TLS_ENDPOINTS` to a healthy endpoint and verify
+   RPC calls before the old certificate lapses.
+5. Close the alert only when the probe succeeds and the endpoint presents a
+   certificate with more than 21 days remaining.

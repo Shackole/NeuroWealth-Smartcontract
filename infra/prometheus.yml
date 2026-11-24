@@ -60,6 +60,23 @@ scrape_configs:
         regex: "(.+)"
         replacement: "${1}"
 
+  # ── RPC TLS certificate expiry (#788) ───────────────────────────────────
+  # The rpc-tls exporter probes the configured Soroban RPC endpoints and
+  # exposes neurowealth_rpc_tls_certificate_expiry_timestamp_seconds. Alert
+  # rules in rules/neurowealth_alerts.yml warn at 21 days remaining and page
+  # at 7 days. Set RPC_TLS_ENDPOINTS on the exporter (see
+  # docker-compose.monitoring.yml); when Prometheus runs outside Compose,
+  # replace the target with the exporter's reachable address.
+  - job_name: "rpc_tls_certificate"
+    metrics_path: /metrics
+    scrape_interval: 60s
+    scrape_timeout: 10s
+    static_configs:
+      - targets:
+          - "rpc-tls-exporter:9469"
+        labels:
+          service: "rpc_tls_exporter"
+
   # ── Prometheus itself (self-monitoring) ─────────────────────────────────
   - job_name: "prometheus"
     metrics_path: /metrics

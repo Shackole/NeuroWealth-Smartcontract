@@ -4,7 +4,8 @@
   "description": "Prometheus metrics middleware for the NeuroWealth AI agent",
   "main": "metrics.js",
   "scripts": {
-    "test": "node -e \"const m = require('./metrics'); console.log('metrics module loaded OK');\""
+    "test": "node --test certificate-expiry.test.mjs rpc-tls-exporter.test.mjs",
+    "exporter": "node rpc-tls-exporter.js"
   },
   "dependencies": {
     "express": "4.18.2",

@@ -373,3 +373,88 @@ groups:
           description: >
             More than 10% of {{ $labels.operation }} RPC calls are failing.
             Check Stellar network status and RPC endpoint health.
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # RPC TLS Certificate Expiry (#788)
+  #
+  # Source: rpc-tls-exporter (infra/metrics/rpc-tls-exporter.js), scraped by
+  # the rpc_tls_certificate job in infra/prometheus.yml.
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: rpc_tls_certificate
+    rules:
+
+      # Certificate already expired — RPC over TLS will fail immediately.
+      - alert: RpcTlsCertificateExpired
+        expr: |
+          (neurowealth_rpc_tls_certificate_expiry_timestamp_seconds - time()) <= 0
+          and on (endpoint)
+          neurowealth_rpc_tls_probe_success == 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "RPC TLS certificate expired for {{ $labels.endpoint }}"
+          description: >
+            The certificate presented by {{ $labels.endpoint }} has expired.
+            RPC calls that validate TLS will fail. Renew or rotate the
+            endpoint certificate with the RPC provider, or switch
+            SOROBAN_RPC_URL and RPC_TLS_ENDPOINTS to a healthy endpoint.
+            Confirm with: openssl s_client -connect <host>:<port>
+            -servername <host> </dev/null 2>/dev/null | openssl x509 -noout -dates
+          runbook: "docs/monitoring.md#16-rpc-tls-certificate-expiry"
+
+      # Less than 7 days remaining — renewal must be completed now.
+      - alert: RpcTlsCertificateExpiryCritical
+        expr: |
+          (neurowealth_rpc_tls_certificate_expiry_timestamp_seconds - time()) < 7 * 86400
+          and on (endpoint)
+          neurowealth_rpc_tls_probe_success == 1
+          and on (endpoint)
+          (neurowealth_rpc_tls_certificate_expiry_timestamp_seconds - time()) > 0
+        for: 30m
+        labels:
+          severity: critical
+        annotations:
+          summary: "RPC TLS certificate expires in {{ $value | humanizeDuration }} for {{ $labels.endpoint }}"
+          description: >
+            The certificate presented by {{ $labels.endpoint }} expires in
+            less than 7 days. Open a renewal with the RPC provider now and
+            schedule the switch before expiry. If renewal cannot be completed
+            in time, move SOROBAN_RPC_URL and RPC_TLS_ENDPOINTS to a healthy
+            endpoint and verify RPC calls before the certificate lapses.
+          runbook: "docs/monitoring.md#16-rpc-tls-certificate-expiry"
+
+      # Less than 21 days remaining — start the renewal process.
+      - alert: RpcTlsCertificateExpiryWarning
+        expr: |
+          (neurowealth_rpc_tls_certificate_expiry_timestamp_seconds - time()) < 21 * 86400
+          and on (endpoint)
+          neurowealth_rpc_tls_probe_success == 1
+          and on (endpoint)
+          (neurowealth_rpc_tls_certificate_expiry_timestamp_seconds - time()) >= 7 * 86400
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "RPC TLS certificate expires in {{ $value | humanizeDuration }} for {{ $labels.endpoint }}"
+          description: >
+            The certificate presented by {{ $labels.endpoint }} expires in
+            less than 21 days. Confirm who owns renewal (provider-managed or
+            self-managed) and schedule it; no outage is imminent yet.
+          runbook: "docs/monitoring.md#16-rpc-tls-certificate-expiry"
+
+      # The probe itself cannot complete a TLS handshake (DNS, network,
+      # expired certificate, or exporter misconfiguration).
+      - alert: RpcTlsProbeFailing
+        expr: neurowealth_rpc_tls_probe_success == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "RPC TLS certificate probe failing for {{ $labels.endpoint }}"
+          description: >
+            The rpc-tls exporter could not complete a TLS handshake with
+            {{ $labels.endpoint }} for 10 minutes, so certificate expiry is
+            unknown. Check endpoint reachability, whether the certificate
+            already expired, and the exporter logs.
+          runbook: "docs/monitoring.md#16-rpc-tls-certificate-expiry"
