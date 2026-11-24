@@ -193,3 +193,26 @@ fn test_set_strategy_emits_event() {
         "Event strategy should match set value"
     );
 }
+
+#[test]
+fn test_strategy_preference_persists_after_full_exit_and_reentry() {
+    let env = Env::default();
+    let (_contract_id, client, _agent, usdc_token) = setup(&env);
+    let user = Address::generate(&env);
+    let preference = Symbol::new(&env, "growth");
+    let initial_deposit = 10_000_000_i128;
+    let reentry_deposit = 5_000_000_i128;
+
+    mint_and_deposit(&env, &client, &usdc_token, &user, initial_deposit);
+    client.set_user_strategy(&user, &preference);
+    assert_eq!(client.get_user_strategy(&user), preference);
+    assert_eq!(client.get_shares(&user), initial_deposit);
+
+    assert_eq!(client.withdraw_all(&user), initial_deposit);
+    assert_eq!(client.get_user_strategy(&user), preference);
+    assert_eq!(client.get_shares(&user), 0);
+
+    client.deposit(&user, &reentry_deposit);
+    assert_eq!(client.get_user_strategy(&user), preference);
+    assert_eq!(client.get_shares(&user), reentry_deposit);
+}
