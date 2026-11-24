@@ -1,4 +1,30 @@
-import { fetchVaultState } from '../../frontend/src/lib/stellar'; // Assume mock integration
+import { pool } from './db';
+
+interface NotificationObservation {
+    protocol: string;
+    apy_bps: number;
+    recorded_at: Date;
+}
+
+/**
+ * Load a notification batch for (previousCutoff, cutoff]. Advance the
+ * checkpoint to the returned cutoff only after processing the batch.
+ */
+export async function queryNotificationBatch(
+    previousCutoff: Date,
+    db: Pick<typeof pool, 'query'> = pool,
+    now: () => Date = () => new Date(),
+): Promise<{ cutoff: Date; observations: NotificationObservation[] }> {
+    const cutoff = now();
+    const { rows } = await db.query<NotificationObservation>(
+        `SELECT protocol, apy_bps, recorded_at
+         FROM apy_snapshots
+         WHERE recorded_at > $1 AND recorded_at <= $2
+         ORDER BY recorded_at ASC, id ASC`,
+        [previousCutoff, cutoff],
+    );
+    return { cutoff, observations: rows };
+}
 
 export interface AlertRule {
     name: string;
