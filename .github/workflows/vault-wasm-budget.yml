@@ -1,0 +1,40 @@
+name: Vault WASM Budget
+
+on:
+  pull_request:
+    paths:
+      - 'neurowealth-vault/contracts/vault/**'
+      - 'neurowealth-vault/share-math/**'
+      - 'neurowealth-vault/Cargo.*'
+      - '.github/workflows/vault-wasm-budget.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  measure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: neurowealth-vault
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: neurowealth-vault
+      - name: Build release vault WASM
+        env:
+          RUSTFLAGS: -C target-cpu=mvp
+        run: cargo build --locked -p neurowealth-vault --target wasm32-unknown-unknown --release
+      - name: Record batch deposit budget
+        shell: bash
+        run: |
+          set -euo pipefail
+          export VAULT_BUDGET_WASM="$PWD/target/wasm32-unknown-unknown/release/neurowealth_vault.wasm"
+          cargo test --locked -p neurowealth-vault --test batch_deposit_wasm_budget -- --ignored --nocapture | tee budget.log
+          grep '^|' budget.log >> "$GITHUB_STEP_SUMMARY"

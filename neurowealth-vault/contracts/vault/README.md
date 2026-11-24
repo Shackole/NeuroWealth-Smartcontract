@@ -10,3 +10,24 @@ deployment scripts use `neurowealth-vault/` as the canonical workspace. Make
 contract changes here and build/deploy from that workspace. The contract-spec
 workflow runs `scripts/check-contract-mirror.sh` to ensure the root alias still
 resolves to this tree.
+
+## Batch deposit WASM budget
+
+Run from the repository root. The ignored integration test prints CPU
+instructions and metered memory bytes at one entry, half the configured
+maximum rounded up, and the maximum (currently 1, 25, and 50 entries).
+
+```sh
+cd neurowealth-vault
+RUSTFLAGS="-C target-cpu=mvp" cargo build --locked -p neurowealth-vault \
+  --target wasm32-unknown-unknown --release
+VAULT_BUDGET_WASM="$PWD/${CARGO_TARGET_DIR:-target}/wasm32-unknown-unknown/release/neurowealth_vault.wasm" \
+  cargo test --locked -p neurowealth-vault --test batch_deposit_wasm_budget -- --ignored --nocapture
+```
+
+Use an absolute WASM path if you override the Cargo target directory. Each
+sample runs the release WASM against a fresh vault and Stellar Asset Contract,
+with distinct first-time depositors and funded deposits. Setup and verification
+are outside the measured interval. Unlimited metering captures costs even when
+they exceed a transaction's budget. The **Vault WASM Budget** workflow publishes
+the three measurements in its job summary.
