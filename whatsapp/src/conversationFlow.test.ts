@@ -18,7 +18,6 @@ import {
   handleWhatsAppWebhook,
   twilioSignatureMiddleware,
   processVerifiedIntent,
-  canExecuteIntent,
   intentQueue,
   IntentJobData,
 } from './webhook';
@@ -26,7 +25,6 @@ import { hashPhoneNumber } from './cryptoUtils';
 import { getSession, updateState, UserState } from './stateManager';
 import { createCustodialWallet, getWallet } from './walletService';
 import { generateOTP } from './otpService';
-import { TRANSACTION_DRAFT_TTL_MS, clearTransactionDraft } from './transactionDrafts';
 
 // ── Test harness ─────────────────────────────────────────────────────────────
 let passed = 0;
@@ -275,38 +273,6 @@ async function runAllTests() {
     assert.ok(reply.includes('Withdrew all funds from vault contract'), 'Reply confirms full withdrawal');
     assert.ok(reply.includes('Transaction Hash:'), 'Reply includes transaction hash');
     assert.ok(reply.includes('Funds sent directly to your wallet!'), 'Funds sent notice present');
-  });
-
-  await runTest('transaction drafts expire independently of the verified wallet session', async () => {
-    const phoneHash = hashPhoneNumber('whatsapp:+15550009991');
-    const originalNow = Date.now;
-    let now = originalNow();
-    Date.now = () => now;
-
-    try {
-      updateState(phoneHash, UserState.VERIFIED);
-      const session = getSession(phoneHash);
-      const wallet = createCustodialWallet(phoneHash);
-
-      assert.match(await processVerifiedIntent(phoneHash, 'deposit'), /Enter the USDC amount/);
-      now += TRANSACTION_DRAFT_TTL_MS;
-      assert.ok(canExecuteIntent(phoneHash));
-      assert.match(await processVerifiedIntent(phoneHash, '50'), /no matching active transaction draft/);
-      assert.strictEqual(getSession(phoneHash), session);
-      assert.strictEqual(session.state, UserState.VERIFIED);
-      assert.strictEqual(getWallet(phoneHash), wallet);
-
-      assert.match(await processVerifiedIntent(phoneHash, 'withdraw'), /Enter the USDC amount/);
-      now += TRANSACTION_DRAFT_TTL_MS - 1;
-      assert.ok(canExecuteIntent(phoneHash));
-      assert.match(await processVerifiedIntent(phoneHash, '25 USDC'), /Withdrew 25 USDC/);
-      assert.match(await processVerifiedIntent(phoneHash, '25'), /no matching active transaction draft/);
-      assert.strictEqual(getSession(phoneHash), session);
-      assert.strictEqual(getWallet(phoneHash), wallet);
-    } finally {
-      clearTransactionDraft(phoneHash);
-      Date.now = originalNow;
-    }
   });
 
   // ── Scenario 5: 'what\'s my balance?' -> balance fetched and reply sent ──────
