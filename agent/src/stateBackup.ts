@@ -14,8 +14,8 @@
  *  - `MultiStateStore`    — fans out saves and restores from the first store
  *    that yields a readable state (primary first)
  *
- * Restoration validates the schema `version` so an old/incompatible backup is
- * rejected instead of silently corrupting the new instance.
+ * Restoration checks the artifact format and state schema independently.
+ * Legacy backups have no artifact version and still require a supported schema.
  */
 
 import { promises as fs } from 'node:fs';
@@ -25,8 +25,13 @@ import logger from './logger';
 /** Schema version — bump when AgentState changes shape. */
 export const AGENT_STATE_VERSION = 1;
 
+/** Version of the serialized backup artifact, independent of the state schema. */
+export const STATE_BACKUP_ARTIFACT_VERSION = 1;
+
 /** Serializable operational state of the agent. */
 export interface AgentState {
+  /** Absent in backups written before artifact versioning. */
+  artifactVersion?: number;
   version: number;
   savedAt: number;
   /** Last Soroban ledger processed by the event listener. */
@@ -54,6 +59,13 @@ export interface StateStore<T = AgentState> {
 export function parseAgentState(raw: unknown): AgentState | null {
   if (!raw || typeof raw !== 'object') return null;
   const candidate = raw as Partial<AgentState>;
+  if ('artifactVersion' in candidate && candidate.artifactVersion !== STATE_BACKUP_ARTIFACT_VERSION) {
+    logger.warn(
+      { found: candidate.artifactVersion, expected: STATE_BACKUP_ARTIFACT_VERSION },
+      'Unsupported state backup artifact version; ignoring backup',
+    );
+    return null;
+  }
   if (candidate.version !== AGENT_STATE_VERSION) {
     logger.warn(
       { found: candidate.version, expected: AGENT_STATE_VERSION },
@@ -65,6 +77,9 @@ export function parseAgentState(raw: unknown): AgentState | null {
     return null;
   }
   return {
+    ...(candidate.artifactVersion === STATE_BACKUP_ARTIFACT_VERSION
+      ? { artifactVersion: STATE_BACKUP_ARTIFACT_VERSION }
+      : {}),
     version: candidate.version,
     savedAt: candidate.savedAt,
     lastLedger: candidate.lastLedger,
@@ -232,9 +247,10 @@ export class StateBackupManager {
   ) {}
 
   /** Persists the given state (version-stamped) to the store. */
-  async backup(state: Omit<AgentState, 'version' | 'savedAt'>): Promise<AgentState> {
+  async backup(state: Omit<AgentState, 'artifactVersion' | 'version' | 'savedAt'>): Promise<AgentState> {
     const stamped: AgentState = {
       ...state,
+      artifactVersion: STATE_BACKUP_ARTIFACT_VERSION,
       version: AGENT_STATE_VERSION,
       savedAt: this.now(),
     };
@@ -267,7 +283,7 @@ export class StateBackupManager {
 
   /** Starts periodic backups; `getState` is called each interval. */
   startAutoBackup(
-    getState: () => Omit<AgentState, 'version' | 'savedAt'>,
+    getState: () => Omit<AgentState, 'artifactVersion' | 'version' | 'savedAt'>,
     intervalMs = 60_000,
   ): void {
     if (this.timer) return;
