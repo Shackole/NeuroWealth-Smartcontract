@@ -7,6 +7,7 @@ import logger from './logger';
 import { initializeTracing } from './tracing';
 import { configureHttpSecurity, configureHttpTimeouts } from './httpSecurity';
 
+import { serveAgentMetrics } from './prometheusMetrics';
 import { ipRateLimiter, userRateLimiter } from './rateLimiter';
 
 // Issue #40: USDC issuer freeze contingency monitor
@@ -30,6 +31,7 @@ configureHttpSecurity(app);
 app.use(ipRateLimiter);
 app.use(userRateLimiter);
 app.use(healthRouter);
+app.get('/metrics', serveAgentMetrics);
 
 // Mount strategy aggregator API route (Issue #41)
 app.use(strategyRouter);
