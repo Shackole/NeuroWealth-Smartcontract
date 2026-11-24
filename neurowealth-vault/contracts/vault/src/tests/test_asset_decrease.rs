@@ -190,3 +190,58 @@ fn test_min_bps_floor_of_100_applied_when_zero_passed() {
     client.update_total_assets(&agent, &new_total, &true, &0);
     assert_eq!(client.get_total_assets(), new_total);
 }
+
+#[test]
+fn test_consecutive_asset_gains_after_external_fee_settlement() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (vault, agent, _owner, usdc) = setup_vault_with_token(&env);
+    let client = NeuroWealthVaultClient::new(&env, &vault);
+    let token = TestTokenClient::new(&env, &usdc);
+    let user = Address::generate(&env);
+    let yield_source = Address::generate(&env);
+    let fee_recipient = Address::generate(&env);
+    let principal = 100_000_000_i128;
+    let fee_bps = 500_i128;
+
+    mint_and_deposit(&env, &client, &usdc, &user, principal);
+    token.mint(&yield_source, &30_000_000);
+
+    // The external yield source settles the fee before each net valuation is reported.
+    for (gross_gain, expected_net_gain, expected_fee, expected_total, expected_fee_balance) in [
+        (10_000_000, 9_500_000, 500_000, 109_500_000, 500_000),
+        (20_000_000, 19_000_000, 1_000_000, 128_500_000, 1_500_000),
+    ] {
+        let assets_before = client.get_total_assets();
+        let user_before = client.get_user_info(&user).principal;
+        let shares_before = client.get_total_shares();
+        let vault_before = token.balance(&vault);
+        let source_before = token.balance(&yield_source);
+        let recipient_before = token.balance(&fee_recipient);
+
+        let fee = gross_gain * fee_bps / 10_000;
+        let net_gain = gross_gain - fee;
+        token.transfer(&yield_source, &fee_recipient, &fee);
+        token.transfer(&yield_source, &vault, &net_gain);
+        client.update_total_assets(&agent, &(assets_before + net_gain), &false, &0);
+
+        assert_eq!(client.get_total_assets() - assets_before, expected_net_gain);
+        assert_eq!(client.get_total_assets(), expected_total);
+        assert_eq!(
+            client.get_user_info(&user).principal - user_before,
+            expected_net_gain
+        );
+        assert_eq!(client.get_shares(&user), principal);
+        assert_eq!(client.get_total_shares() - shares_before, 0);
+        assert_eq!(client.get_total_shares(), principal);
+        assert_eq!(token.balance(&vault) - vault_before, expected_net_gain);
+        assert_eq!(token.balance(&yield_source) - source_before, -gross_gain);
+        assert_eq!(
+            token.balance(&fee_recipient) - recipient_before,
+            expected_fee
+        );
+        assert_eq!(token.balance(&fee_recipient), expected_fee_balance);
+        assert_eq!(client.get_shares(&fee_recipient), 0);
+    }
+}
