@@ -19,7 +19,7 @@ import { Pool } from 'pg';
 import { rpc as SorobanRpc } from '@stellar/stellar-sdk';
 import { getPoolMetrics } from './db';
 import { openAiKeyManager } from './openAiKeyManager';
-import { lastRebalanceTimestamp, queueDepth } from './healthState';
+import { getListenerHealth, lastRebalanceTimestamp, queueDepth } from './healthState';
 import logger from './logger';
 
 const router = express.Router();
@@ -193,17 +193,22 @@ router.get('/health', async (_req, res) => {
   recordCheckResult('stellar_rpc', dependencyIsHealthy('stellar_rpc', rpcResult.status));
   recordCheckResult('redis', dependencyIsHealthy('redis', redisResult.status));
 
+  const listener = getListenerHealth();
   const checks = {
     database: dbResult.status,
     redis: redisResult.status,
     stellar_rpc: rpcResult.status,
     openai_api_keys: openAiStatus,
+    event_listener_transport: listener.transport,
+    event_listener_processing: listener.processing,
   };
 
   const isHealthy =
     dependencyIsHealthy('database', dbResult.status) &&
     dependencyIsHealthy('redis', redisResult.status) &&
     dependencyIsHealthy('stellar_rpc', rpcResult.status) &&
+    listener.transport !== 'error' &&
+    listener.processing !== 'error' &&
     (openAiStatus === 'ok' || openAiStatus === 'not_configured');
 
   res.status(isHealthy ? 200 : 503).json({

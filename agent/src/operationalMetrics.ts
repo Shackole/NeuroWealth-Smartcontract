@@ -94,7 +94,7 @@ export function renderOperationalMetrics(): string {
     '# HELP neurowealth_event_listener_checkpoint_age_seconds Seconds since the last successful event poll and processing pass.',
     '# TYPE neurowealth_event_listener_checkpoint_age_seconds gauge',
     `neurowealth_event_listener_checkpoint_age_seconds{${labels}} ${checkpointAge}`,
-    '# HELP neurowealth_event_listener_processing_failures_total Event polling or processing failures.',
+    '# HELP neurowealth_event_listener_processing_failures_total Event processing failures.',
     '# TYPE neurowealth_event_listener_processing_failures_total counter',
     `neurowealth_event_listener_processing_failures_total{${labels}} ${events.processingFailures}`,
   ];

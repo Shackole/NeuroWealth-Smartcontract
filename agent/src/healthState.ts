@@ -18,3 +18,17 @@ export function setLastRebalanceTimestamp(ts: number): void {
 export function setQueueDepth(depth: number): void {
   queueDepth = depth;
 }
+
+type ListenerHealthStatus = 'unknown' | 'ok' | 'error';
+const listenerHealth: Record<'transport' | 'processing', ListenerHealthStatus> = {
+  transport: 'unknown',
+  processing: 'unknown',
+};
+
+export function getListenerHealth() {
+  return { ...listenerHealth };
+}
+
+export function setListenerHealth(signal: keyof typeof listenerHealth, status: ListenerHealthStatus): void {
+  listenerHealth[signal] = status;
+}
