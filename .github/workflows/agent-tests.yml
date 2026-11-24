@@ -39,3 +39,19 @@ jobs:
       - name: Run the discovered agent test suite
         working-directory: agent
         run: npm test
+
+  queue-metrics:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: agent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: agent/package-lock.json
+      - run: npm ci
+      - run: npm run test:queue-metrics
