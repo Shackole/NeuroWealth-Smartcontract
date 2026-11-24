@@ -5,10 +5,7 @@
  * explicitly opted-in idempotent reads. After 3 primary failures in a
  * 60-second window the circuit opens; after 30 seconds it permits a probe.
  *
- * RPC latency is tracked via the existing MetricsEngine pattern and emitted as
- * structured log fields so the Prometheus scraper in infra/metrics/metrics.js
- * can pick them up through the `stellar_rpc_latency_seconds` histogram already
- * defined there.
+ * RPC latency is recorded in the agent Prometheus registry and in structured logs.
  *
  * Configuration via environment variables:
  *   SOROBAN_RPC_URL          Primary endpoint   (default: Stellar public testnet)
@@ -18,6 +15,7 @@
 
 import { rpc as SorobanRpc } from '@stellar/stellar-sdk';
 import logger from './logger';
+import { measureRpcRoundTrip } from './rpcMetrics';
 
 // ---------------------------------------------------------------------------
 // Config
@@ -85,7 +83,7 @@ async function verifyNetwork(ep: EndpointState): Promise<void> {
   if (!EXPECTED_NETWORK_PASSPHRASE) return;
   if (Date.now() - ep.networkVerifiedAt < NETWORK_VERIFICATION_TTL_MS) return;
 
-  const network = await ep.server.getNetwork();
+  const network = await measureRpcRoundTrip('read', () => ep.server.getNetwork());
   if (network.passphrase !== EXPECTED_NETWORK_PASSPHRASE) {
     ep.networkVerifiedAt = 0;
     throw new Error(`RPC network mismatch for ${safeEndpointLabel(ep.url)}; refusing to use a different Stellar network`);
@@ -195,7 +193,7 @@ async function timedCall<T>(
   const start = Date.now();
   try {
     await verifyNetwork(ep);
-    const result = await fn(ep.server);
+    const result = await measureRpcRoundTrip('read', () => fn(ep.server));
     const durationMs = Date.now() - start;
     recordLatency(ep.url, durationMs, true);
     recordSuccess(ep);

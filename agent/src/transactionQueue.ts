@@ -24,6 +24,7 @@ import {
   Asset,
   Horizon,
 } from '@stellar/stellar-sdk';
+import { measureRpcRoundTrip } from './rpcMetrics';
 import logger from './logger';
 import {
   recordDeadLetterGrowth,
@@ -265,9 +266,8 @@ async function submitWithSequenceRetry(
   for (let attempt = 0; attempt < MAX_SEQUENCE_RETRIES; attempt++) {
     try {
       const xdr = await buildAndSignTransaction(keypair, data);
-      const response = await server.submitTransaction(
-        TransactionBuilder.fromXDR(xdr, NETWORK_PASSPHRASE),
-      );
+      const transaction = TransactionBuilder.fromXDR(xdr, NETWORK_PASSPHRASE);
+      const response = await measureRpcRoundTrip('submission', () => server.submitTransaction(transaction));
 
       return {
         txHash: response.hash,
