@@ -225,7 +225,7 @@ export function getActiveEndpoint(): { server: SorobanRpc.Server; endpoint: stri
  */
 export async function rpcCall<T>(
   fn: (server: SorobanRpc.Server) => Promise<T>,
-  options: { retryOnFallback?: boolean } = {},
+  options: { retryOnFallback?: boolean; onFallback?: () => void } = {},
 ): Promise<T> {
   pruneOldFailures(primary);
 
@@ -247,6 +247,7 @@ export async function rpcCall<T>(
   if (!fallback || !options.retryOnFallback) {
     throw new Error('Primary RPC circuit is unavailable; automatic failover is disabled for this call');
   }
+  options.onFallback?.();
   return timedCall(fallback, fn);
 }
 

@@ -34,3 +34,25 @@ export async function submitExactlyOnceOnTimeout<T>(
     throw new SubmissionOutcomeUnknownError(txHash);
   }
 }
+
+/** Route a signed transaction's status reads through configured RPC failover. */
+export function createSubmissionStatusLookup<T>(
+  read: (hash: string, onFallback: () => void) => Promise<T>,
+  recordSwitch: () => void,
+): (hash: string) => Promise<T> {
+  let trackedHash: string | undefined;
+  let switched = false;
+
+  return (hash) => {
+    if (hash !== trackedHash) {
+      trackedHash = hash;
+      switched = false;
+    }
+    return read(hash, () => {
+      if (hash === trackedHash && !switched) {
+        switched = true;
+        recordSwitch();
+      }
+    });
+  };
+}

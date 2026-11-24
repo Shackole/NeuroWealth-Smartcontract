@@ -21,6 +21,9 @@
 import { Pool } from 'pg';
 import logger from './logger';
 import { YieldComparisonEngine, ProtocolYieldData } from './yieldComparison';
+import { rpcCall } from './rpcClient';
+import { recordSubmissionProviderSwitch } from './submissionMetrics';
+import { createSubmissionStatusLookup } from './transactionSubmission';
 
 // A 1,000% APY is the upper sanity bound for automated allocation inputs.
 const MAX_APY_DECIMAL = 10;
@@ -632,6 +635,13 @@ export function createProductionYieldCheckJob(pool: Pool): YieldCheckJob {
   // configured with real network credentials.
   const config = { ...DEFAULT_YIELD_CHECK_CONFIG };
   let pendingRebalanceHash: string | null = null;
+  const lookupSubmissionStatus = createSubmissionStatusLookup(
+    (hash, onFallback) => rpcCall((server) => server.getTransaction(hash), {
+      retryOnFallback: true,
+      onFallback,
+    }),
+    recordSubmissionProviderSwitch,
+  );
 
   const hooks: YieldCheckHooks = {
     /**
@@ -716,7 +726,7 @@ export function createProductionYieldCheckJob(pool: Pool): YieldCheckJob {
       // A previous send may have timed out after the network accepted it.
       // Resolve that hash before building or submitting another rebalance.
       if (pendingRebalanceHash) {
-        const prior = await server.getTransaction(pendingRebalanceHash);
+        const prior = await lookupSubmissionStatus(pendingRebalanceHash);
         if (prior.status === 'SUCCESS') {
           const priorHash = pendingRebalanceHash;
           pendingRebalanceHash = null;
@@ -768,7 +778,7 @@ export function createProductionYieldCheckJob(pool: Pool): YieldCheckJob {
       for (let i = 0; i < 30; i++) {
         await new Promise((r) => setTimeout(r, 1000));
         try {
-          const tx = await server.getTransaction(txHash);
+          const tx = await lookupSubmissionStatus(txHash);
           if (tx.status === 'SUCCESS') { confirmed = true; pendingRebalanceHash = null; break; }
           if (tx.status === 'FAILED') {
             pendingRebalanceHash = null;
@@ -785,10 +795,8 @@ export function createProductionYieldCheckJob(pool: Pool): YieldCheckJob {
     },
     reconcileRebalance: async () => {
       if (!pendingRebalanceHash) return null;
-      const StellarSdk = await import('@stellar/stellar-sdk');
-      const server = new StellarSdk.SorobanRpc.Server(config.rpcUrl);
       const pendingHash = pendingRebalanceHash;
-      const transaction = await server.getTransaction(pendingHash);
+      const transaction = await lookupSubmissionStatus(pendingHash);
       if (transaction.status === 'SUCCESS') {
         pendingRebalanceHash = null;
         return { txHash: pendingHash };
