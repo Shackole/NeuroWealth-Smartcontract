@@ -199,3 +199,35 @@ fn test_budget_harvest() {
 
     check_baseline("harvest", cpu, mem, 13_500_000, 540_000);
 }
+
+// Measurements are printed by the test harness with --nocapture. Each read
+// starts with a fresh budget after the same funded, idle-vault setup.
+#[test]
+fn test_budget_primary_vault_reads() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (contract_id, _agent, _owner, usdc_token) = setup_vault_with_token(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+    let user = Address::generate(&env);
+    mint_and_deposit(&env, &client, &usdc_token, &user, 10_000_000);
+
+    let shares = measure(&env, || {
+        client.get_shares(&user);
+    });
+    let asset_breakdown = measure(&env, || {
+        client.get_asset_breakdown();
+    });
+    let user_info = measure(&env, || {
+        client.get_user_info(&user);
+    });
+
+    for (name, (cpu, mem)) in [
+        ("get_shares", shares),
+        ("get_asset_breakdown", asset_breakdown),
+        ("get_user_info", user_info),
+    ] {
+        std::println!("[budget] {name}  cpu={cpu}  mem={mem}");
+        assert!(cpu > 0 && mem > 0, "{name} should report resource usage");
+    }
+}
