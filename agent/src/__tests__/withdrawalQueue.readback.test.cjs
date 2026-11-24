@@ -1,5 +1,6 @@
 const assert = require('node:assert/strict');
 const { randomUUID } = require('node:crypto');
+const { once } = require('node:events');
 const { test } = require('node:test');
 const Bull = require('bull');
 
@@ -17,9 +18,11 @@ test('settling the final withdrawal leaves an empty queue and allows the next en
     assert.deepEqual((await queue.getWaiting()).map((job) => job.data), [first]);
 
     // The processor models a successful settlement without signing or broadcasting a transaction.
-    const settled = firstJob.finished();
+    const settled = once(queue, 'completed');
     void queue.process(async () => ({ settled: true }));
-    assert.deepEqual(await settled, { settled: true });
+    const [completed, result] = await settled;
+    assert.equal(completed.id, firstJob.id);
+    assert.deepEqual(result, { settled: true });
 
     assert.deepEqual(await queue.getWaiting(), []);
     assert.deepEqual(await queue.getActive(), []);
