@@ -47,6 +47,16 @@ location /api/whatsapp/webhook {
 ### Replay / duplicate delivery handling
 Providers may retry deliveries. Each inbound message carries a unique `MessageSid`. The handler records processed IDs and short-circuits duplicates so a retried delivery is acknowledged (`200`) without re-executing the intent (no double deposit/withdraw).
 
+## Outbound delivery receipts
+
+Set `WEBHOOK_BASE_URL` to the public service URL to track outbound WhatsApp
+messages sent through the Twilio REST API. Twilio posts signed receipts to
+`POST /api/whatsapp/delivery-status`. Redis stores the latest status in the
+`status` field of `whatsapp:delivery:<MessageSid>` for 30 days after the last
+status advance. Delayed or duplicate callbacks leave the record and its
+expiration unchanged. A read receipt takes precedence over delivery, and
+delivery takes precedence over any failure or earlier sending status.
+
 ## Verification Flow
 1. User sends `"hi"` to WhatsApp number.
 2. Bot sends 6-digit OTP code (expires in 5 minutes).
