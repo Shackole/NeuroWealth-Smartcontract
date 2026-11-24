@@ -18,6 +18,11 @@ import { getSession, updateState, UserState } from './stateManager';
 import { generateOTP, verifyOTP } from './otpService';
 import { createCustodialWallet, getWallet } from './walletService';
 import { getPortfolio, handleDeposit, handleWithdraw } from './vaultRouter';
+import {
+  clearTransactionDraft,
+  startTransactionDraft,
+  takeTransactionDraft,
+} from './transactionDrafts';
 import Queue from 'bull';
 import crypto from 'crypto';
 
@@ -384,9 +389,37 @@ export async function processVerifiedIntent(
     );
   }
 
+  if (lower === 'deposit' || lower === 'withdraw') {
+    startTransactionDraft(phoneHash, lower);
+    const amountHint = lower === 'withdraw' ? ' or "all"' : '';
+    return `Enter the USDC amount to ${lower}${amountHint}. This draft expires in 5 minutes.`;
+  }
+
+  if (lower === 'cancel') {
+    clearTransactionDraft(phoneHash);
+    return 'Any pending transaction draft has been cleared.';
+  }
+
+  if (/^(?:\d+(?:\.\d+)?(?:\s+usdc)?|all|everything)$/.test(lower)) {
+    const withdrawAll = lower === 'all' || lower === 'everything';
+    const amount = Number.parseFloat(lower);
+    if (!withdrawAll && (!Number.isFinite(amount) || amount <= 0)) {
+      return 'Enter a positive USDC amount.';
+    }
+    const action = takeTransactionDraft(phoneHash);
+    if (!action || (withdrawAll && action !== 'withdraw')) {
+      return 'There is no matching active transaction draft. Send a new deposit or withdraw command.';
+    }
+    const result = action === 'deposit'
+      ? await handleDeposit(phoneHash, amount)
+      : await handleWithdraw(phoneHash, withdrawAll ? undefined : amount, withdrawAll);
+    return `🤖 ${result.message}`;
+  }
+
   // Deposit
   const depositMatch = lower.match(/deposit\s+([\d.]+)/);
   if (depositMatch) {
+    clearTransactionDraft(phoneHash);
     const amount = parseFloat(depositMatch[1]);
     const strategyMatch = lower.match(/\b(conservative|balanced|growth)\b/);
     const strategy = strategyMatch ? strategyMatch[1] : undefined;
@@ -399,6 +432,7 @@ export async function processVerifiedIntent(
     lower.includes('withdraw all') ||
     lower.includes('withdraw everything')
   ) {
+    clearTransactionDraft(phoneHash);
     const result = await handleWithdraw(phoneHash, undefined, true);
     return `🤖 ${result.message}`;
   }
@@ -406,6 +440,7 @@ export async function processVerifiedIntent(
   // Withdraw amount
   const withdrawMatch = lower.match(/withdraw\s+([\d.]+)/);
   if (withdrawMatch) {
+    clearTransactionDraft(phoneHash);
     const amount = parseFloat(withdrawMatch[1]);
     const result = await handleWithdraw(phoneHash, amount, false);
     return `🤖 ${result.message}`;
@@ -439,6 +474,7 @@ export async function processVerifiedIntent(
       `• "balance" — view portfolio\n` +
       `• "deposit 100 USDC" — deposit funds\n` +
       `• "withdraw 50" — withdraw USDC\n` +
+      `• "deposit" or "withdraw" — start an amount draft\n` +
       `• "switch to growth" — change strategy\n` +
       `• "earnings" — view yield stats`
     );
