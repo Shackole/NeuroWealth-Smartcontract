@@ -115,12 +115,34 @@ fn test_redeposit_does_not_duplicate_index_entry() {
     mint_and_deposit(&env, &client, &usdc, &u1, 5_000_000);
     mint_and_deposit(&env, &client, &usdc, &u2, 3_000_000);
 
-    // u2 fully withdraws then re-deposits.
-    client.withdraw_all(&u2);
-    mint_and_deposit(&env, &client, &usdc, &u2, 2_000_000);
+    let token = soroban_sdk::token::Client::new(&env, &usdc);
+    assert_eq!(client.get_shares(&u2), 3_000_000);
+    assert_eq!(client.get_balance(&u2), 3_000_000);
+    assert_eq!(client.get_total_shares(), 8_000_000);
+    assert_eq!(client.get_total_assets(), 8_000_000);
+    assert_eq!(token.balance(&u2), 0);
+
+    assert_eq!(client.withdraw_all(&u2), 3_000_000);
+    assert_eq!(client.get_shares(&u2), 0);
+    assert_eq!(client.get_balance(&u2), 0);
+    assert_eq!(client.get_total_shares(), 5_000_000);
+    assert_eq!(client.get_total_assets(), 5_000_000);
+    assert_eq!(token.balance(&u2), 3_000_000);
+    let remaining = client.get_users_with_shares(&0, &10);
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining.get(0).unwrap(), (u1.clone(), 5_000_000));
+
+    client.deposit(&u2, &2_000_000);
+    assert_eq!(client.get_shares(&u2), 2_000_000);
+    assert_eq!(client.get_balance(&u2), 2_000_000);
+    assert_eq!(client.get_total_shares(), 7_000_000);
+    assert_eq!(client.get_total_assets(), 7_000_000);
+    assert_eq!(token.balance(&u2), 1_000_000);
 
     let all = client.get_users_with_shares(&0, &10);
     assert_eq!(all.len(), 2, "re-deposit must not create a duplicate entry");
+    assert_eq!(all.get(0).unwrap(), (u1, 5_000_000));
+    assert_eq!(all.get(1).unwrap(), (u2, 2_000_000));
 
     // Only two index slots exist: a page starting at slot 2 is empty.
     assert_eq!(client.get_users_with_shares(&2, &10).len(), 0);
