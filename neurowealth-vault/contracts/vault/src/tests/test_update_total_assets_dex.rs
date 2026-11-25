@@ -13,7 +13,12 @@
 extern crate std;
 
 use super::utils::*;
-use soroban_sdk::{symbol_short, testutils::Address as _, Address, Env};
+use crate::{YieldAttributedEvent, TOPIC_YIELD_ATTRIBUTED};
+use soroban_sdk::{
+    symbol_short,
+    testutils::{Address as _, Ledger as _},
+    Address, Env, TryFromVal,
+};
 
 // ============================================================================
 // HELPERS
@@ -89,20 +94,29 @@ fn test_update_total_assets_dex_yield_succeeds() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let deposit = 20_000_000_i128;
-    let yield_amount = 2_000_000_i128; // 10% yield
+    let principal = 35_000_000_i128;
+    let yield_amount = 1_250_000_i128;
+    let report_ledger = 185;
+    let report_timestamp = 925;
+    let (_, agent, _, pool, client, token_client) = setup_all_in_dex(&env, principal);
+    assert_eq!(client.get_asset_breakdown(), (0, principal));
 
-    let (_, agent, usdc_token, dex_pool, client, token_client) = setup_all_in_dex(&env, deposit);
+    // The pool balance response includes principal plus accrued yield.
+    token_client.mint(&pool, &yield_amount);
+    env.ledger().set_sequence_number(report_ledger);
+    env.ledger().set_timestamp(report_timestamp);
+    let position_value = principal + yield_amount;
+    assert_eq!(client.get_asset_breakdown(), (0, position_value));
 
-    // Simulate DEX accruing yield by minting directly to pool
-    token_client.mint(&dex_pool, &yield_amount);
+    client.update_total_assets(&agent, &position_value, &false, &0);
+    assert_eq!(client.get_total_assets(), position_value);
 
-    let new_total = deposit + yield_amount;
-    client.update_total_assets(&agent, &new_total, &false, &0);
-
-    assert_eq!(client.get_total_assets(), new_total);
-    assert_eq!(token_client.balance(&usdc_token), 0_i128);
-    drop(token_client);
+    let events = find_events_by_topic(env.events().all(), &env, TOPIC_YIELD_ATTRIBUTED);
+    let (_, _, data) = events.last().expect("expected yield attribution");
+    let attribution = YieldAttributedEvent::try_from_val(&env, data).unwrap();
+    assert_eq!(attribution.protocol, symbol_short!("dex"));
+    assert_eq!(attribution.amount, yield_amount);
+    assert_eq!(attribution.timestamp, report_timestamp);
 }
 
 // ============================================================================
