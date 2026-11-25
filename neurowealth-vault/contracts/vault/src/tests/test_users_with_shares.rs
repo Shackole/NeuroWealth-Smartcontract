@@ -6,6 +6,8 @@
 //! holders that were never pruned). See the function's doc comment for the
 //! stale-entry trade-off.
 
+extern crate std;
+
 use super::utils::*;
 use soroban_sdk::{testutils::Address as _, Address, Env};
 
@@ -124,4 +126,76 @@ fn test_redeposit_does_not_duplicate_index_entry() {
 
     // Only two index slots exist: a page starting at slot 2 is empty.
     assert_eq!(client.get_users_with_shares(&2, &10).len(), 0);
+}
+
+/// At four slots per page with four active holders:
+///
+/// | Inactive:active | Index slots scanned | Pages | Active results | Slots per result |
+/// |---|---:|---:|---:|---:|
+/// | 0:1 | 4 | 1 | 4 | 1 |
+/// | 1:1 | 8 | 2 | 4 | 2 |
+/// | 3:1 | 16 | 4 | 4 | 4 |
+///
+/// Each scanned slot incurs a persistent share lookup. Soroban host CPU and
+/// memory per page are printed when test output is shown (`--nocapture`).
+#[test]
+fn test_enumeration_scan_cost_across_inactive_ratios() {
+    use std::vec::Vec;
+
+    const ACTIVE_USERS: u32 = 4;
+    const PAGE_LIMIT: u32 = 4;
+    const DEPOSIT: i128 = 10_000_000;
+
+    for inactive_per_active in [0, 1, 3] {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.budget().reset_unlimited();
+        let (contract_id, _agent, _owner, usdc) = setup_vault_with_token(&env);
+        let client = NeuroWealthVaultClient::new(&env, &contract_id);
+
+        let mut expected = Vec::new();
+        for _ in 0..ACTIVE_USERS {
+            let holder = Address::generate(&env);
+            mint_and_deposit(&env, &client, &usdc, &holder, DEPOSIT);
+            expected.push(Some((holder, DEPOSIT)));
+
+            for _ in 0..inactive_per_active {
+                let exited = Address::generate(&env);
+                mint_and_deposit(&env, &client, &usdc, &exited, DEPOSIT);
+                assert_eq!(client.withdraw_all(&exited), DEPOSIT);
+                assert_eq!(client.get_shares(&exited), 0);
+                expected.push(None);
+            }
+        }
+
+        let index_slots = ACTIVE_USERS * (1 + inactive_per_active);
+        let mut returned = 0;
+        let mut total_cpu = 0;
+        let mut total_memory = 0;
+        for start in (0..index_slots).step_by(PAGE_LIMIT as usize) {
+            env.budget().reset_unlimited();
+            let page = client.get_users_with_shares(&start, &PAGE_LIMIT);
+            let cpu = env.budget().cpu_instruction_cost();
+            let memory = env.budget().memory_bytes_cost();
+            let end = start + PAGE_LIMIT;
+            let expected_page: Vec<_> = expected[start as usize..end as usize]
+                .iter()
+                .flatten()
+                .cloned()
+                .collect();
+            assert!(page.iter().eq(expected_page));
+            returned += page.len();
+            total_cpu += cpu;
+            total_memory += memory;
+            std::println!(
+                "inactive:active={inactive_per_active}:1 start={start} scanned={PAGE_LIMIT} returned={} cpu={cpu} memory={memory}",
+                page.len()
+            );
+        }
+        assert_eq!(returned, ACTIVE_USERS);
+        assert!(client.get_users_with_shares(&index_slots, &PAGE_LIMIT).is_empty());
+        std::println!(
+            "inactive:active={inactive_per_active}:1 scanned={index_slots} returned={returned} total_cpu={total_cpu} total_memory={total_memory}"
+        );
+    }
 }
