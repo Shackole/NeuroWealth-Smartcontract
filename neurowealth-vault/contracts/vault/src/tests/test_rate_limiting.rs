@@ -24,6 +24,40 @@ fn set_limit(
 }
 
 #[test]
+fn unset_rate_limit_config_and_buckets_return_defaults() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, _agent, _owner) = setup_vault(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+    let user = Address::generate(&env);
+    let category = RATE_LIMIT_PREVIEW;
+
+    // Initialization writes defaults. Remove this key to represent a vault
+    // deployed before rate-limit configuration was stored.
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .remove(&crate::DataKey::RateLimitConfig(category.clone()));
+    });
+
+    let expected_config = RateLimitConfig {
+        max_calls: 1_000,
+        window_ledgers: 1,
+    };
+    let empty_bucket = RateLimitState {
+        window_start: 0,
+        calls: 0,
+    };
+    assert_eq!(client.get_rate_limit(&category), expected_config);
+    assert_eq!(client.get_rate_limit_config(&category), expected_config);
+    assert_eq!(client.get_global_rate_limit_state(&category), empty_bucket);
+    assert_eq!(
+        client.get_user_rate_limit_state(&user, &category),
+        empty_bucket
+    );
+}
+
+#[test]
 fn owner_can_configure_each_rate_limit_category() {
     let env = Env::default();
     env.mock_all_auths();
