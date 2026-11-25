@@ -167,11 +167,11 @@ fn test_batch_touch_ttl_exceeds_max_batch_size() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner) = setup_vault(&env);
+    let (contract_id, _agent, _owner) = setup_vault(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
     // Set a small batch limit so we can test the guard without 51 users
-    client.set_max_batch_size(&owner, &3);
+    client.set_max_batch_size(&3);
 
     let mut users: Vec<Address> = Vec::new(&env);
     for _ in 0..4 {
@@ -191,10 +191,10 @@ fn test_batch_touch_ttl_at_max_batch_size_succeeds() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner) = setup_vault(&env);
+    let (contract_id, _agent, _owner) = setup_vault(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
-    client.set_max_batch_size(&owner, &3);
+    client.set_max_batch_size(&3);
 
     let mut users: Vec<Address> = Vec::new(&env);
     for _ in 0..3 {
@@ -250,4 +250,47 @@ fn test_batch_touch_ttl_emits_event() {
     let event: BatchTtlTouchedEvent = soroban_sdk::from_val(&env, &payload);
     assert_eq!(event.count, 2, "count should equal batch size");
     assert_eq!(event.users_extended, 1, "one user had shares");
+}
+
+#[test]
+fn test_batch_touch_ttl_preserves_duplicate_positions_at_max_batch_size() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (contract_id, _agent, _owner, usdc_token) = setup_vault_with_token(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+    let funded = Address::generate(&env);
+    let missing = Address::generate(&env);
+    mint_and_deposit(&env, &client, &usdc_token, &funded, 5_000_000);
+
+    let max_entries = client.get_max_batch_size();
+    assert!(max_entries >= 4, "both addresses must appear more than once");
+    client.set_rate_limit(&crate::RATE_LIMIT_TOUCH_TTL, &max_entries, &1);
+
+    let funded_before = client.get_user_info(&funded);
+    let missing_before = client.get_user_info(&missing);
+    assert!(funded_before.shares > 0);
+    assert_eq!(missing_before.shares, 0);
+
+    let mut users = Vec::new(&env);
+    for index in 0..max_entries {
+        users.push_back(if index % 2 == 0 {
+            funded.clone()
+        } else {
+            missing.clone()
+        });
+    }
+
+    let results = client.batch_touch_ttl(&users);
+    assert_eq!(results.len(), max_entries);
+    for index in 0..max_entries {
+        assert_eq!(results.get(index), Some(index % 2 == 0), "index {index}");
+    }
+
+    let funded_after = client.get_user_info(&funded);
+    let missing_after = client.get_user_info(&missing);
+    assert_eq!(funded_after.shares, funded_before.shares);
+    assert_eq!(funded_after.principal, funded_before.principal);
+    assert_eq!(missing_after.shares, missing_before.shares);
+    assert_eq!(missing_after.principal, missing_before.principal);
 }
