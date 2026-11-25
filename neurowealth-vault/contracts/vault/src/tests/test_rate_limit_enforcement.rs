@@ -18,7 +18,8 @@
 
 use super::utils::*;
 use crate::{
-    RATE_LIMIT_DEPOSIT, RATE_LIMIT_PREVIEW, RATE_LIMIT_REBALANCE, RATE_LIMIT_WITHDRAW,
+    RateLimitState, RATE_LIMIT_DEPOSIT, RATE_LIMIT_PREVIEW, RATE_LIMIT_REBALANCE,
+    RATE_LIMIT_WITHDRAW,
 };
 use soroban_sdk::{symbol_short, testutils::Address as _, testutils::Ledger, Address, Env};
 
@@ -308,5 +309,61 @@ fn fixed_window_resets_at_boundary_not_sliding() {
         state3.window_start,
         window_start + 4,
         "window_start must advance to the boundary ledger"
+    );
+}
+
+#[test]
+fn deposit_and_preview_counters_are_isolated_in_the_same_window() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, _agent, _owner, usdc_token) = setup_vault_with_token(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+    let user = Address::generate(&env);
+    let ledger = 100;
+    env.ledger().set_sequence_number(ledger);
+
+    set_limit(&client, RATE_LIMIT_DEPOSIT, 2, 10);
+    set_limit(&client, RATE_LIMIT_PREVIEW, 2, 10);
+    let empty = RateLimitState {
+        window_start: 0,
+        calls: 0,
+    };
+    let one_call = RateLimitState {
+        window_start: ledger,
+        calls: 1,
+    };
+
+    mint_and_deposit(&env, &client, &usdc_token, &user, 1_000_000);
+    assert_eq!(
+        client.get_user_rate_limit_state(&user, &RATE_LIMIT_DEPOSIT),
+        one_call
+    );
+    assert_eq!(
+        client.get_global_rate_limit_state(&RATE_LIMIT_PREVIEW),
+        empty
+    );
+
+    for _ in 0..2 {
+        assert_eq!(client.preview_deposit_to_shares(&1_000_000), 1_000_000);
+    }
+
+    assert_eq!(
+        client.get_global_rate_limit_state(&RATE_LIMIT_PREVIEW),
+        RateLimitState {
+            window_start: ledger,
+            calls: 2,
+        }
+    );
+    assert_eq!(
+        client.get_user_rate_limit_state(&user, &RATE_LIMIT_DEPOSIT),
+        one_call
+    );
+    assert_eq!(
+        client.get_global_rate_limit_state(&RATE_LIMIT_DEPOSIT),
+        empty
+    );
+    assert_eq!(
+        client.get_user_rate_limit_state(&user, &RATE_LIMIT_PREVIEW),
+        empty
     );
 }
