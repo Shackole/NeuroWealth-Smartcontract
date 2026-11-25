@@ -6970,7 +6970,8 @@ impl NeuroWealthVault {
         );
     }
 
-    /// Returns the list of supported deposit asset symbols (#646).
+    /// Returns supported deposit asset symbols in registration order (#646).
+    /// Removing an asset preserves the relative order of the remaining symbols.
     ///
     /// Empty until the owner registers the first asset via
     /// `add_supported_asset`.
