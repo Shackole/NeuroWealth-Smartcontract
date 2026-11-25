@@ -994,3 +994,61 @@ fn test_blend_withdraw_event_reports_actual_withdrawn_with_shortfall() {
         "Withdraw should be marked as successful even with partial fill"
     );
 }
+
+#[test]
+fn test_reapplying_deposit_limits_emits_unchanged_values() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, _agent, _owner) = setup_vault(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+    let min = 2_000_000;
+    let max = 20_000_000_000;
+
+    client.set_deposit_limits(&min, &max);
+    assert_eq!(client.get_min_deposit(), min);
+    assert_eq!(client.get_max_deposit(), max);
+    let events_before =
+        find_events_by_topic(env.events().all(), &env, TOPIC_DEPOSIT_LIMITS_UPDATED);
+
+    client.set_deposit_limits(&min, &max);
+
+    let events = find_events_by_topic(env.events().all(), &env, TOPIC_DEPOSIT_LIMITS_UPDATED);
+    assert_eq!(events.len(), events_before.len() + 1);
+    let (emitter, _, data) = &events[events_before.len()];
+    assert_eq!(emitter, &contract_id);
+    let event = DepositLimitsUpdatedEvent::try_from_val(&env, data)
+        .expect("deposit limits update should decode");
+    assert_eq!((event.old_min, event.old_max), (min, max));
+    assert_eq!((event.new_min, event.new_max), (min, max));
+    assert_eq!(client.get_min_deposit(), min);
+    assert_eq!(client.get_max_deposit(), max);
+}
+
+#[test]
+fn test_reapplying_batch_size_limit_emits_unchanged_values() {
+    use crate::{BatchSizeLimitUpdatedEvent, TOPIC_BATCH_SIZE_LIMIT_UPDATED};
+
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, _agent, owner) = setup_vault(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+    let limit = 7;
+
+    client.set_max_batch_size(&limit);
+    assert_eq!(client.get_max_batch_size(), limit);
+    let events_before =
+        find_events_by_topic(env.events().all(), &env, TOPIC_BATCH_SIZE_LIMIT_UPDATED);
+
+    client.set_max_batch_size(&limit);
+
+    let events = find_events_by_topic(env.events().all(), &env, TOPIC_BATCH_SIZE_LIMIT_UPDATED);
+    assert_eq!(events.len(), events_before.len() + 1);
+    let (emitter, _, data) = &events[events_before.len()];
+    assert_eq!(emitter, &contract_id);
+    let event = BatchSizeLimitUpdatedEvent::try_from_val(&env, data)
+        .expect("batch size limit update should decode");
+    assert_eq!(event.old_max_entries, limit);
+    assert_eq!(event.new_max_entries, limit);
+    assert_eq!(event.owner, owner);
+    assert_eq!(client.get_max_batch_size(), limit);
+}
