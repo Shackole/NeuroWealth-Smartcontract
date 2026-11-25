@@ -33,6 +33,7 @@ mod test_initialize;
 mod test_legacy_inline;
 mod test_limits;
 mod test_math_limits;
+mod test_migration_pause_independence;
 mod test_multi_protocol;
 mod test_multi_user_concurrent;
 mod test_multi_asset;
