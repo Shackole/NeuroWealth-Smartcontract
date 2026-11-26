@@ -1,0 +1,7 @@
+{
+  "compound-growth": [
+    { "label": "Starting balance", "balance": 1000 },
+    { "label": "After one year", "balance": 1080 },
+    { "label": "After two years", "balance": 1166.4 }
+  ]
+}

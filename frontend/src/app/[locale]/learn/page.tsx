@@ -1,6 +1,7 @@
 import React from 'react';
 import { BookOpen, TrendingUp, Layers, RefreshCw, DollarSign, Zap, ArrowLeft } from 'lucide-react';
 import Link from 'next/link';
+import { SampleChart } from "./SampleChart";
 
 interface GlossaryEntry {
   term: string;
@@ -121,6 +122,8 @@ export default function LearnPage() {
             harvest) — it cannot withdraw funds to arbitrary addresses.
           </p>
         </section>
+
+        <SampleChart />
 
         {/* Glossary */}
         <section aria-labelledby="glossary-heading">
