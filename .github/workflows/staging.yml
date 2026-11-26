@@ -3,18 +3,52 @@ name: Staging Deploy
 on:
   push:
     branches: [staging]
+  pull_request:
+    paths:
+      - '.github/workflows/staging.yml'
+      - 'scripts/staging-inputs.py'
+      - '.github/staging-input-matrix.json'
   workflow_dispatch:
+    inputs:
+      mode:
+        description: Validate inputs only or deploy to staging
+        type: choice
+        required: true
+        default: rehearse
+        options: [rehearse, deploy]
+      scope:
+        description: Deploy the contract only or run the full staging pipeline
+        type: choice
+        required: true
+        default: full
+        options: [full, contract-only]
 
 permissions:
   contents: read
 
 concurrency:
-  group: staging-deploy
+  group: ${{ (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'deploy')) && 'staging-deploy' || format('staging-rehearsal-{0}', github.run_id) }}
   cancel-in-progress: false
 
 jobs:
+  validate-inputs:
+    name: Validate staging dispatch inputs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check the rehearsal matrix offline
+        run: python3 scripts/staging-inputs.py --matrix .github/staging-input-matrix.json
+      - name: Validate this invocation
+        if: github.event_name != 'pull_request'
+        env:
+          MODE: ${{ github.event_name == 'push' && 'deploy' || inputs.mode }}
+          SCOPE: ${{ github.event_name == 'push' && 'full' || inputs.scope }}
+        run: python3 scripts/staging-inputs.py --mode="$MODE" --scope="$SCOPE"
+
   deploy-contract:
     name: Deploy vault to Stellar testnet
+    needs: validate-inputs
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'deploy')
     runs-on: ubuntu-latest
     environment: staging
     outputs:
@@ -50,6 +84,7 @@ jobs:
   deploy-services:
     name: Deploy frontend and agent
     needs: deploy-contract
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.scope == 'full')
     runs-on: ubuntu-latest
     environment: staging
     steps:
