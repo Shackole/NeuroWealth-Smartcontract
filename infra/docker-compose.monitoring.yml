@@ -6,7 +6,7 @@
 #   - Alertmanager (receives alerts from Prometheus)
 #
 # Usage:
-#   docker-compose -f infra/docker-compose.monitoring.yml up -d
+#   ./infra/monitoring-deployment.sh deploy /absolute/path/to/deployment-record
 #
 # Prerequisites:
 #   - The Node.js agent must be running and exposing /metrics
@@ -41,6 +41,8 @@ services:
 
   # ── Prometheus ─────────────────────────────────────────────────────────────
   prometheus:
+    labels:
+      org.neurowealth.monitoring.config-sha256: "${MONITORING_CONFIG_SHA256:-unrecorded}"
     image: prom/prometheus:v2.51.0
     <<: *restart-policy
     logging: *bounded-logging
@@ -57,9 +59,9 @@ services:
       - "9090:9090"
     volumes:
       # Main scrape config
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ${MONITORING_CONFIG_DIR:-.}/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       # Alert rules
-      - ./rules:/etc/prometheus/rules:ro
+      - ${MONITORING_CONFIG_DIR:-.}/rules:/etc/prometheus/rules:ro
       # Persistent TSDB storage
       - prometheus_data:/prometheus
     command:
@@ -83,6 +85,8 @@ services:
 
   # ── Alertmanager ───────────────────────────────────────────────────────────
   alertmanager:
+    labels:
+      org.neurowealth.monitoring.config-sha256: "${MONITORING_CONFIG_SHA256:-unrecorded}"
     image: prom/alertmanager:v0.27.0
     <<: *restart-policy
     logging: *bounded-logging
@@ -98,7 +102,7 @@ services:
     ports:
       - "9093:9093"
     volumes:
-      - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - ${MONITORING_CONFIG_DIR:-.}/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
       - alertmanager_data:/alertmanager
     command:
       - "--config.file=/etc/alertmanager/alertmanager.yml"
@@ -112,6 +116,8 @@ services:
 
   # ── Grafana ────────────────────────────────────────────────────────────────
   grafana:
+    labels:
+      org.neurowealth.monitoring.config-sha256: "${MONITORING_CONFIG_SHA256:-unrecorded}"
     image: grafana/grafana:10.4.2
     <<: *restart-policy
     logging: *bounded-logging
@@ -128,9 +134,9 @@ services:
       - "3030:3000"
     volumes:
       # Provisioning: datasources and dashboard discovery
-      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ${MONITORING_CONFIG_DIR:-.}/grafana/provisioning:/etc/grafana/provisioning:ro
       # Dashboard JSON files (hot-reloaded every 30 s)
-      - ../docs/grafana:/etc/grafana/dashboards:ro
+      - ${MONITORING_DASHBOARDS_DIR:-../docs/grafana}:/etc/grafana/dashboards:ro
       # Persistent Grafana state (plugins, preferences, alert history)
       - grafana_data:/var/lib/grafana
     environment:
