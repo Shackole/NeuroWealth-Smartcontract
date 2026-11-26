@@ -81,9 +81,9 @@ run_soroban() {
   local description="$1"
   shift
   log "Running: $description"
-  log "  Command: stellar $*"
+  log "  Command: $CLI $*"
   local output
-  if output=$(timeout "$TIMEOUT_SECS" stellar "$@" 2>&1); then
+  if output=$(timeout "$TIMEOUT_SECS" "$CLI" "$@" 2>&1); then
     log "  OK"
     echo "$output"
     return 0
@@ -95,23 +95,73 @@ run_soroban() {
   fi
 }
 
-cleanup_on_exit() {
-  log_section "E2E SUMMARY"
-  log "Passed: $PASS_COUNT"
-  log "Failed: $FAIL_COUNT"
-  printf "%b" "$SCENARIO_LOG" | tee "$ARTIFACTS_DIR/summary.txt"
-  log "Artifacts directory: $ARTIFACTS_DIR"
+fixture_root="${E2E_FIXTURE_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/neurowealth/e2e-fixtures}"
+if [[ "$fixture_root" != /* ]]; then
+  log "ERROR: E2E_FIXTURE_ROOT must be absolute."
+  exit 2
+fi
+
+cleanup_fixtures() {
+  if [[ ! -e "$fixture_dir" && ! -L "$fixture_dir" ]]; then
+    log "fixture_cleanup run_id=$run_id outcome=already_absent path=$fixture_dir"
+  elif rm -rf -- "$fixture_dir"; then
+    log "fixture_cleanup run_id=$run_id outcome=removed path=$fixture_dir"
+  else
+    log "fixture_cleanup run_id=$run_id outcome=failed path=$fixture_dir"
+    return 1
+  fi
 }
 
-trap cleanup_on_exit EXIT
+cleanup_on_exit() {
+  local status=$?
+  trap - EXIT
+  cleanup_fixtures || {
+    if (( status == 0 )); then status=1; fi
+  }
+  log_section "E2E SUMMARY"
+  log "Run ID: $run_id"
+  log "Passed: $PASS_COUNT"
+  log "Failed: $FAIL_COUNT"
+  printf "%b" "$SCENARIO_LOG" | tee "$ARTIFACTS_DIR/summary.txt" || true
+  log "Artifacts directory: $ARTIFACTS_DIR"
+  exit "$status"
+}
 
-# ---------------------------------------------------------------------------
-# Pre-flight checks
-# ---------------------------------------------------------------------------
+case $# in
+  0) run_id="${E2E_RUN_ID:-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-$(date -u +%s)-$$}}" ;;
+  2) [[ "$1" == --cleanup ]] || exit 2
+     run_id="$2" ;;
+  *) log "Usage: $0 [--cleanup RUN_ID]"
+     exit 2 ;;
+esac
 
-log_section "PRE-FLIGHT CHECKS"
+if [[ ! "$run_id" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$ ]]; then
+  log "ERROR: Invalid E2E run ID."
+  exit 2
+fi
+
+fixture_dir="$fixture_root/$run_id"
+if (( $# == 2 )); then
+  cleanup_fixtures
+  exit
+fi
 
 mkdir -p "$ARTIFACTS_DIR"
+(umask 077; mkdir -p -- "$fixture_root")
+if ! mkdir -m 700 -- "$fixture_dir"; then
+  log "fixture_setup run_id=$run_id outcome=failed path=$fixture_dir"
+  exit 1
+fi
+trap cleanup_on_exit EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+log "fixture_setup run_id=$run_id outcome=created path=$fixture_dir"
+# Anchor Stellar's project config lookup here, including older CLI versions.
+mkdir -- "$fixture_dir/.stellar" "$fixture_dir/.soroban"
+export XDG_CONFIG_HOME="$fixture_dir"
+cd "$fixture_dir"
+
+log_section "PRE-FLIGHT CHECKS"
 
 # Check for stellar CLI (replaces soroban CLI in recent versions)
 STELLAR_VERSION=$(cat "$REPO_ROOT/.stellar-version" | tr -d '[:space:]')
