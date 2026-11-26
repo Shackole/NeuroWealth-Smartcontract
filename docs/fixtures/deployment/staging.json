@@ -1,0 +1,6 @@
+{
+  "environment": "staging",
+  "network": "testnet",
+  "contract_id": "CAAACAQDAQCQMBYIBEFAWDANBYHRAEISCMKBKFQXDAMRUGY4DUPB6N4O",
+  "wasm_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+}
