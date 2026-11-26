@@ -1,0 +1,21 @@
+name: Prometheus Rules
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Validate alert rules and run fixtures
+        run: |
+          # Match the Prometheus version in infra/docker-compose.monitoring.yml.
+          docker run --rm -v "$PWD/infra:/infra:ro" -w /infra \
+            --entrypoint /bin/promtool prom/prometheus:v2.51.0 \
+            check rules rules/neurowealth_alerts.yml
+          docker run --rm -v "$PWD/infra:/infra:ro" -w /infra \
+            --entrypoint /bin/promtool prom/prometheus:v2.51.0 \
+            test rules tests/neurowealth_alerts.test.yml
