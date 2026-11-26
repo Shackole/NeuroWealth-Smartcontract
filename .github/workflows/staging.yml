@@ -3,17 +3,28 @@ name: Staging Deploy
 on:
   push:
     branches: [staging]
+  schedule:
+    - cron: "23 * * * *"
   workflow_dispatch:
+    inputs:
+      operation:
+        description: Staging operation
+        type: choice
+        default: deploy
+        options:
+          - deploy
+          - synthetic-read
 
 permissions:
   contents: read
 
 concurrency:
-  group: staging-deploy
+  group: ${{ (github.event_name == 'schedule' || inputs.operation == 'synthetic-read') && 'staging-synthetic-read' || 'staging-deploy' }}
   cancel-in-progress: false
 
 jobs:
   deploy-contract:
+    if: github.event_name != 'schedule' && inputs.operation != 'synthetic-read'
     name: Deploy vault to Stellar testnet
     runs-on: ubuntu-latest
     environment: staging
@@ -117,3 +128,68 @@ jobs:
         env:
           STAGING_BASE_URL: ${{ vars.STAGING_BASE_URL }}
         run: npm run test:e2e
+
+  synthetic-vault-read:
+    name: Probe the configured testnet vault
+    if: github.event_name == 'schedule' || inputs.operation == 'synthetic-read'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: staging
+    env:
+      VAULT_CONTRACT_ID: ${{ vars.STAGING_VAULT_CONTRACT_ID }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Stellar CLI for the probe
+        id: stellar
+        run: |
+          VERSION="$(tr -d '[:space:]' < .stellar-version)"
+          mkdir -p "$RUNNER_TEMP/stellar-cli"
+          curl -fsSL --max-time 60 "https://github.com/stellar/stellar-cli/releases/download/v${VERSION}/stellar-cli-${VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
+            | tar -xz -C "$RUNNER_TEMP/stellar-cli"
+          STELLAR_BIN="$(find "$RUNNER_TEMP/stellar-cli" -type f -name stellar -print -quit)"
+          chmod +x "$STELLAR_BIN"
+          dirname "$STELLAR_BIN" >> "$GITHUB_PATH"
+
+      - name: Simulate get_version and record the result
+        if: ${{ !cancelled() }}
+        env:
+          CLI_INSTALL_OUTCOME: ${{ steps.stellar.outcome }}
+        run: |
+          network=testnet
+          contract_id_display="(missing)"
+          failure_class=none
+          if [[ -n "$VAULT_CONTRACT_ID" ]]; then
+            contract_id_display="(invalid)"
+          fi
+
+          if [[ ! "$VAULT_CONTRACT_ID" =~ ^C[A-Z2-7]{55}$ ]]; then
+            failure_class=configuration
+          else
+            contract_id_display="$VAULT_CONTRACT_ID"
+            if [[ "$CLI_INSTALL_OUTCOME" != success ]]; then
+              failure_class=cli_setup
+            elif version=$(timeout 45s stellar contract invoke --network "$network" \
+                --id "$VAULT_CONTRACT_ID" --is-view -- get_version); then
+              if [[ ! "$version" =~ ^[1-9][0-9]*$ ]]; then
+                failure_class=unexpected_result
+              fi
+            elif [[ $? -eq 124 ]]; then
+              failure_class=timeout
+            else
+              failure_class=read_failed
+            fi
+          fi
+
+          {
+            echo "## Synthetic vault read"
+            echo
+            echo "| Network | Contract ID | Failure class |"
+            echo "| --- | --- | --- |"
+            echo "| $network | $contract_id_display | $failure_class |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [[ "$failure_class" != none ]]; then
+            echo "::error::Synthetic vault read failed ($failure_class)"
+            exit 1
+          fi
