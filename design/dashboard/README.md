@@ -1,9 +1,10 @@
 # Dashboard — Design Handoff
 
-**Issue:** #98, #491  
+**Issue:** #98, #491, #685  
 **Specs:**
 - Wireframes: [docs/DASHBOARD_WIREFRAMES.md](../../docs/DASHBOARD_WIREFRAMES.md)
 - Transaction Progress Vocabulary: [design/dashboard/TRANSACTION_PROGRESS_VOCABULARY.md](TRANSACTION_PROGRESS_VOCABULARY.md)
+- Address Copy Feedback & Access: [design/dashboard/ADDRESS_COPY_FEEDBACK.md](ADDRESS_COPY_FEEDBACK.md)
 
 ## Asset Inventory
 
