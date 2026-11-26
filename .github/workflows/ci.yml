@@ -264,7 +264,7 @@ jobs:
         with:
           name: neurowealth-vault-wasm
           path: ${{ env.WASM_FILE }}
-          retention-days: 14
+          retention-days: 30
 
   kani-share-math:
     name: Kani Share-Accounting Proofs
