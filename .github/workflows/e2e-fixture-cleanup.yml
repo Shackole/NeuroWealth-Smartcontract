@@ -1,0 +1,29 @@
+name: E2E Fixture Cleanup
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/e2e-fixture-cleanup.yml'
+      - 'scripts/e2e-devnet.sh'
+
+permissions:
+  contents: read
+
+jobs:
+  cleanup-retry:
+    name: Rehearse fixture cleanup offline
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Remove interrupted fixtures and verify retry
+        shell: bash
+        run: |
+          export E2E_FIXTURE_ROOT="$(mktemp -d)"
+          trap 'rm -rf -- "$E2E_FIXTURE_ROOT"' EXIT
+          mkdir -p "$E2E_FIXTURE_ROOT/interrupted/.soroban/identity" "$E2E_FIXTURE_ROOT/other-run"
+          touch "$E2E_FIXTURE_ROOT/interrupted/.soroban/identity/e2e-user.toml"
+          ./scripts/e2e-devnet.sh --cleanup interrupted | tee "$E2E_FIXTURE_ROOT/first.log"
+          ./scripts/e2e-devnet.sh --cleanup interrupted | tee "$E2E_FIXTURE_ROOT/retry.log"
+          grep -F 'fixture_cleanup run_id=interrupted outcome=removed ' "$E2E_FIXTURE_ROOT/first.log"
+          grep -F 'fixture_cleanup run_id=interrupted outcome=already_absent ' "$E2E_FIXTURE_ROOT/retry.log"
+          [[ ! -e "$E2E_FIXTURE_ROOT/interrupted" && -d "$E2E_FIXTURE_ROOT/other-run" ]]
