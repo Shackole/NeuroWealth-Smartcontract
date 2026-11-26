@@ -34,21 +34,27 @@ jobs:
   validate-inputs:
     name: Validate staging dispatch inputs
     runs-on: ubuntu-latest
+    outputs:
+      plan: ${{ steps.invocation.outputs.plan }}
     steps:
       - uses: actions/checkout@v7
       - name: Check the rehearsal matrix offline
         run: python3 scripts/staging-inputs.py --matrix .github/staging-input-matrix.json
       - name: Validate this invocation
+        id: invocation
         if: github.event_name != 'pull_request'
         env:
           MODE: ${{ github.event_name == 'push' && 'deploy' || inputs.mode }}
           SCOPE: ${{ github.event_name == 'push' && 'full' || inputs.scope }}
-        run: python3 scripts/staging-inputs.py --mode="$MODE" --scope="$SCOPE"
+        run: |
+          plan="$(python3 scripts/staging-inputs.py --mode="$MODE" --scope="$SCOPE")"
+          echo "Staging plan: $plan"
+          echo "plan=$plan" >> "$GITHUB_OUTPUT"
 
   deploy-contract:
     name: Deploy vault to Stellar testnet
     needs: validate-inputs
-    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'deploy')
+    if: needs.validate-inputs.outputs.plan == 'deploy-full' || needs.validate-inputs.outputs.plan == 'deploy-contract'
     runs-on: ubuntu-latest
     environment: staging
     outputs:
@@ -83,8 +89,8 @@ jobs:
 
   deploy-services:
     name: Deploy frontend and agent
-    needs: deploy-contract
-    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.scope == 'full')
+    needs: [validate-inputs, deploy-contract]
+    if: needs.validate-inputs.outputs.plan == 'deploy-full'
     runs-on: ubuntu-latest
     environment: staging
     steps:
