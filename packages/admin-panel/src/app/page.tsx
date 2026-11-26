@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { Suspense, useState, useEffect } from "react";
 import { VaultClient } from "@neurowealth/vault-client";
 import { useStore } from "@/lib/store";
 import { getSorobanServer, NETWORKS, signWithFreighter } from "@/lib/stellar";
@@ -30,23 +30,33 @@ export default function AdminDashboard() {
   } = useStore();
   const [client, setClient] = useState<VaultClient | null>(null);
   const [signer, setSigner] = useState<StellarSdk.Keypair | null>(null);
-  const [owner, setOwner] = useState<string | null>(null);
+  const [verifiedOwner, setVerifiedOwner] = useState<{
+    address: string;
+    scope: string;
+  } | null>(null);
   const [currentLedger, setCurrentLedger] = useState<number>(0);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [inputContractId, setInputContractId] = useState(contractId || "");
 
+  const effectiveContractId = inputContractId || contractId;
+  const verificationScope = JSON.stringify([network, effectiveContractId, publicKey]);
+  const owner = verifiedOwner?.scope === verificationScope ? verifiedOwner.address : null;
+
   // Initialize client and check admin status
   useEffect(() => {
     if (!isConnected || !publicKey) return;
+
+    let cancelled = false;
+    setVerifiedOwner(null);
+    setIsAdmin(false);
 
     const initClient = async () => {
       setLoading(true);
       setError(null);
 
       try {
-        const effectiveContractId = inputContractId || contractId;
         if (!effectiveContractId) {
           setError("Contract ID not configured");
           setLoading(false);
@@ -71,7 +81,8 @@ export default function AdminDashboard() {
           const contractOwner = await sorobanClient.get_owner(
             tempKeypair.publicKey(),
           );
-          setOwner(contractOwner);
+          if (cancelled) return;
+          setVerifiedOwner({ address: contractOwner, scope: verificationScope });
 
           // Check if connected user is owner
           if (contractOwner === publicKey) {
@@ -81,14 +92,15 @@ export default function AdminDashboard() {
             setIsAdmin(false);
           }
         } catch (err) {
-          setError(`Failed to verify contract owner: ${err}`);
+          if (!cancelled) setError(`Failed to verify contract owner: ${err}`);
+          return;
         }
 
         // Get current ledger
         try {
           const server = getSorobanServer(network);
           const latestLedger = await server.getLatestLedger();
-          setCurrentLedger(latestLedger.sequence);
+          if (!cancelled) setCurrentLedger(latestLedger.sequence);
         } catch (err) {
           console.warn("Failed to get current ledger:", err);
         }
@@ -98,12 +110,15 @@ export default function AdminDashboard() {
         );
         setIsAdmin(false);
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     };
 
     initClient();
-  }, [isConnected, publicKey, network, contractId, inputContractId]);
+    return () => {
+      cancelled = true;
+    };
+  }, [isConnected, publicKey, network, effectiveContractId, verificationScope, setIsAdmin, storeSetContractId]);
 
   // Create signer when needed
   const createSigner = async () => {
@@ -198,7 +213,7 @@ export default function AdminDashboard() {
 
         {error && (
           <div className="mb-8 p-4 bg-red-900/20 border border-red-700 rounded">
-            <p className="text-sm text-red-300">{error}</p>
+            <p role="alert" className="text-sm text-red-300">{error}</p>
           </div>
         )}
 
@@ -233,10 +248,12 @@ export default function AdminDashboard() {
               <h2 className="text-2xl font-bold mb-4 text-emerald-400">
                 Emergency Controls
               </h2>
-              <PauseControl
-                client={client}
-                signer={StellarSdk.Keypair.random()}
-              />
+              <Suspense fallback={<p>Loading emergency controls…</p>}>
+                <PauseControl
+                  client={client}
+                  signer={StellarSdk.Keypair.random()}
+                />
+              </Suspense>
             </section>
 
             {/* Configuration */}

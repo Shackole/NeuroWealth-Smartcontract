@@ -14,6 +14,9 @@
  *  - Non-owner wallets see only a read-only view (owner gate in parent page)
  */
 
+import Link from "next/link";
+import { useSearchParams } from "next/navigation";
+import type { PauseEvent } from "@/lib/pause-events";
 import { useState, useEffect, useCallback } from "react";
 import { VaultClient } from "@neurowealth/vault-client";
 import { useStore } from "@/lib/store";
@@ -34,14 +37,6 @@ import * as StellarSdk from "@stellar/stellar-sdk";
 interface PauseControlProps {
   client: VaultClient;
   signer: StellarSdk.Keypair;
-}
-
-export interface PauseEvent {
-  id: string;
-  action: "PAUSED" | "UNPAUSED";
-  timestamp: number; // unix ms
-  txHash: string;
-  triggeredBy: string; // address
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -67,6 +62,7 @@ function truncateHash(hash: string, chars = 8): string {
 
 export function PauseControl({ client, signer }: PauseControlProps) {
   const { network } = useStore();
+  const eventId = useSearchParams().get("event");
 
   // ── State ──────────────────────────────────────────────────────────────────
   const [paused, setPaused] = useState<boolean | null>(null);
@@ -83,8 +79,10 @@ export function PauseControl({ client, signer }: PauseControlProps) {
 
   // Activity log
   const [activityLog, setActivityLog] = useState<PauseEvent[]>([]);
-  const [logLoading, setLogLoading] = useState(false);
+  const [logLoading, setLogLoading] = useState(true);
   const [logError, setLogError] = useState<string | null>(null);
+
+  const selectedEvent = activityLog.find((event) => event.id === eventId);
 
   // ── Fetchers ───────────────────────────────────────────────────────────────
 
@@ -375,15 +373,37 @@ export function PauseControl({ client, signer }: PauseControlProps) {
                       by {truncateAddress(event.triggeredBy)}
                     </span>
                   </div>
-                  <span
-                    className="font-mono text-slate-500 shrink-0"
+                  <Link
+                    href={{ pathname: "/", query: { event: event.id } }}
+                    className="font-mono text-emerald-400 shrink-0 hover:underline"
+                    aria-label={`View ${event.action.toLowerCase()} event ${event.id}`}
+                    aria-current={eventId === event.id ? "location" : undefined}
                     title={event.txHash}
                   >
                     {truncateHash(event.txHash)}
-                  </span>
+                  </Link>
                 </li>
               ))}
             </ul>
+          )}
+          {eventId !== null && !logLoading && !logError && (
+            <section aria-labelledby="pause-event-heading" className="mt-4 rounded-lg border border-slate-700 p-4">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <h3 id="pause-event-heading" className="font-semibold">Pause event details</h3>
+                <Link href="/" className="text-sm text-emerald-400 hover:underline">Close details</Link>
+              </div>
+              {selectedEvent ? (
+                <dl className="space-y-2 break-all text-sm">
+                  <div><dt className="text-slate-400">Event ID</dt><dd>{selectedEvent.id}</dd></div>
+                  <div><dt className="text-slate-400">Action</dt><dd>{selectedEvent.action}</dd></div>
+                  <div><dt className="text-slate-400">Recorded at (UTC)</dt><dd>{new Date(selectedEvent.timestamp).toISOString()}</dd></div>
+                  <div><dt className="text-slate-400">Transaction hash</dt><dd>{selectedEvent.txHash}</dd></div>
+                  <div><dt className="text-slate-400">Triggered by</dt><dd>{selectedEvent.triggeredBy}</dd></div>
+                </dl>
+              ) : (
+                <p role="status" className="text-sm text-slate-300">This event was not found in the activity log.</p>
+              )}
+            </section>
           )}
         </div>
       </div>
