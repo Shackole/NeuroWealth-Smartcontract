@@ -131,6 +131,7 @@ jobs:
         shell: bash
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/neurowealth-target
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
           case "${{ matrix.step }}" in
@@ -174,23 +175,45 @@ jobs:
               WASM_SIZE=$(stat -c%s "$WASM_FILE")
               LIMIT="${WASM_SIZE_LIMIT_BYTES:-1500000}"
               BASE_BRANCH="${GITHUB_BASE_REF:-${GITHUB_REF_NAME}}"
-              BASELINE_FILE=".github/wasm-size-history.json"
-              BASELINE_SOURCE_FILE="$BASELINE_FILE"
+              BASELINE_PATH=".github/wasm-size-history.json"
+              BASELINE_FILE="$GITHUB_WORKSPACE/$BASELINE_PATH"
               BASELINE_SIZE=""
-              DELTA_BYTES=""
               DELTA_DISPLAY="n/a"
 
               if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
-                git fetch origin "$BASE_BRANCH" --depth=1 >/dev/null 2>&1 || true
-                if git show "origin/$BASE_BRANCH:$BASELINE_SOURCE_FILE" > "$RUNNER_TEMP/wasm-size-baseline.json" 2>/dev/null; then
-                  BASELINE_FILE="$RUNNER_TEMP/wasm-size-baseline.json"
-                else
-                  BASELINE_FILE="$BASELINE_SOURCE_FILE"
+                git fetch --no-tags --depth=1 origin "$PR_BASE_SHA"
+                BASELINE_FILE="$RUNNER_TEMP/wasm-size-baseline.json"
+                if ! git show "$PR_BASE_SHA:$BASELINE_PATH" > "$BASELINE_FILE"; then
+                  rm -f "$BASELINE_FILE"
                 fi
               fi
 
               if [ -f "$BASELINE_FILE" ]; then
-                BASELINE_SIZE=$(python3 - "$BASELINE_FILE" "$BASE_BRANCH" -c "import json, sys; path, branch = sys.argv[1], sys.argv[2]; data = json.load(open(path)) if open(path) else {}; entry = data.get(branch, {}).get('latest'); print(entry.get('size_bytes', '') if entry else '')")
+                BASELINE_SIZE=$(python3 -c '
+          import json
+          import sys
+
+          with open(sys.argv[1], encoding="utf-8") as history:
+              latest = json.load(history).get(sys.argv[2], {}).get("latest", {})
+          size = latest.get("size_bytes")
+          if type(size) is int and size > 0:
+              print(size)
+          ' "$BASELINE_FILE" "$BASE_BRANCH")
+              fi
+
+              if [ -z "$BASELINE_SIZE" ] && [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+                BASE_WORKTREE="$RUNNER_TEMP/wasm-size-base"
+                git worktree add --detach "$BASE_WORKTREE" "$PR_BASE_SHA"
+                BASELINE_SIZE=$(
+                  cd "$BASE_WORKTREE/neurowealth-vault"
+                  export CARGO_TARGET_DIR="$RUNNER_TEMP/wasm-size-base-target"
+                  RUSTFLAGS="-C target-cpu=mvp" cargo build \
+                    -p neurowealth-vault --target wasm32-unknown-unknown --release
+                  BASE_WASM="$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/neurowealth_vault.wasm"
+                  wasm-opt --strip-target-features "$BASE_WASM" -o "$RUNNER_TEMP/baseline.wasm"
+                  stat -c%s "$RUNNER_TEMP/baseline.wasm"
+                )
+                git worktree remove --force "$BASE_WORKTREE"
               fi
 
               if [ -n "$BASELINE_SIZE" ]; then
@@ -210,7 +233,7 @@ jobs:
                 echo "| Metric | Value |"
                 echo "|--------|-------|"
                 echo "| Optimised size | ${WASM_SIZE} bytes |"
-                echo "| Limit          | ${LIMIT} bytes |"
+                echo "| Configured threshold | ${LIMIT} bytes |"
                 if [ -n "$BASELINE_SIZE" ]; then
                   echo "| Baseline (${BASE_BRANCH}) | ${BASELINE_SIZE} bytes |"
                   echo "| Delta vs ${BASE_BRANCH} | ${DELTA_DISPLAY} |"
@@ -230,16 +253,16 @@ jobs:
               fi
 
               if [ "$GITHUB_EVENT_NAME" = "push" ] && { [ "$GITHUB_REF_NAME" = "main" ] || [ "$GITHUB_REF_NAME" = "develop" ]; }; then
-                python3 scripts/update_wasm_baseline.py "$WASM_SIZE" "$GITHUB_SHA" "$GITHUB_REF_NAME" "$BASELINE_FILE"
+                python3 "$GITHUB_WORKSPACE/scripts/update_wasm_baseline.py" "$WASM_SIZE" "$GITHUB_SHA" "$GITHUB_REF_NAME" "$BASELINE_FILE"
               fi
 
               # Validate storage layout compatibility gate
-              mkdir -p scripts/e2e-artifacts
-              python3 scripts/check-storage-layout.py \
+              mkdir -p "$GITHUB_WORKSPACE/scripts/e2e-artifacts"
+              python3 "$GITHUB_WORKSPACE/scripts/check-storage-layout.py" \
                 "$WASM_FILE" \
                 "$WASM_FILE" \
-                --migration-doc docs/UPGRADE_MIGRATION.md \
-                --output scripts/e2e-artifacts/storage_layout_diff.txt
+                --migration-doc "$GITHUB_WORKSPACE/docs/UPGRADE_MIGRATION.md" \
+                --output "$GITHUB_WORKSPACE/scripts/e2e-artifacts/storage_layout_diff.txt"
 
               # Export the WASM path for the artifact upload step.
               echo "WASM_FILE=$WASM_FILE" >> "$GITHUB_ENV"
