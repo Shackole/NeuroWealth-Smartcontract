@@ -2,8 +2,7 @@ import type { MetadataRoute } from 'next';
 
 const BASE_URL = 'https://neurowealth.app';
 
-// All supported locales (must match src/i18n/request.ts)
-const locales = ['en', 'es', 'fr', 'pt', 'zh', 'ja'] as const;
+import { routing } from '@/i18n/routing';
 
 export default function sitemap(): MetadataRoute.Sitemap {
   const now = new Date();
@@ -17,7 +16,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
   };
 
   // One entry per locale
-  const localeEntries: MetadataRoute.Sitemap = locales.map((locale) => ({
+  const localeEntries: MetadataRoute.Sitemap = routing.locales.map((locale) => ({
     url: `${BASE_URL}/${locale}`,
     lastModified: now,
     changeFrequency: 'daily',
