@@ -1,8 +1,9 @@
 'use client';
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { ArrowDownLeft, ArrowUpRight, RefreshCw, ExternalLink, Download, Filter, ChevronDown } from 'lucide-react';
 import { TransactionRecord } from '@/lib/database';
+import { groupTransactionsByDay } from '@/lib/transactionDays';
 
 interface TransactionHistoryProps {
   transactions: TransactionRecord[];
@@ -82,6 +83,12 @@ function exportToCSV(transactions: TransactionRecord[]): void {
 }
 
 export const TransactionHistory: React.FC<TransactionHistoryProps> = ({ transactions }) => {
+  const [display, setDisplay] = useState({ locale: 'en', timeZone: 'UTC' });
+  useEffect(() => {
+    const { locale, timeZone } = Intl.DateTimeFormat().resolvedOptions();
+    setDisplay({ locale: document.documentElement.lang || locale, timeZone });
+  }, []);
+
   const [typeFilter, setTypeFilter] = useState<FilterType>('all');
   const [sortField, setSortField] = useState<SortField>('timestamp');
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
@@ -89,8 +96,28 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({ transact
 
   const filteredTransactions = useMemo(() => {
     const filtered = filterTransactions(transactions, typeFilter);
-    return sortTransactions(filtered, sortField, sortDirection);
-  }, [transactions, typeFilter, sortField, sortDirection]);
+    return filtered;
+  }, [transactions, typeFilter]);
+
+  const days = useMemo(() => {
+    // Keep the day sections chronological, including when rows are sorted by amount.
+    const chronological = sortTransactions(filteredTransactions, 'timestamp',
+      sortField === 'timestamp' ? sortDirection : 'desc');
+    return groupTransactionsByDay(chronological, display.timeZone).map((day) => ({
+      ...day,
+      transactions: sortField === 'amount'
+        ? sortTransactions(day.transactions, sortField, sortDirection)
+        : day.transactions,
+    }));
+  }, [filteredTransactions, sortField, sortDirection, display.timeZone]);
+  const dateFormatter = new Intl.DateTimeFormat(display.locale, {
+    timeZone: display.timeZone,
+    dateStyle: 'long',
+  });
+  const timeFormatter = new Intl.DateTimeFormat(display.locale, {
+    timeZone: display.timeZone,
+    timeStyle: 'long',
+  });
 
   const earnings = useMemo(() => {
     return calculateEarnings(transactions, earningsPeriod);
@@ -148,8 +175,8 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({ transact
           >
             <option value="timestamp-desc">Newest First</option>
             <option value="timestamp-asc">Oldest First</option>
-            <option value="amount-desc">Highest Amount</option>
-            <option value="amount-asc">Lowest Amount</option>
+            <option value="amount-desc">Highest Amount per Day</option>
+            <option value="amount-asc">Lowest Amount per Day</option>
           </select>
         </div>
 
@@ -183,52 +210,66 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({ transact
               <th className="py-3 px-4 text-right">Status</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-800/60 font-mono text-xs">
-            {filteredTransactions.map((tx) => (
-              <tr key={tx.id} className="hover:bg-slate-900/40 transition-colors">
-                <td className="py-3 px-4">
-                  <div className="flex items-center gap-2">
-                    {tx.type === 'deposit' && (
-                      <span className="p-1.5 rounded-lg bg-emerald-500/10 text-emerald-400">
-                        <ArrowDownLeft size={14} />
-                      </span>
-                    )}
-                    {tx.type === 'withdrawal' && (
-                      <span className="p-1.5 rounded-lg bg-indigo-500/10 text-indigo-400">
-                        <ArrowUpRight size={14} />
-                      </span>
-                    )}
-                    {tx.type === 'rebalance' && (
-                      <span className="p-1.5 rounded-lg bg-amber-500/10 text-amber-400">
-                        <RefreshCw size={14} />
-                      </span>
-                    )}
-                    <span className="capitalize font-sans font-medium text-slate-200">{tx.type}</span>
-                  </div>
-                </td>
-                <td className="py-3 px-4 font-semibold text-white">
-                  {tx.amount.toLocaleString()} USDC
-                </td>
-                <td className="py-3 px-4 text-slate-400">
-                  <a
-                    href={`https://stellar.expert/explorer/testnet/tx/${tx.txHash}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="flex items-center gap-1 hover:text-emerald-400 transition-colors"
-                  >
-                    <span>{tx.txHash}</span>
-                    <ExternalLink size={12} />
-                  </a>
-                </td>
-                <td className="py-3 px-4 text-slate-400">{tx.timestamp}</td>
-                <td className="py-3 px-4 text-right">
-                  <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                    {tx.status}
-                  </span>
-                </td>
+          {days.map((day) => (
+            <tbody key={day.key} className="divide-y divide-slate-800/60 font-mono text-xs">
+              <tr>
+                <th scope="rowgroup" colSpan={5} className="bg-slate-800/30 px-4 py-2 font-sans text-slate-200">
+                  {day.instant ? dateFormatter.format(day.instant) : 'Unknown date'}
+                </th>
               </tr>
-            ))}
-          </tbody>
+              {day.transactions.map((tx) => (
+                <tr key={tx.id} className="hover:bg-slate-900/40 transition-colors">
+                  <td className="py-3 px-4">
+                    <div className="flex items-center gap-2">
+                      {tx.type === 'deposit' && (
+                        <span className="p-1.5 rounded-lg bg-emerald-500/10 text-emerald-400">
+                          <ArrowDownLeft size={14} />
+                        </span>
+                      )}
+                      {tx.type === 'withdrawal' && (
+                        <span className="p-1.5 rounded-lg bg-indigo-500/10 text-indigo-400">
+                          <ArrowUpRight size={14} />
+                        </span>
+                      )}
+                      {tx.type === 'rebalance' && (
+                        <span className="p-1.5 rounded-lg bg-amber-500/10 text-amber-400">
+                          <RefreshCw size={14} />
+                        </span>
+                      )}
+                      <span className="capitalize font-sans font-medium text-slate-200">{tx.type}</span>
+                    </div>
+                  </td>
+                  <td className="py-3 px-4 font-semibold text-white">
+                    {tx.amount.toLocaleString()} USDC
+                  </td>
+                  <td className="py-3 px-4 text-slate-400">
+                    <a
+                      href={`https://stellar.expert/explorer/testnet/tx/${tx.txHash}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="flex items-center gap-1 hover:text-emerald-400 transition-colors"
+                    >
+                      <span>{tx.txHash}</span>
+                      <ExternalLink size={12} />
+                    </a>
+                  </td>
+                  <td className="py-3 px-4 text-slate-400">
+                    {day.instant ? (
+                      <>
+                        <time dateTime={tx.timestamp}>{timeFormatter.format(new Date(tx.timestamp))}</time>
+                        <span className="block text-slate-500">{new Date(tx.timestamp).toISOString()} (UTC)</span>
+                      </>
+                    ) : tx.timestamp}
+                  </td>
+                  <td className="py-3 px-4 text-right">
+                    <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                      {tx.status}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          ))}
         </table>
       </div>
 

@@ -978,3 +978,96 @@ Correlate the event with the failed transaction's contract error because the
 over-limit operation is reverted and event visibility for a failed transaction
 depends on the ledger/RPC surface.
 
+---
+
+## Event Provenance & Ledger Traceability
+
+To maintain a secure, immutable audit trail, indexers and monitoring daemons must be able to trace every recorded event back to its authoritative ledger origin.
+
+### 1. Provenance Metadata Retention
+
+When Soroban smart contracts emit events via `env.events().publish(topics, payload)`, the underlying Stellar network encapsulates each event within the block's transaction metadata. Indexers (such as `agent/src/eventListener.ts` and `packages/vault-client/src/event-listener.ts`) must retain the following provenance fields in relational databases (e.g. `events` or `transactions` tables):
+
+| Provenance Field | Type | Description | Source / Extraction |
+|---|---|---|---|
+| `contract_id` | `String` (56 chars, `C...`) | The Stellar contract address that emitted the event. | `event.contractId` from Soroban RPC `getEvents`. Guarantees events originate from the verified vault instance. |
+| `ledger` | `Number` / `u32` | The ledger sequence number (block height) in which the event was confirmed. | `event.ledger` from Soroban RPC. Represents the chronological consensus height. |
+| `ledger_closed_at` | `String` (ISO-8601 UTC) | The consensus close time of the ledger containing the event. | `event.ledgerClosedAt` from Soroban RPC. |
+| `tx_hash` | `String` (64-char hex) | The transaction hash of the transaction envelope containing this contract invocation. | `event.txHash` from Soroban RPC. Enables linking to Horizon transaction details and fee records. |
+| `event_id` | `String` | Unique, monotonically increasing composite cursor assigned by the network. | Formatted by Soroban RPC as `<ledger_sequence>-<tx_index>-<event_index>` (e.g., `0000000001042580-0000000001-0000000000`). |
+| `topics` | `Array<string>` | Decoded event topics identifying the event type and indexed keys. | `event.topic`, where topic[0] is the short symbol (e.g. `"deposit"`) and topic[1] is the optional indexed `Address`. |
+| `payload` | `JSON` / `ScVal` | Decoded payload struct matching the contract definitions in this document. | Decoded from `event.value` XDR ScVal. |
+
+### 2. Validating a Sample Event Record
+
+Consider the following sample event record stored by an indexer database:
+
+```json
+{
+  "event_id": "0000000001042580-0000000001-0000000000",
+  "contract_id": "CA3D5KRYMCM5J77435K5FND244W355Z3PVJ6LNVV252W4KKYNVVNQAAA",
+  "ledger": 1042580,
+  "ledger_closed_at": "2026-11-22T19:30:00Z",
+  "tx_hash": "a4f89d3c1b65e94b2323e20ef22f36113b288c3a9f5d130327f272c765798a65",
+  "topic": ["deposit", "GDQP2KPQGKIHYJGXNUIYOMHARUARCA7DJT5FO2FFOOKY3IFDXAINXKZM"],
+  "payload": {
+    "user": "GDQP2KPQGKIHYJGXNUIYOMHARUARCA7DJT5FO2FFOOKY3IFDXAINXKZM",
+    "amount": "1000000000",
+    "shares": "1000000000"
+  }
+}
+```
+
+To validate that this recorded event is authentic and matches the Stellar ledger source of truth, follow this verification procedure:
+
+#### Step 1: Validate Transaction Inclusion via Horizon or Soroban RPC
+
+Query the transaction by its `tx_hash`:
+
+```bash
+# Using Horizon RPC
+curl -s "https://horizon-testnet.stellar.org/transactions/a4f89d3c1b65e94b2323e20ef22f36113b288c3a9f5d130327f272c765798a65" | jq '{ successful: .successful, ledger: .ledger_attr, created_at: .created_at }'
+```
+
+**Verification checks**:
+- `successful` must be `true`.
+- `ledger_attr` must equal `1042580` (matching the indexed `ledger`).
+- `created_at` matches `ledger_closed_at`.
+
+#### Step 2: Query On-Chain Contract Events at Ledger Height
+
+Query the Soroban RPC `getEvents` endpoint filtered by the recorded `ledger` and `contract_id`:
+
+```bash
+curl -X POST "https://soroban-testnet.stellar.org" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "getEvents",
+    "params": {
+      "startLedger": 1042580,
+      "filters": [
+        {
+          "type": "contract",
+          "contractIds": ["CA3D5KRYMCM5J77435K5FND244W355Z3PVJ6LNVV252W4KKYNVVNQAAA"]
+        }
+      ]
+    }
+  }'
+```
+
+#### Step 3: Verify Cryptographic and Structural Match
+
+From the returned JSON-RPC events array:
+1. Locate the event with `txHash: "a4f89d3c1b65e94b2323e20ef22f36113b288c3a9f5d130327f272c765798a65"`.
+2. Verify `id` matches `0000000001042580-0000000001-0000000000`.
+3. Decode the returned `topic` and `value` ScVal XDR and compare against the indexed payload:
+   - Topic[0] is `Symbol("deposit")`.
+   - Topic[1] is `Address("GDQP...XKZM")`.
+   - Value struct matches `DepositEvent { user: "GDQP...XKZM", amount: 1000000000, shares: 1000000000 }`.
+4. Ensure `inSuccessfulContractCall` is `true`.
+
+If all assertions hold, the record is authenticated and proven traceable to the canonical Stellar ledger.
+
+

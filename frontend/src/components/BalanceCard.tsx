@@ -1,6 +1,9 @@
 'use client';
 
 import React from 'react';
+import Link from 'next/link';
+import { useParams } from 'next/navigation';
+import { DEPOSIT_ASSET } from '@/lib/depositAsset';
 import { DollarSign, ArrowUpRight, ArrowDownLeft, ShieldCheck } from 'lucide-react';
 
 interface BalanceCardProps {
@@ -20,6 +23,8 @@ export const BalanceCard: React.FC<BalanceCardProps> = ({
   onOpenWithdraw,
   isConnected
 }) => {
+  const locale = useParams<{ locale: string }>()?.locale ?? 'en';
+
   return (
     <div className="glass-panel-interactive rounded-2xl p-6 relative overflow-hidden">
       <div className="absolute top-0 right-0 w-48 h-48 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none" />
@@ -38,7 +43,17 @@ export const BalanceCard: React.FC<BalanceCardProps> = ({
           <span className="text-4xl font-extrabold tracking-tight text-white font-mono">
             {isConnected ? balance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00'}
           </span>
-          <span className="text-lg font-bold text-emerald-400">USDC</span>
+          {isConnected ? (
+            <Link
+              href={{ pathname: `/${locale}/deposit`, query: { asset: DEPOSIT_ASSET } }}
+              aria-label={`Deposit ${DEPOSIT_ASSET}`}
+              className="rounded text-lg font-bold text-emerald-400 underline underline-offset-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400"
+            >
+              {DEPOSIT_ASSET}
+            </Link>
+          ) : (
+            <span className="text-lg font-bold text-emerald-400">{DEPOSIT_ASSET}</span>
+          )}
         </div>
         <p className="text-sm text-slate-400 mt-1 font-mono">
           ≈ ${isConnected ? usdEquivalent.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00'} USD

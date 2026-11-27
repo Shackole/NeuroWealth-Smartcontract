@@ -5,6 +5,7 @@ import { Bot, Sparkles, BarChart3 } from 'lucide-react';
 import { WalletConnect } from './WalletConnect';
 import { LanguageSwitcher } from './LanguageSwitcher';
 import Link from 'next/link';
+import { useLocale } from 'next-intl';
 
 interface HeaderProps {
   publicKey: string | null;
@@ -13,6 +14,7 @@ interface HeaderProps {
 }
 
 export const Header: React.FC<HeaderProps> = ({ publicKey, onConnect, onDisconnect }) => {
+  const locale = useLocale();
   return (
     <header className="sticky top-0 z-50 w-full border-b border-slate-800/80 bg-[#080b11]/80 backdrop-blur-xl">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
@@ -43,7 +45,7 @@ export const Header: React.FC<HeaderProps> = ({ publicKey, onConnect, onDisconne
           <a href="#history" className="hover:text-emerald-400 transition-colors">Transactions</a>
           <a href="#whatsapp" className="hover:text-emerald-400 transition-colors">WhatsApp Bot</a>
           <Link
-            href="/stats"
+            href={`/${locale}/stats`}
             className="flex items-center gap-1.5 hover:text-emerald-400 transition-colors"
           >
             <BarChart3 size={14} />

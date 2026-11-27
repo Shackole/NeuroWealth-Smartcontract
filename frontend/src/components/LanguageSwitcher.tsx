@@ -1,25 +1,9 @@
 'use client';
 
-import { useEffect } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { useLocale, useTranslations } from 'next-intl';
 
-const SUPPORTED_LOCALES = ['en', 'es', 'fr', 'pt', 'zh', 'ja'];
 const LOCALE_STORAGE_KEY = 'neurowealth_locale';
-
-/**
- * Detect the user's preferred locale from the browser on first visit.
- * Falls back to 'en' when the browser language is not supported.
- */
-function detectBrowserLocale(): string {
-  if (typeof navigator === 'undefined') return 'en';
-  const langs = navigator.languages ?? [navigator.language];
-  for (const lang of langs) {
-    const base = lang.split('-')[0].toLowerCase();
-    if (SUPPORTED_LOCALES.includes(base)) return base;
-  }
-  return 'en';
-}
 
 export function LanguageSwitcher() {
   const t = useTranslations('LanguageSwitcher');
@@ -27,28 +11,12 @@ export function LanguageSwitcher() {
   const router = useRouter();
   const pathname = usePathname();
 
-  // Auto-detect browser locale on first visit
-  useEffect(() => {
-    const saved = localStorage.getItem(LOCALE_STORAGE_KEY);
-    if (!saved) {
-      const detected = detectBrowserLocale();
-      if (detected !== locale) {
-        localStorage.setItem(LOCALE_STORAGE_KEY, detected);
-        const currentPath = pathname.replace(`/${locale}`, '');
-        router.replace(`/${detected}${currentPath}`);
-      } else {
-        localStorage.setItem(LOCALE_STORAGE_KEY, locale);
-      }
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   const handleLanguageChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const nextLocale = e.target.value;
     // Persist preference to localStorage
     localStorage.setItem(LOCALE_STORAGE_KEY, nextLocale);
-    const currentPath = pathname.replace(`/${locale}`, '');
-    router.replace(`/${nextLocale}${currentPath}`);
+    const currentPath = pathname.replace(/^\/[^/]+/, '');
+    router.replace(`/${nextLocale}${currentPath}${window.location.search}${window.location.hash}`);
   };
 
   return (

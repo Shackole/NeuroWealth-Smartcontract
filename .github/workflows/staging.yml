@@ -116,4 +116,4 @@ jobs:
         working-directory: frontend
         env:
           STAGING_BASE_URL: ${{ vars.STAGING_BASE_URL }}
-        run: npm run test:e2e
+        run: npm run test:e2e# staging evidence timing
