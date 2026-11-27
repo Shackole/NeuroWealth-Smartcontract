@@ -11,12 +11,17 @@ body {
   font-family: system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  color: #111827;
-  background-color: #f9fafb;
+  color: var(--vault-text, #111827);
+  background-color: var(--vault-canvas, #f9fafb);
+}
+
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--vault-accent, #1d4ed8);
 }
 
 :focus-visible {
-  outline: 0.125rem solid #1d4ed8;
+  outline: 0.125rem solid var(--vault-accent, #1d4ed8);
   outline-offset: 0.125rem;
 }
 
@@ -26,8 +31,8 @@ body {
   top: 0;
   z-index: 100;
   padding: 0.5rem 1rem;
-  background: #1d4ed8;
-  color: #ffffff;
+  background: var(--vault-accent, #1d4ed8);
+  color: var(--vault-on-accent, #ffffff);
   font-weight: 600;
 }
 
