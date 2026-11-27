@@ -1,0 +1,12 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "Node16",
+    "rootDir": "..",
+    "outDir": "../dist/replay",
+    "types": ["node"],
+    "strict": true,
+    "skipLibCheck": true
+  },
+  "files": ["replay-yields.ts"]
+}

@@ -4,11 +4,12 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "pretest": "tsx --test src/apy*.test.ts",
     "build": "tsc",
+    "replay:yields": "tsc -p scripts/tsconfig.replay.json && node dist/replay/scripts/replay-yields.js",
     "test": "tsx src/openAiKeyManager.test.ts && tsx src/rateLimiter.test.ts && tsx src/db.test.ts",
     "start:prod": "npx ts-node src/index.ts",
     "start:dev": "ts-node src/index.ts",
+    "pretest": "tsx --test src/apy*.test.ts",
     "posttest": "ts-node --transpile-only src/__tests__/transactionQueue.correlation.test.ts"
   },
   "keywords": [],
