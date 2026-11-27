@@ -29,6 +29,7 @@ import { pool } from './db';
 import { ApyRetryBudget } from './apyRetryBudget';
 import logger from './logger';
 import { registerRedisClient } from './redisClients';
+import { normalizeProviderTimestamp } from './providerTimestamp';
 
 // ─────────────────────────────────────────────────────────────────
 // Constants
@@ -178,11 +179,13 @@ async function readCachedSample(): Promise<ApySample | null> {
   try {
     const cached = await getRedis().get(REDIS_KEY);
     if (cached === null) return null;
-    const parsed = JSON.parse(cached) as { apyBps: number; observedAt: string };
+    const parsed = JSON.parse(cached) as { apyBps: number; observedAt?: unknown };
+    const timestamp = normalizeProviderTimestamp(parsed.observedAt);
+    if (timestamp === undefined) return null;
     return {
       apyBps: parsed.apyBps,
       source: SOURCE_ID,
-      observedAt: parsed.observedAt,
+      observedAt: new Date(timestamp).toISOString(),
       cached: true,
     };
   } catch (redisErr) {

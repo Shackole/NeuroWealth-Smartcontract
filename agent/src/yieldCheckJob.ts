@@ -22,6 +22,7 @@ import { recordYieldSkip, type YieldSkipReason } from './operationalMetrics';
 import { Pool } from 'pg';
 import { ApyRetryBudget } from './apyRetryBudget';
 import logger from './logger';
+import { normalizeProviderTimestamp } from './providerTimestamp';
 import { YieldComparisonEngine, ProtocolYieldData, type StrategyDecisionInputs } from './yieldComparison';
 
 // A 1,000% APY is the upper sanity bound for automated allocation inputs.
@@ -92,7 +93,9 @@ export interface YieldCheckResult {
 // ── Injectable hooks (for testability) ────────────────────────────────────────
 
 /** Fetches live yield data from a protocol. */
-export type ApyFetcher = (protocolId: string) => Promise<ProtocolYieldData>;
+export type ApyFetcher = (protocolId: string) => Promise<
+  Omit<ProtocolYieldData, 'fetchedAt'> & { fetchedAt?: number | string | null }
+>;
 
 /** Returns the currently-active protocol ID and the deployed USDC amount (stroops). */
 export type CurrentProtocolFetcher = () => Promise<{
@@ -214,15 +217,28 @@ async function storeResult(
  */
 export class YieldCheckJob {
   private readonly engine: YieldComparisonEngine;
+  private readonly hooks: Omit<YieldCheckHooks, 'apyFetchers'> & {
+    apyFetchers: Record<string, (id: string) => Promise<ProtocolYieldData>>;
+  };
   private timer: ReturnType<typeof setInterval> | null = null;
   private jobCounter = 0;
   private running = false;
 
   constructor(
     private readonly config: YieldCheckConfig,
-    private readonly hooks: YieldCheckHooks,
+    hooks: YieldCheckHooks,
     private readonly pool: Pool,
   ) {
+    this.hooks = {
+      ...hooks,
+      apyFetchers: Object.fromEntries(Object.entries(hooks.apyFetchers).map(([id, fetcher]) => [
+        id,
+        async (protocolId: string) => {
+          const observation = await fetcher(protocolId);
+          return { ...observation, fetchedAt: normalizeProviderTimestamp(observation?.fetchedAt) };
+        },
+      ])),
+    };
     this.engine = new YieldComparisonEngine(
       config.minImprovementThreshold,
       /* riskFreeRate */ 0.04,
@@ -625,7 +641,7 @@ export class YieldCheckJob {
       !Number.isFinite(data.volatility) || data.volatility < 0 || (data.volatility > 0 && data.volatility < 1e-12) ||
       !Number.isFinite(data.riskScore) || data.riskScore < 1 || data.riskScore > 100
     ) return false;
-    if (data.fetchedAt === undefined) return true;
+    if (data.fetchedAt === undefined) return false;
     const age = this.now() - data.fetchedAt;
     return Number.isFinite(data.fetchedAt) && age >= -60_000 && age <= (this.config.maxApyAgeMs ?? 15 * 60_000);
   }
