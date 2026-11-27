@@ -66,22 +66,6 @@ export interface RateLimitState {
   calls: number;
 }
 
-/**
- * Asset breakdown returned by {@link VaultClient.getAssetBreakdown}.
- *
- * Both values use 7 decimal places (Stellar USDC convention):
- *   1 USDC = 10_000_000 raw units.
- *
- * Invariant (within rounding):
- *   `idle + deployed ≈ get_total_deposits()`
- */
-export interface AssetBreakdown {
-  /** USDC held inside the vault contract, not yet deployed to any protocol (i128, 7 decimals) */
-  idle: bigint;
-  /** USDC currently supplied to the active yield protocol (i128, 7 decimals) */
-  deployed: bigint;
-}
-
 // ----------------------------------------------------------------
 // Event payload types
 // ----------------------------------------------------------------
@@ -744,6 +728,34 @@ export interface RateLimitExceededEvent {
   calls: number;
 }
 
+/** Emitted by the contract. */
+export interface BatchTtlTouchedEvent {
+  /** Total number of users in the batch. */
+  count: number;
+  /** Number of users whose `Shares` entry was extended (had an existing entry). */
+  users_extended: number;
+}
+
+/** Emitted by the contract. */
+export interface BatchDepositedEvent {
+  /** Number of entries that were successfully processed. */
+  count: number;
+  /** Total USDC amount deposited across all successful entries. */
+  total_amount: bigint;
+  /** Number of entries that were skipped due to validation failures. */
+  skipped: number;
+}
+
+/** Emitted by the contract. */
+export interface GuardianSetEvent {
+  /** Previous guardian address, or `None` if no guardian was set. */
+  old_guardian: string | null;
+  /** New guardian address, or `None` if the guardian was removed. */
+  new_guardian: string | null;
+  /** Owner address that made the change. */
+  owner: string;
+}
+
 // ----------------------------------------------------------------
 // Error codes
 // ----------------------------------------------------------------
@@ -1173,7 +1185,7 @@ export class VaultClient {
 
   /**
    * Deposit multiple USDC entries atomically and receive vault shares
-   * @param user
+   * @param agent
    * @param entries
    * @remarks
    * **Constraints:**
@@ -1182,8 +1194,8 @@ export class VaultClient {
    * - batch consumes both deposit and batch-deposit rate-limit buckets
    * @fires DepositEvent
    */
-  async batch_deposit(signer: StellarSdk.Keypair, user: string, entries: unknown): Promise<TxResult<void>> {
-    const args: StellarSdk.xdr.ScVal[] = [new StellarSdk.Address(user).toScVal(), nativeToScVal(entries)];
+  async batch_deposit(signer: StellarSdk.Keypair, agent: string, entries: unknown): Promise<TxResult<void>> {
+    const args: StellarSdk.xdr.ScVal[] = [new StellarSdk.Address(agent).toScVal(), nativeToScVal(entries)];
     return this.invoke<void>('batch_deposit', args, signer);
   }
 
@@ -1875,6 +1887,31 @@ export class VaultClient {
   }
 
   /**
+   * Function set_guardian
+   * @param new_guardian
+   */
+  async set_guardian(signer: StellarSdk.Keypair, new_guardian: string): Promise<TxResult<void>> {
+    const args: StellarSdk.xdr.ScVal[] = [new StellarSdk.Address(new_guardian).toScVal()];
+    return this.invoke<void>('set_guardian', args, signer);
+  }
+
+  /**
+   * Function remove_guardian
+   */
+  async remove_guardian(signer: StellarSdk.Keypair): Promise<TxResult<void>> {
+    const args: StellarSdk.xdr.ScVal[] = [];
+    return this.invoke<void>('remove_guardian', args, signer);
+  }
+
+  /**
+   * Function get_guardian
+   */
+  async get_guardian(sourcePublicKey: string): Promise<string | null> {
+    const args: StellarSdk.xdr.ScVal[] = [];
+    return this.simulate<string | null>('get_guardian', args, sourcePublicKey);
+  }
+
+  /**
    * Function add_supported_asset
    * @param asset
    * @param token_address
@@ -2144,6 +2181,15 @@ export class VaultClient {
   }
 
   /**
+   * Function batch_touch_ttl
+   * @param users
+   */
+  async batch_touch_ttl(signer: StellarSdk.Keypair, users: unknown): Promise<TxResult<unknown>> {
+    const args: StellarSdk.xdr.ScVal[] = [nativeToScVal(users)];
+    return this.invoke<unknown>('batch_touch_ttl', args, signer);
+  }
+
+  /**
    * Get complete user information and statistics
    * @param user
    */
@@ -2303,48 +2349,6 @@ export class VaultClient {
   }
 
   /**
-   * Get the vault's asset breakdown as (idle, deployed) in a single call.
-   *
-   * Avoids two separate RPC round-trips compared to calling
-   * `get_idle_balance` + `get_deployed_assets` individually.
-   *
-   * @returns Promise resolving to `{ idle: bigint, deployed: bigint }`.
-   *   - `idle`     — USDC held in the vault and not deployed to any protocol (7 decimals).
-   *   - `deployed` — USDC currently supplied to the active yield protocol (7 decimals).
-   *
-   * @example
-   * ```typescript
-   * const breakdown = await client.getAssetBreakdown(sourcePublicKey);
-   * const sum = breakdown.idle + breakdown.deployed;  // ≈ get_total_deposits()
-   * ```
-   */
-  async getAssetBreakdown(sourcePublicKey: string): Promise<AssetBreakdown> {
-    const args: StellarSdk.xdr.ScVal[] = [];
-    const raw = await this.simulate<[bigint, bigint] | { idle: bigint; deployed: bigint } | unknown>(
-      'get_asset_breakdown',
-      args,
-      sourcePublicKey,
-    );
-
-    // The Soroban contract returns a tuple (idle, deployed).
-    // scValToNative converts Soroban tuples to JS arrays.
-    if (Array.isArray(raw) && raw.length === 2) {
-      return { idle: BigInt(raw[0]), deployed: BigInt(raw[1]) };
-    }
-
-    // Fallback: object shape (if the SDK ever maps it differently)
-    if (raw && typeof raw === 'object' && 'idle' in (raw as object) && 'deployed' in (raw as object)) {
-      const obj = raw as { idle: bigint | number; deployed: bigint | number };
-      return { idle: BigInt(obj.idle), deployed: BigInt(obj.deployed) };
-    }
-
-    throw new Error(
-      `get_asset_breakdown returned an unexpected shape: ${JSON.stringify(raw)}`
-    );
-  }
-
-  /**
-   * @deprecated Use {@link getAssetBreakdown} for a typed return value.
    * Get the vault's asset breakdown as (idle, deployed) in a single call
    */
   async get_asset_breakdown(sourcePublicKey: string): Promise<unknown> {

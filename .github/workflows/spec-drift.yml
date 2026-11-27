@@ -8,6 +8,7 @@ on:
       - 'contracts/**'
       - 'scripts/generate-spec.py'
       - 'scripts/validate-spec.py'
+      - 'scripts/vault-error-snapshot.json'
       - 'contract-spec.json'
 
 jobs:
