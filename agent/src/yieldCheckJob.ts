@@ -21,6 +21,7 @@
 import { recordYieldSkip, type YieldSkipReason } from './operationalMetrics';
 import { Pool } from 'pg';
 import { ApyRetryBudget } from './apyRetryBudget';
+import { measureRpcRoundTrip } from './rpcMetrics';
 import logger from './logger';
 import { normalizeProviderTimestamp } from './providerTimestamp';
 import { YieldComparisonEngine, ProtocolYieldData, type StrategyDecisionInputs } from './yieldComparison';
@@ -813,7 +814,11 @@ export function createProductionYieldCheckJob(pool: Pool): YieldCheckJob {
       prepared.sign(keypair);
       pendingRebalanceHash = prepared.hash().toString('hex');
 
-      const response = await server.sendTransaction(prepared);
+      const response = await measureRpcRoundTrip(
+        'submission',
+        () => server.sendTransaction(prepared),
+        (result) => result.status === 'PENDING' || result.status === 'DUPLICATE',
+      );
 
       if (response.status === 'ERROR') {
         pendingRebalanceHash = null;
