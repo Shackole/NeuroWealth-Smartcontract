@@ -21,7 +21,7 @@
  *   REDIS_URL            — Redis connection URL (default: redis://localhost:6379)
  */
 
-import { SorobanRpc, Contract, xdr, scValToNative } from '@stellar/stellar-sdk';
+import { SorobanRpc, Contract, StrKey, xdr, scValToNative } from '@stellar/stellar-sdk';
 import type { Request, Response, Router } from 'express';
 import { Router as createRouter } from 'express';
 import { Redis } from 'ioredis';
@@ -114,7 +114,9 @@ async function fetchBlendApyFromContract(): Promise<number> {
     'get_reserve',
     xdr.ScVal.scvAddress(
       xdr.ScAddress.scAddressTypeContract(
-        Buffer.from(usdcAsset, 'hex'),
+        StrKey.isValidContract(usdcAsset)
+          ? StrKey.decodeContract(usdcAsset)
+          : Buffer.from(usdcAsset, 'hex'),
       ),
     ),
   );
