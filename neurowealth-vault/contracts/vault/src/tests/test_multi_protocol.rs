@@ -16,7 +16,7 @@
 extern crate std;
 
 use super::utils::*;
-use soroban_sdk::{symbol_short, testutils::Address as _, Address, Env};
+use soroban_sdk::{symbol_short, testutils::Address as _, testutils::Ledger, Address, Env, Error};
 
 const BPS: u32 = 10_000;
 
@@ -640,4 +640,42 @@ fn test_solvency_invariant_holds_across_multi_protocol_cycle() {
     // Everything is still redeemable.
     let returned = client.withdraw_all(&user);
     assert_eq!(returned, amount);
+}
+
+#[test]
+fn test_single_and_multi_rebalance_share_ledger_cooldown_boundaries() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let start_ledger = 100;
+    let cooldown = 5;
+    let amount = 100_000_000;
+    env.ledger().set_sequence_number(start_ledger);
+
+    let (single_id, _agent, _owner, usdc, _blend, _dex) = setup_multi(&env);
+    let single = NeuroWealthVaultClient::new(&env, &single_id);
+    let user = Address::generate(&env);
+    mint_and_deposit(&env, &single, &usdc, &user, amount);
+    let (_multi_id, multi, _usdc, _blend, _dex, _user) = setup_multi_funded(&env, amount);
+    single.set_rebalance_cooldown(&cooldown);
+    multi.set_rebalance_cooldown(&cooldown);
+
+    let rebalance_single = || single.try_rebalance(&symbol_short!("blend"), &800, &0);
+    let rebalance_multi = || multi.try_rebalance_multi(&6_000, &4_000, &0);
+    let cooldown_error = Error::from_contract_error(crate::VaultError::RebalanceCooldownActive as u32);
+
+    for (offset, expected, last_success) in [
+        (0, Ok(Ok(())), start_ledger),
+        (0, Err(Ok(cooldown_error)), start_ledger),
+        (cooldown - 1, Err(Ok(cooldown_error)), start_ledger),
+        (cooldown, Ok(Ok(())), start_ledger + cooldown),
+        (cooldown, Err(Ok(cooldown_error)), start_ledger + cooldown),
+    ] {
+        env.ledger().set_sequence_number(start_ledger + offset);
+        let single_result = rebalance_single();
+        let multi_result = rebalance_multi();
+        assert_eq!(single_result, expected, "single protocol at offset {offset}");
+        assert_eq!(multi_result, expected, "multi protocol at offset {offset}");
+        assert_eq!(single.get_last_rebalance_ledger(), last_success);
+        assert_eq!(multi.get_last_rebalance_ledger(), last_success);
+    }
 }
