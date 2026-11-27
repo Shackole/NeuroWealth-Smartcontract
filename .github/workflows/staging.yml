@@ -3,6 +3,8 @@ name: Staging Deploy
 on:
   push:
     branches: [staging]
+  schedule:
+    - cron: "23 * * * *"
   pull_request:
     paths:
       - '.github/workflows/staging.yml'
@@ -15,7 +17,7 @@ on:
         type: choice
         required: true
         default: rehearse
-        options: [rehearse, deploy]
+        options: [rehearse, deploy, synthetic-read]
       scope:
         description: Deploy the contract only or run the full staging pipeline
         type: choice
@@ -27,7 +29,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'deploy')) && 'staging-deploy' || format('staging-rehearsal-{0}', github.run_id) }}
+  group: ${{ (github.event_name == 'schedule' || inputs.mode == 'synthetic-read') && 'staging-synthetic-read' || (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'deploy')) && 'staging-deploy' || format('staging-rehearsal-{0}', github.run_id) }}
   cancel-in-progress: false
 
 jobs:
@@ -42,7 +44,7 @@ jobs:
         run: python3 scripts/staging-inputs.py --matrix .github/staging-input-matrix.json
       - name: Validate this invocation
         id: invocation
-        if: github.event_name != 'pull_request'
+        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.mode != 'synthetic-read')
         env:
           MODE: ${{ github.event_name == 'push' && 'deploy' || inputs.mode }}
           SCOPE: ${{ github.event_name == 'push' && 'full' || inputs.scope }}
@@ -159,4 +161,69 @@ jobs:
         working-directory: frontend
         env:
           STAGING_BASE_URL: ${{ vars.STAGING_BASE_URL }}
-        run: npm run test:e2e# staging evidence timing
+        run: npm run test:e2e
+
+  synthetic-vault-read:
+    name: Probe the configured testnet vault
+    if: github.event_name == 'schedule' || inputs.mode == 'synthetic-read'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: staging
+    env:
+      VAULT_CONTRACT_ID: ${{ vars.STAGING_VAULT_CONTRACT_ID }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Stellar CLI for the probe
+        id: stellar
+        run: |
+          VERSION="$(tr -d '[:space:]' < .stellar-version)"
+          mkdir -p "$RUNNER_TEMP/stellar-cli"
+          curl -fsSL --max-time 60 "https://github.com/stellar/stellar-cli/releases/download/v${VERSION}/stellar-cli-${VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
+            | tar -xz -C "$RUNNER_TEMP/stellar-cli"
+          STELLAR_BIN="$(find "$RUNNER_TEMP/stellar-cli" -type f -name stellar -print -quit)"
+          chmod +x "$STELLAR_BIN"
+          dirname "$STELLAR_BIN" >> "$GITHUB_PATH"
+
+      - name: Simulate get_version and record the result
+        if: ${{ !cancelled() }}
+        env:
+          CLI_INSTALL_OUTCOME: ${{ steps.stellar.outcome }}
+        run: |
+          network=testnet
+          contract_id_display="(missing)"
+          failure_class=none
+          if [[ -n "$VAULT_CONTRACT_ID" ]]; then
+            contract_id_display="(invalid)"
+          fi
+
+          if [[ ! "$VAULT_CONTRACT_ID" =~ ^C[A-Z2-7]{55}$ ]]; then
+            failure_class=configuration
+          else
+            contract_id_display="$VAULT_CONTRACT_ID"
+            if [[ "$CLI_INSTALL_OUTCOME" != success ]]; then
+              failure_class=cli_setup
+            elif version=$(timeout 45s stellar contract invoke --network "$network" \
+                --id "$VAULT_CONTRACT_ID" --is-view -- get_version); then
+              if [[ ! "$version" =~ ^[1-9][0-9]*$ ]]; then
+                failure_class=unexpected_result
+              fi
+            elif [[ $? -eq 124 ]]; then
+              failure_class=timeout
+            else
+              failure_class=read_failed
+            fi
+          fi
+
+          {
+            echo "## Synthetic vault read"
+            echo
+            echo "| Network | Contract ID | Failure class |"
+            echo "| --- | --- | --- |"
+            echo "| $network | $contract_id_display | $failure_class |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [[ "$failure_class" != none ]]; then
+            echo "::error::Synthetic vault read failed ($failure_class)"
+            exit 1
+          fi
