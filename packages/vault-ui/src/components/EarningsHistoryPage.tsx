@@ -86,7 +86,7 @@ export default function EarningsHistoryPage() {
   return (
     <section className="max-w-5xl mx-auto" aria-labelledby={headingId}>
       <div className="flex items-center justify-between mb-6 gap-4">
-        <h2 id={headingId} className="text-2xl font-semibold text-gray-900">Earnings History</h2>
+        <h2 id={headingId} className="text-2xl font-semibold text-vault-text">Earnings History</h2>
         <div className="inline-flex rounded-md shadow-sm" role="group" aria-label="History range">
           {RANGES.map(r => (
             <button
@@ -96,8 +96,8 @@ export default function EarningsHistoryPage() {
               aria-pressed={range === r.value}
               className={`px-3 py-1.5 text-sm font-medium border ${
                 range === r.value
-                  ? 'bg-primary-700 text-white border-primary-700'
-                  : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                  ? 'bg-vault-accent text-vault-on-accent border-vault-accent'
+                  : 'bg-vault-surface text-vault-muted border-vault-control-border hover:bg-vault-canvas'
               }`}
             >
               {r.label}
@@ -107,22 +107,22 @@ export default function EarningsHistoryPage() {
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
-          <div className="text-sm text-gray-700">Current value</div>
-          <div className="text-2xl font-semibold text-gray-900">{formatUsdc(busd)} USDC</div>
+        <div className="bg-vault-surface rounded-lg shadow-sm border border-vault-border p-4">
+          <div className="text-sm text-vault-muted">Current value</div>
+          <div className="text-2xl font-semibold text-vault-text">{formatUsdc(busd)} USDC</div>
         </div>
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
-          <div className="text-sm text-gray-700">Cumulative earnings</div>
-          <div className="text-2xl font-semibold text-green-800">{formatUsdc(Math.max(0, cumulative))} USDC</div>
+        <div className="bg-vault-surface rounded-lg shadow-sm border border-vault-border p-4">
+          <div className="text-sm text-vault-muted">Cumulative earnings</div>
+          <div className="text-2xl font-semibold text-vault-success">{formatUsdc(Math.max(0, cumulative))} USDC</div>
         </div>
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
-          <div className="text-sm text-gray-700">Benchmark APY</div>
-          <div className="text-2xl font-semibold text-gray-900">~8.5%</div>
+        <div className="bg-vault-surface rounded-lg shadow-sm border border-vault-border p-4">
+          <div className="text-sm text-vault-muted">Benchmark APY</div>
+          <div className="text-2xl font-semibold text-vault-text">~8.5%</div>
         </div>
       </div>
 
-      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4 mb-6">
-        <h3 className="text-lg font-medium text-gray-900 mb-4">Portfolio value</h3>
+      <div className="bg-vault-surface rounded-lg shadow-sm border border-vault-border p-4 mb-6">
+        <h3 className="text-lg font-medium text-vault-text mb-4">Portfolio value</h3>
         <div
           className="h-72"
           role="img"
@@ -134,7 +134,7 @@ export default function EarningsHistoryPage() {
               <XAxis dataKey="date" tick={{ fontSize: '0.75rem' }} />
               <YAxis tick={{ fontSize: '0.75rem' }} />
               <Tooltip />
-              <Line type="monotone" dataKey="value" stroke="#1d4ed8" strokeWidth={2} dot={false} />
+              <Line type="monotone" dataKey="value" stroke="var(--vault-accent, #1d4ed8)" strokeWidth={2} dot={false} />
             </LineChart>
           </ResponsiveContainer>
         </div>
@@ -157,8 +157,8 @@ export default function EarningsHistoryPage() {
         </table>
       </div>
 
-      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
-        <h3 className="text-lg font-medium text-gray-900 mb-4">Daily earnings</h3>
+      <div className="bg-vault-surface rounded-lg shadow-sm border border-vault-border p-4">
+        <h3 className="text-lg font-medium text-vault-text mb-4">Daily earnings</h3>
         <div
           className="h-72"
           role="img"
@@ -170,7 +170,7 @@ export default function EarningsHistoryPage() {
               <XAxis dataKey="date" tick={{ fontSize: '0.75rem' }} />
               <YAxis tick={{ fontSize: '0.75rem' }} />
               <Tooltip />
-              <Bar dataKey="earnings" fill="#166534" radius={[3, 3, 0, 0]} />
+              <Bar dataKey="earnings" fill="var(--vault-success, #166534)" radius={[3, 3, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
         </div>

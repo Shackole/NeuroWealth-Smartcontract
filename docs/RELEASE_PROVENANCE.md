@@ -1,11 +1,12 @@
 # Release Provenance and Rollback
 
 Production frontend deployments are made by `.github/workflows/cd.yml` from a
-specific Git commit. Each successful deployment retains an immutable
-`deployment-provenance-<commit SHA>-<run ID>` workflow artifact for 90 days
-containing:
+specific Git commit and Stellar network. Each successful deployment retains
+an immutable `deployment-provenance-<network>-<commit SHA>-<run ID>` workflow
+artifact for 90 days containing:
 
 - the source commit and workflow run ID;
+- the Stellar network (`mainnet` or `testnet`);
 - the Vercel deployment URL and a deterministic archive of the `.vercel/output`
   payload, with its SHA-256 digest;
 - the contract WASM built from the same commit, with its SHA-256 digest; and
@@ -20,8 +21,9 @@ that service's deployment history.
 ## Frontend rollback
 
 1. Find the last known-good deployment URL and commit in the Vercel dashboard.
-2. Download the matching `deployment-provenance-<commit SHA>` artifact from
-   GitHub Actions and verify the archive digest against `manifest.txt`.
+2. Download the matching
+   `deployment-provenance-<network>-<commit SHA>-<run ID>` artifact from GitHub
+   Actions and verify the archive digest against `manifest.txt`.
 3. Extract `vercel-output.tar.gz` into `frontend/.vercel/output` in a clean
    checkout of the matching commit.
 4. Pull the production project settings using the approved Vercel token, then

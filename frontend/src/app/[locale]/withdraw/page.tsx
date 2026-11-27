@@ -1,15 +1,38 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Header } from '@/components/Header';
 import { ArrowDownLeft, ShieldCheck, ArrowRight } from 'lucide-react';
 
 export default function WithdrawPage() {
   const [amount, setAmount] = useState<string>('25');
   const [withdrawAll, setWithdrawAll] = useState<boolean>(false);
-  const [isSuccess, setIsSuccess] = useState<boolean>(false);
+  const [confirmedAmount, setConfirmedAmount] = useState('');
+  const [step, setStep] = useState<'form' | 'review' | 'success'>('form');
 
   const availableBalance = 100.25;
+  const isValidAmount = Number(amount) >= 0.01 && Number(amount) <= availableBalance;
+
+  useEffect(() => {
+    // A review belongs to the current in-memory draft.
+    if (window.history.state?.withdrawStep) {
+      window.history.replaceState({ ...window.history.state, withdrawStep: undefined }, '');
+    }
+  }, []);
+
+  useEffect(() => {
+    const restoreStep = () => {
+      const entry = window.history.state?.withdrawStep;
+      if (entry === 'review' && !isValidAmount) {
+        window.history.back();
+        return;
+      }
+      setStep(entry === 'review' || entry === 'success' ? entry : 'form');
+    };
+
+    window.addEventListener('popstate', restoreStep);
+    return () => window.removeEventListener('popstate', restoreStep);
+  }, [isValidAmount]);
 
   const handleWithdrawAllToggle = () => {
     const nextState = !withdrawAll;
@@ -21,7 +44,15 @@ export default function WithdrawPage() {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    setIsSuccess(true);
+    if (!isValidAmount) return;
+    window.history.pushState({ withdrawStep: 'review' }, '');
+    setStep('review');
+  };
+
+  const confirmWithdrawal = () => {
+    window.history.replaceState({ ...window.history.state, withdrawStep: 'success' }, '');
+    setConfirmedAmount(amount);
+    setStep('success');
   };
 
   return (
@@ -43,22 +74,44 @@ export default function WithdrawPage() {
           </p>
         </header>
 
-        {isSuccess ? (
+        {step === 'success' ? (
           <section aria-live="polite" className="glass-panel p-6 rounded-2xl border border-emerald-500/30 bg-emerald-950/20 text-center space-y-4">
             <div className="h-12 w-12 rounded-full bg-emerald-500/20 text-emerald-400 mx-auto flex items-center justify-center">
               <ShieldCheck size={28} aria-hidden="true" />
             </div>
             <h2 className="text-xl font-bold text-white">Withdrawal Processed!</h2>
             <p className="text-slate-300 text-sm">
-              Successfully withdrew {amount} USDC directly to your Stellar wallet.
+              Successfully withdrew {confirmedAmount} USDC directly to your Stellar wallet.
             </p>
             <button
               type="button"
-              onClick={() => setIsSuccess(false)}
+              onClick={() => window.history.back()}
               className="mt-4 px-6 py-2.5 bg-emerald-500 text-black font-semibold rounded-xl hover:bg-emerald-400 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400"
             >
               Make Another Withdrawal
             </button>
+          </section>
+        ) : step === 'review' ? (
+          <section aria-labelledby="withdraw-review-heading" className="glass-panel p-6 sm:p-8 rounded-3xl border border-slate-800 space-y-6">
+            <h2 id="withdraw-review-heading" className="text-xl font-bold text-white">Review Withdrawal</h2>
+            <dl className="space-y-2 text-sm">
+              <div className="flex justify-between gap-4">
+                <dt className="text-slate-400">Withdrawal amount</dt>
+                <dd className="font-mono text-white">{amount} USDC</dd>
+              </div>
+              <div className="flex justify-between gap-4">
+                <dt className="text-slate-400">Shares burned</dt>
+                <dd className="font-mono text-white">{(Number(amount) * 0.9596).toFixed(4)} NV-SHARES</dd>
+              </div>
+            </dl>
+            <div className="flex flex-wrap gap-3">
+              <button type="button" onClick={() => window.history.back()} className="px-4 py-2 rounded-xl border border-slate-700 text-slate-200">
+                Edit Withdrawal
+              </button>
+              <button type="button" onClick={confirmWithdrawal} className="px-4 py-2 rounded-xl bg-emerald-500 font-bold text-black hover:bg-emerald-400">
+                Confirm Withdrawal
+              </button>
+            </div>
           </section>
         ) : (
           <form onSubmit={handleSubmit} className="glass-panel p-6 sm:p-8 rounded-3xl border border-slate-800 space-y-6">
@@ -117,7 +170,7 @@ export default function WithdrawPage() {
               type="submit"
               className="w-full py-3.5 px-6 rounded-xl bg-gradient-to-r from-emerald-500 to-indigo-600 text-black font-bold text-base hover:opacity-95 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400 flex items-center justify-center gap-2"
             >
-              <span>Confirm Withdrawal</span>
+              <span>Review Withdrawal</span>
               <ArrowRight size={18} aria-hidden="true" />
             </button>
           </form>

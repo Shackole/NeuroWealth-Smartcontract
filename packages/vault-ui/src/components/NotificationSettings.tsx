@@ -50,11 +50,11 @@ export default function NotificationSettings({ push = createPushClient() }: Noti
   };
 
   return (
-    <section className="max-w-xl mx-auto bg-white rounded-xl shadow-sm border border-gray-200 p-6" aria-labelledby="notification-settings-heading">
-      <h2 id="notification-settings-heading" className="text-2xl font-semibold text-gray-900 mb-2">
+    <section className="max-w-xl mx-auto bg-vault-surface rounded-xl shadow-sm border border-vault-border p-6" aria-labelledby="notification-settings-heading">
+      <h2 id="notification-settings-heading" className="text-2xl font-semibold text-vault-text mb-2">
         Notifications
       </h2>
-      <p className="text-base text-gray-700 mb-6">
+      <p className="text-base text-vault-muted mb-6">
         Choose how NeuroWealth tells you about deposits, withdrawals, rebalances, yield, and security events.
       </p>
 
@@ -63,11 +63,11 @@ export default function NotificationSettings({ push = createPushClient() }: Noti
           type="button"
           onClick={enablePush}
           disabled={permission === 'unsupported' || permission === 'denied'}
-          className="w-full py-3 rounded-lg bg-primary-700 text-white font-semibold hover:bg-primary-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-700"
+          className="w-full py-3 rounded-lg bg-vault-accent text-vault-on-accent font-semibold hover:bg-vault-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-vault-accent"
         >
           {permission === 'granted' ? 'Browser notifications enabled' : permission === 'unsupported' ? 'Browser notifications unsupported' : permission === 'denied' ? 'Notifications blocked in browser settings' : 'Enable browser notifications'}
         </button>
-        <p className="text-sm text-gray-700" aria-live="polite">
+        <p className="text-sm text-vault-muted" aria-live="polite">
           {permission === 'denied'
             ? 'To enable push, change this site’s notification permission in your browser settings.'
             : permission === 'unsupported'
@@ -77,14 +77,14 @@ export default function NotificationSettings({ push = createPushClient() }: Noti
       </div>
 
       <fieldset className="mb-6">
-        <legend className="text-sm font-medium text-gray-900 mb-2">Event types</legend>
+        <legend className="text-sm font-medium text-vault-text mb-2">Event types</legend>
         <ul className="space-y-3">
           {NOTIFICATION_EVENT_TYPES.map(type => {
             const copy = describeEvent(type);
             const id = `notify-${type}`;
             return (
               <li key={type}>
-                <label htmlFor={id} className="flex items-start gap-3 text-gray-900">
+                <label htmlFor={id} className="flex items-start gap-3 text-vault-text">
                   <input
                     id={id}
                     type="checkbox"
@@ -99,7 +99,7 @@ export default function NotificationSettings({ push = createPushClient() }: Noti
                   />
                   <span>
                     <span className="block font-medium">{copy.label}</span>
-                    <span className="block text-sm text-gray-700">{copy.description}</span>
+                    <span className="block text-sm text-vault-muted">{copy.description}</span>
                   </span>
                 </label>
               </li>
@@ -109,8 +109,8 @@ export default function NotificationSettings({ push = createPushClient() }: Noti
       </fieldset>
 
       <fieldset className="mb-6">
-        <legend className="text-sm font-medium text-gray-900 mb-2">Email fallback preference</legend>
-        <label htmlFor="email-fallback" className="flex items-center gap-3 text-gray-900 mb-3">
+        <legend className="text-sm font-medium text-vault-text mb-2">Email fallback preference</legend>
+        <label htmlFor="email-fallback" className="flex items-center gap-3 text-vault-text mb-3">
           <input
             id="email-fallback"
             type="checkbox"
@@ -120,7 +120,7 @@ export default function NotificationSettings({ push = createPushClient() }: Noti
           />
           Request email fallback when push is unavailable
         </label>
-        <label htmlFor="notify-email" className="block text-sm font-medium text-gray-900 mb-1">
+        <label htmlFor="notify-email" className="block text-sm font-medium text-vault-text mb-1">
           Email address
         </label>
         <input
@@ -129,16 +129,16 @@ export default function NotificationSettings({ push = createPushClient() }: Noti
           autoComplete="email"
           value={prefs.email}
           onChange={e => setPrefs(current => ({ ...current, email: e.target.value }))}
-          className="w-full rounded-lg border border-gray-300 px-3 py-2 text-gray-900"
+          className="w-full rounded-lg border border-vault-control-border px-3 py-2 text-vault-text"
           placeholder="you@example.com"
           required={prefs.emailFallback}
         />
-        <p className="mt-2 text-sm text-gray-600">
+        <p className="mt-2 text-sm text-vault-subtle">
           This saves a preference only; the application must configure an email delivery service before any message can be sent.
         </p>
       </fieldset>
 
-      <label htmlFor="batch-window" className="block text-sm font-medium text-gray-900 mb-1">
+      <label htmlFor="batch-window" className="block text-sm font-medium text-vault-text mb-1">
         Batch window (seconds)
       </label>
       <input
@@ -153,13 +153,13 @@ export default function NotificationSettings({ push = createPushClient() }: Noti
             batchWindowMs: Math.max(0, Number(e.target.value) || 0) * 1000,
           }))
         }
-        className="w-full rounded-lg border border-gray-300 px-3 py-2 text-gray-900 mb-4"
+        className="w-full rounded-lg border border-vault-control-border px-3 py-2 text-vault-text mb-4"
       />
-      <p className="text-sm text-gray-700 mb-4">
+      <p className="text-sm text-vault-muted mb-4">
         Events of the same type that arrive inside this window are grouped into one notification. Security alerts are never delayed.
       </p>
 
-      <p className="text-sm text-gray-600 mb-4">
+      <p className="text-sm text-vault-subtle mb-4">
         Preferences are stored on this browser. Unsaved changes are not applied to your account or other devices.
       </p>
 
@@ -167,13 +167,13 @@ export default function NotificationSettings({ push = createPushClient() }: Noti
         type="button"
         onClick={save}
         disabled={!dirty}
-        className="w-full py-3 rounded-lg bg-primary-700 text-white font-semibold disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-700"
+        className="w-full py-3 rounded-lg bg-vault-accent text-vault-on-accent font-semibold disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-vault-accent"
       >
         {dirty ? 'Save preferences' : 'Preferences saved'}
       </button>
 
       {status && (
-        <p className="text-sm text-gray-900" role="status" aria-live="polite">
+        <p className="text-sm text-vault-text" role="status" aria-live="polite">
           {status}
         </p>
       )}

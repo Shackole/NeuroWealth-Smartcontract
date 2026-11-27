@@ -1,4 +1,9 @@
 {
+  "VaultMetadata": {
+    "deposit": "Deposit USDC",
+    "dashboard": "Vault Dashboard",
+    "withdraw": "Withdraw USDC"
+  },
   "Index": {
     "title": "NeuroWealth | AI-Powered DeFi Yield Platform",
     "description": "Autonomous AI investment agent managing smart contract yield strategies.",

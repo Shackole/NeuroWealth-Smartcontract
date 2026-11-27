@@ -133,7 +133,8 @@ function AssetBreakdownBar({
 
 // ── Page ─────────────────────────────────────────────────────────────────────
 
-export default async function VaultStatsPage() {
+export default async function VaultStatsPage({ params }: { params: Promise<{ locale: string }> }) {
+  const { locale } = await params;
   const stats = await fetchVaultStats();
 
   const fetchedTime = new Date(stats.fetchedAt).toLocaleTimeString('en-US', {
@@ -153,7 +154,7 @@ export default async function VaultStatsPage() {
         <div className="max-w-6xl mx-auto px-4 sm:px-6 h-14 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <Link
-              href="/"
+              href={`/${locale}`}
               className="flex items-center gap-1.5 text-sm text-slate-400 hover:text-white transition-colors"
               aria-label="Back to dashboard"
             >

@@ -5,6 +5,8 @@ import { RefreshCw, WifiOff } from 'lucide-react';
 import { BalanceCard } from './BalanceCard';
 import { EarningsCard } from './EarningsCard';
 import { StrategyBadge } from './StrategyBadge';
+import { SkeletonCard } from './SkeletonCard';
+import { SUMMARY_CARD_SIZE } from './dashboardCardLayout';
 import { AssetOverview, type PortfolioAsset } from './AssetOverview';
 import { EarningsSummary } from '@/lib/database';
 
@@ -18,6 +20,7 @@ export interface PortfolioDashboardProps {
   onOpenDeposit?: () => void;
   onOpenWithdraw?: () => void;
   onSelectStrategy?: (strategy: 'Conservative' | 'Balanced' | 'Growth') => void;
+  networkName?: string;
   dataStatus?: 'online' | 'offline' | 'refreshing' | 'error';
   hasData?: boolean;
   updatedAt?: string | null;
@@ -37,6 +40,7 @@ export const PortfolioDashboard: React.FC<PortfolioDashboardProps> = ({
   onOpenDeposit,
   onOpenWithdraw,
   onSelectStrategy,
+  networkName = 'Stellar Testnet',
   dataStatus = 'online',
   hasData = true,
   updatedAt,
@@ -106,26 +110,36 @@ export const PortfolioDashboard: React.FC<PortfolioDashboardProps> = ({
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <BalanceCard
-          balance={balance}
-          usdEquivalent={balance * 1.0}
-          exchangeRate={exchangeRate}
-          onOpenDeposit={onOpenDeposit || (() => {})}
-          onOpenWithdraw={onOpenWithdraw || (() => {})}
-          isConnected={isConnected}
-        />
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {dataStatus === 'refreshing' && !hasData ? (
+          <>
+            <SkeletonCard height={SUMMARY_CARD_SIZE} />
+            <SkeletonCard height={SUMMARY_CARD_SIZE} />
+            <SkeletonCard height={SUMMARY_CARD_SIZE} />
+          </>
+        ) : (
+          <>
+            <BalanceCard
+              balance={balance}
+              usdEquivalent={balance * 1.0}
+              exchangeRate={exchangeRate}
+              onOpenDeposit={onOpenDeposit || (() => {})}
+              onOpenWithdraw={onOpenWithdraw || (() => {})}
+              isConnected={isConnected}
+            />
 
-        <EarningsCard
-          earnings={earnings}
-          isConnected={isConnected}
-        />
+            <EarningsCard
+              earnings={earnings}
+              isConnected={isConnected}
+            />
 
-        <StrategyBadge
-          strategy={strategy}
-          apy={apy}
-          onSelectStrategy={onSelectStrategy}
-        />
+            <StrategyBadge
+              strategy={strategy}
+              apy={apy}
+              onSelectStrategy={onSelectStrategy}
+            />
+          </>
+        )}
       </div>
       {assets && (
         <AssetOverview assets={assets} totalEstimatedValue={totalEstimatedValue} totalValueSource={totalValueSource} />

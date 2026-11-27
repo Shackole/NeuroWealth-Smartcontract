@@ -1,4 +1,9 @@
 {
+  "VaultMetadata": {
+    "deposit": "Depositar USDC",
+    "dashboard": "Painel do cofre",
+    "withdraw": "Retirar USDC"
+  },
   "Index": {
     "title": "NeuroWealth | Plataforma de rendimento DeFi com IA",
     "description": "Agente de investimento autônomo com IA gerenciando estratégias de rendimento em contratos inteligentes.",

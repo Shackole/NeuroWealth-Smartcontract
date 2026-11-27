@@ -1,4 +1,9 @@
 {
+  "VaultMetadata": {
+    "deposit": "USDCを預け入れる",
+    "dashboard": "金庫ダッシュボード",
+    "withdraw": "USDCを引き出す"
+  },
   "Index": {
     "title": "NeuroWealth | AI搭載DeFiイールドプラットフォーム",
     "description": "スマートコントラクトのイールド戦略を管理する自律型AI投資エージェント。",

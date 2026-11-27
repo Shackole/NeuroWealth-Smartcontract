@@ -1,4 +1,9 @@
 {
+  "VaultMetadata": {
+    "deposit": "存入 USDC",
+    "dashboard": "金库仪表板",
+    "withdraw": "提取 USDC"
+  },
   "Index": {
     "title": "NeuroWealth | AI 驱动的 DeFi 收益平台",
     "description": "自主 AI 投资代理，管理智能合约收益策略。",

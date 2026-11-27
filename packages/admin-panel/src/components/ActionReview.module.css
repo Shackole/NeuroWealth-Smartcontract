@@ -1,0 +1,13 @@
+.table {
+  --cell-padding-block: 0.75rem;
+}
+
+.table[data-density="compact"] {
+  --cell-padding-block: 0.375rem;
+}
+
+.table th,
+.table td {
+  padding-block: var(--cell-padding-block);
+  overflow-wrap: anywhere;
+}
