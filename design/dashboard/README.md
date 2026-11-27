@@ -62,6 +62,8 @@ study status.
    to prevent duplicate submissions, and success is strictly bound to verified ledger confirmation.
    Full spec in [TRANSACTION_PROGRESS_VOCABULARY.md](TRANSACTION_PROGRESS_VOCABULARY.md).
 
+7. **Notification time-format (#695)** — Relative labels for recent events, absolute timestamps in the user's time zone for older entries, IANA zone disclosure on hover/focus, screen-reader `<time datetime>` elements, and a 30-day cutoff that suppresses relative suffixes on historical entries. Full spec in [NOTIFICATION_TIME_FORMAT.md](NOTIFICATION_TIME_FORMAT.md).
+
 8. **Zero and negative yield display (#694)** — Signed-number rules (`+`, `0.00%`, `−`), icon redundancy (TrendingUp/Minus/TrendingDown), and copy that communicates direction without relying on colour. Full spec in [YIELD_PRESENTATION.md](YIELD_PRESENTATION.md).
 
 9. **Chart gap annotations (#689)** — Visual and accessible distinction between missing-data gaps (dashed bridge line + hatched fill + "Data unavailable" annotation) and zero-activity periods (solid line + "No change" tooltip). Full spec in [CHART_GAP_ANNOTATIONS.md](CHART_GAP_ANNOTATIONS.md).
