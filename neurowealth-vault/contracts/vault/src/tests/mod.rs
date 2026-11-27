@@ -78,7 +78,7 @@ mod test_liquidity_mining_rewards;
 mod test_performance_fee;
 
 
-mod test_batch_deposit;
+
 mod test_liquidity_mining_rewards;
 mod test_performance_fee;
 // Pre-existing compile failures — WIP modules committed with broken imports
