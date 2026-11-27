@@ -19,6 +19,10 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000) to view the application.
 
+## Documentation
+- [Metric Calculation Windows & Aggregate Guidelines](docs/METRIC_CALCULATION_WINDOWS.md): Sample windows, timestamp conventions, and missing-data rules for displayed dashboard figures.
+- [Reduced Motion Guidelines](docs/reduced-motion.md): Accessibility guidelines for reduced-motion preferences.
+
 ---
 
 ## Vault Terminology Glossary
