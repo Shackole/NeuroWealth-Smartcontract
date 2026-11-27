@@ -1,0 +1,37 @@
+name: Withdrawal Queue Readback
+
+on:
+  pull_request:
+    paths:
+      - 'agent/src/__tests__/withdrawalQueue.readback.test.cjs'
+      - '.github/workflows/withdrawal-queue-readback.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  withdrawal-queue-readback:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+    env:
+      TEST_REDIS_URL: redis://127.0.0.1:6379
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install the queue fixture dependency
+        run: npm install --prefix "$RUNNER_TEMP/queue-fixture" --no-save --no-audit bull@4.16.5
+      - name: Check withdrawal queue readback
+        run: NODE_PATH="$RUNNER_TEMP/queue-fixture/node_modules" node --test agent/src/__tests__/withdrawalQueue.readback.test.cjs
