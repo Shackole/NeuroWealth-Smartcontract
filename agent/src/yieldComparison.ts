@@ -56,6 +56,7 @@ export class YieldComparisonEngine {
     return (apy - this.riskFreeRate) / volatility;
   }
 
+  /** Rank by descending score, then by protocol ID in ascending code-unit order. */
   public rankOpportunities(protocols: ProtocolYieldData[]): YieldOpportunity[] {
     return protocols
       .map((p) => {
@@ -72,10 +73,20 @@ export class YieldComparisonEngine {
           recommendedAllocationPercent: 0,
         };
       })
-      .sort((a, b) => b.riskAdjustedScore - a.riskAdjustedScore);
+      .sort((a, b) =>
+        b.riskAdjustedScore - a.riskAdjustedScore ||
+        compareText(a.protocolId, b.protocolId) ||
+        b.netApy - a.netApy ||
+        compareText(a.name, b.name),
+      );
   }
 
   public shouldRebalance(currentApy: number, targetApy: number): boolean {
     return targetApy - currentApy >= this.minImprovementThreshold;
   }
+}
+
+function compareText(a: string, b: string): number {
+  if (a === b) return 0;
+  return a < b ? -1 : 1;
 }
