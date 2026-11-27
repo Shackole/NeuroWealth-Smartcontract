@@ -1,5 +1,7 @@
 'use client';
 
+import { AssetAmountInput } from '@/components/AssetAmountInput';
+
 /**
  * DepositForm.tsx
  *
@@ -595,9 +597,10 @@ export const DepositForm: React.FC<DepositFormProps> = ({
                 </div>
 
                 <div className="relative">
-                  <input
+                  <AssetAmountInput
                     id="deposit-amount"
-                    type="number"
+                    value={watchedAmount}
+                    onPasteAmount={(value) => setValue('amount', value, { shouldValidate: true, shouldDirty: true })}
                     step="0.01"
                     min="1"
                     max="10000"
@@ -614,7 +617,7 @@ export const DepositForm: React.FC<DepositFormProps> = ({
                   <button
                     type="button"
                     onClick={handleMax}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 hover:bg-emerald-500/20 px-2.5 py-1 rounded-lg transition-colors border border-emerald-500/20"
+                    className="absolute right-3 top-3 text-xs font-bold text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 hover:bg-emerald-500/20 px-2.5 py-1 rounded-lg transition-colors border border-emerald-500/20"
                     aria-label="Fill maximum USDC balance"
                   >
                     MAX

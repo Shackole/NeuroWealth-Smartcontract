@@ -1,5 +1,7 @@
 'use client';
 
+import { AssetAmountInput } from '@/components/AssetAmountInput';
+
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   X,
@@ -289,9 +291,9 @@ function DepositStep({
           Amount (USDC)
         </label>
         <div className="relative">
-          <input
+          <AssetAmountInput
             id="deposit-amount"
-            type="number"
+            onPasteAmount={onChange}
             step="0.01"
             min="1"
             max="10000"

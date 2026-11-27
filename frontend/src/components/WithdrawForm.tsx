@@ -1,5 +1,7 @@
 'use client';
 
+import { AssetAmountInput } from '@/components/AssetAmountInput';
+
 import React, { useState } from 'react';
 import { ArrowUpRight, Loader2, CheckCircle2 } from 'lucide-react';
 import { withdrawFromVault, withdrawAllFromVault } from '@/lib/contract';
@@ -99,9 +101,9 @@ export const WithdrawForm: React.FC<WithdrawFormProps> = ({
           <span>Available: {balance.toFixed(7)} USDC</span>
         </div>
         <div className="relative">
-          <input
+          <AssetAmountInput
             id="withdraw-amount-input"
-            type="number"
+            onPasteAmount={setAmount}
             step="0.0000001"
             min="0.01"
             max={balance}
