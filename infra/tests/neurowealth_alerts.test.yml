@@ -1,0 +1,58 @@
+rule_files:
+  - ../rules/neurowealth_alerts.yml
+
+evaluation_interval: 1m
+
+tests:
+  - name: Vault pause fires after five minutes and clears on unpause
+    interval: 1m
+    input_series:
+      - series: 'neurowealth_vault_paused{instance="vault"}'
+        values: '0 1 1 1 1 1 1 0'
+    alert_rule_test:
+      - eval_time: 0m
+        alertname: VaultPaused
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: VaultPaused
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: VaultPaused
+        exp_alerts:
+          - exp_labels:
+              instance: vault
+              severity: warning
+            exp_annotations:
+              summary: Vault is paused
+              description: >
+                The vault has been paused for at least 5 minutes. Users cannot
+                deposit or withdraw. Investigate whether the pause is intentional
+                (maintenance) or triggered by the circuit breaker.
+      - eval_time: 7m
+        alertname: VaultPaused
+        exp_alerts: []
+
+  - name: Vault circuit breaker warns at two failures and clears on reset
+    interval: 1m
+    input_series:
+      - series: 'neurowealth_vault_consecutive_failures{instance="vault"}'
+        values: '1 2 0'
+    alert_rule_test:
+      - eval_time: 0m
+        alertname: VaultCircuitBreakerApproachingThreshold
+        exp_alerts: []
+      - eval_time: 1m
+        alertname: VaultCircuitBreakerApproachingThreshold
+        exp_alerts:
+          - exp_labels:
+              instance: vault
+              severity: warning
+            exp_annotations:
+              summary: Vault circuit breaker at 2 consecutive failures
+              description: >
+                The vault has 2 consecutive failed rebalances. At 3
+                (default), the circuit breaker will auto-pause the vault.
+                Investigate the rebalance failure immediately.
+      - eval_time: 2m
+        alertname: VaultCircuitBreakerApproachingThreshold
+        exp_alerts: []
