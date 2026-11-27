@@ -88,12 +88,56 @@ jobs:
 
       - name: Determine deployment context
         id: context
+        env:
+          NEXT_PUBLIC_NETWORK_PASSPHRASE: ${{ vars.NEXT_PUBLIC_NETWORK_PASSPHRASE || 'Test SDF Network ; September 2015' }}
         run: |
           if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
             echo "is_production=true" >> "$GITHUB_OUTPUT"
+            case "$NEXT_PUBLIC_NETWORK_PASSPHRASE" in
+              "Public Global Stellar Network ; Stellar Development Foundation")
+                echo "network=mainnet" >> "$GITHUB_OUTPUT"
+                ;;
+              "Test SDF Network ; September 2015")
+                echo "network=testnet" >> "$GITHUB_OUTPUT"
+                ;;
+              *)
+                echo "::error::Unsupported Stellar network passphrase for production release artifact"
+                exit 1
+                ;;
+            esac
           else
             echo "is_production=false" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Validate release artifact name
+        id: artifact_name
+        if: steps.context.outputs.is_production == 'true'
+        env:
+          RELEASE_NETWORK: ${{ steps.context.outputs.network }}
+          BUILD_SHA: ${{ github.sha }}
+          BUILD_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          is_valid_artifact_name() {
+            [[ "$1" =~ ^deployment-provenance-(mainnet|testnet)-[0-9a-f]{40}-[0-9]+$ ]]
+          }
+
+          for sample_network in mainnet testnet; do
+            sample_name="deployment-provenance-${sample_network}-0123456789abcdef0123456789abcdef01234567-1234567890"
+            if ! is_valid_artifact_name "$sample_name"; then
+              echo "::error::Release artifact name validation failed for ${sample_network} sample"
+              exit 1
+            fi
+          done
+
+          artifact_name="deployment-provenance-${RELEASE_NETWORK}-${BUILD_SHA}-${BUILD_RUN_ID}"
+          if ! is_valid_artifact_name "$artifact_name"; then
+            echo "::error::Invalid release artifact name: ${artifact_name}"
+            exit 1
+          fi
+
+          echo "name=${artifact_name}" >> "$GITHUB_OUTPUT"
 
       # Pull Vercel project settings so `vercel deploy` knows the project.
       - name: Pull Vercel project settings
@@ -157,6 +201,7 @@ jobs:
           {
             echo "commit_sha=$GITHUB_SHA"
             echo "workflow_run_id=$GITHUB_RUN_ID"
+            echo "network=${{ steps.context.outputs.network }}"
             echo "deployment_url=$DEPLOYMENT_URL"
             echo "vercel_output_sha256=$(sha256sum "$RUNNER_TEMP/release-provenance/vercel-output.tar.gz" | cut -d' ' -f1)"
             echo "contract_wasm_sha256=$(sha256sum "$RUNNER_TEMP/release-provenance/neurowealth_vault.wasm" | cut -d' ' -f1)"
@@ -170,7 +215,7 @@ jobs:
         if: steps.context.outputs.is_production == 'true'
         uses: actions/upload-artifact@v7
         with:
-          name: deployment-provenance-${{ github.sha }}-${{ github.run_id }}
+          name: ${{ steps.artifact_name.outputs.name }}
           path: ${{ runner.temp }}/release-provenance/
           retention-days: 90
 
