@@ -1,5 +1,5 @@
 import React from 'react';
-import { BookOpen, Zap, ArrowLeft } from 'lucide-react';
+import { BookOpen, Zap, ArrowLeft, ArrowUpRight } from 'lucide-react';
 import Link from 'next/link';
 import { SampleChart } from './SampleChart';
 import { notFound } from 'next/navigation';
@@ -101,6 +101,16 @@ export default async function LearnPage({ params }: { params: Promise<{ locale: 
                     <p className="text-sm font-medium text-emerald-400 mb-2">{entry.summary}</p>
                   </dt>
                   <dd className="text-sm text-slate-400 leading-relaxed">{entry.detail}</dd>
+                  <div className="mt-3 pt-3 border-t border-slate-700/40">
+                    <Link
+                      href={`/${locale}${entry.dashboardLink.href}`}
+                      aria-label={`${entry.dashboardLink.label} — press Back to return here`}
+                      className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-400 hover:text-emerald-300 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 rounded"
+                    >
+                      <ArrowUpRight size={13} aria-hidden="true" />
+                      {entry.dashboardLink.label}
+                    </Link>
+                  </div>
                 </div>
               );
             })}
