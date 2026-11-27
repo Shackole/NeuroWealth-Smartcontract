@@ -243,15 +243,17 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({ transact
                     {tx.amount.toLocaleString()} USDC
                   </td>
                   <td className="py-3 px-4 text-slate-400">
-                    <a
-                      href={`https://stellar.expert/explorer/testnet/tx/${tx.txHash}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="flex items-center gap-1 hover:text-emerald-400 transition-colors"
-                    >
-                      <span>{tx.txHash}</span>
-                      <ExternalLink size={12} />
-                    </a>
+                    {tx.txHash ? (
+                      <a
+                        href={`https://stellar.expert/explorer/testnet/tx/${tx.txHash}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="flex items-center gap-1 hover:text-emerald-400 transition-colors"
+                      >
+                        <span>{tx.txHash}</span>
+                        <ExternalLink size={12} />
+                      </a>
+                    ) : '—'}
                   </td>
                   <td className="py-3 px-4 text-slate-400">
                     {day.instant ? (

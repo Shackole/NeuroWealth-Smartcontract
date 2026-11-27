@@ -4,7 +4,7 @@ import React, { useState } from 'react';
 import { Header } from '@/components/Header';
 import { BalanceCard } from '@/components/BalanceCard';
 import { EarningsCard } from '@/components/EarningsCard';
-import { PortfolioChart } from '@/components/PortfolioChart';
+import { LazyPortfolioChart } from '@/components/LazyPortfolioChart';
 import { TransactionHistory } from '@/components/TransactionHistory';
 import { ActionModal } from '@/components/ActionModal';
 
@@ -27,9 +27,9 @@ export default function DashboardViewPage() {
   };
 
   const chartData = [
-    { date: '2026-07-26 UTC', value: 95.0, yield: 1.85, apy: 8.1 },
-    { date: '2026-07-27 UTC', value: 97.2, yield: 4.12, apy: 8.3 },
-    { date: '2026-07-28 UTC', value: 100.25, yield: 6.95, apy: 8.4 },
+    { date: '2026-07-26 UTC', value: 95.0, yield: 1.85, apyBps: 810 },
+    { date: '2026-07-27 UTC', value: 97.2, yield: 4.12, apyBps: 830 },
+    { date: '2026-07-28 UTC', value: 100.25, yield: 6.95, apyBps: 840 },
   ];
 
   const transactions = [
@@ -87,7 +87,7 @@ export default function DashboardViewPage() {
 
         <section aria-labelledby="chart-heading" className="space-y-4">
           <h2 id="chart-heading" className="text-xl font-bold text-white">Portfolio Performance</h2>
-          <PortfolioChart
+          <LazyPortfolioChart
             data={publicKey ? chartData : []}
             defaultApy={vaultState.apy}
             network="Stellar Testnet"
