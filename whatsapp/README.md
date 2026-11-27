@@ -54,6 +54,15 @@ the conversation. Regional tags such as `es-MX` use their base language.
 New sessions and unsupported language selections use English. The preference
 lasts until the conversation session expires. The command examples shown in
 each language use the bot's existing command vocabulary.
+## Outbound delivery receipts
+
+Set `WEBHOOK_BASE_URL` to the public service URL to track outbound WhatsApp
+messages sent through the Twilio REST API. Twilio posts signed receipts to
+`POST /api/whatsapp/delivery-status`. Redis stores the latest status in the
+`status` field of `whatsapp:delivery:<MessageSid>` for 30 days after the last
+status advance. Delayed or duplicate callbacks leave the record and its
+expiration unchanged. A read receipt takes precedence over delivery, and
+delivery takes precedence over any failure or earlier sending status.
 
 ## Verification Flow
 1. User sends `"hi"` to WhatsApp number.

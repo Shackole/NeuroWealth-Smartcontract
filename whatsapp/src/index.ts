@@ -1,9 +1,12 @@
+import 'dotenv/config';
 import express from 'express';
 import bodyParser from 'body-parser';
-import dotenv from 'dotenv';
-import { handleWhatsAppWebhook } from './webhook';
-
-dotenv.config();
+import { DELIVERY_STATUS_PATH } from './deliveryReceipts';
+import {
+  handleWhatsAppDeliveryStatus,
+  handleWhatsAppWebhook,
+  twilioSignatureMiddleware,
+} from './webhook';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -40,6 +43,7 @@ app.get('/health', (req, res) => {
 
 // WhatsApp Twilio Webhook route
 app.post('/api/whatsapp/webhook', handleWhatsAppWebhook);
+app.post(DELIVERY_STATUS_PATH, twilioSignatureMiddleware, handleWhatsAppDeliveryStatus);
 
 const server = app.listen(PORT, () => {
   console.log(`🚀 NeuroWealth WhatsApp Bot Handler running on port ${PORT}`);

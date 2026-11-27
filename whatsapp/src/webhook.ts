@@ -21,6 +21,7 @@ import { createCustodialWallet, getWallet } from './walletService';
 import { getPortfolio, handleDeposit, handleWithdraw } from './vaultRouter';
 import Queue from 'bull';
 import crypto from 'crypto';
+import { DELIVERY_STATUS_PATH, storeDeliveryReceipt } from './deliveryReceipts';
 
 // ─────────────────────────────────────────────────────────
 // Twilio client
@@ -35,6 +36,10 @@ const TWILIO_WHATSAPP_FROM =
 // ─────────────────────────────────────────────────────────
 // Bull queue — async intent processing
 // ─────────────────────────────────────────────────────────
+const WEBHOOK_BASE_URL = process.env.WEBHOOK_BASE_URL?.replace(/\/+$/, '');
+const DELIVERY_STATUS_URL = WEBHOOK_BASE_URL
+  ? `${WEBHOOK_BASE_URL}${DELIVERY_STATUS_PATH}`
+  : undefined;
 const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
 export const INTENT_JOB_ATTEMPTS = 1;
 
@@ -127,10 +132,8 @@ export function twilioSignatureMiddleware(
     return;
   }
 
-  const webhookUrl =
-    process.env.WEBHOOK_BASE_URL
-      ? `${process.env.WEBHOOK_BASE_URL}/api/whatsapp/webhook`
-      : `${req.protocol}://${req.get('host')}/api/whatsapp/webhook`;
+  const publicBaseUrl = WEBHOOK_BASE_URL || `${req.protocol}://${req.get('host')}`;
+  const webhookUrl = `${publicBaseUrl}${req.originalUrl}`;
 
   const signature = req.headers['x-twilio-signature'] as string | undefined;
 
@@ -147,6 +150,25 @@ export function twilioSignatureMiddleware(
   }
 
   next();
+}
+
+export async function handleWhatsAppDeliveryStatus(req: Request, res: Response): Promise<void> {
+  const { MessageSid, MessageStatus } = req.body ?? {};
+  if (
+    typeof MessageSid !== 'string' || !/^(SM|MM)[a-f0-9]{32}$/i.test(MessageSid) ||
+    typeof MessageStatus !== 'string'
+  ) {
+    res.status(400).end();
+    return;
+  }
+
+  try {
+    await storeDeliveryReceipt((...args) => intentQueue.client.eval(...args), MessageSid, MessageStatus);
+    res.status(204).end();
+  } catch (error) {
+    console.error('[deliveryStatus] failed to store receipt:', error);
+    res.status(503).end();
+  }
 }
 
 // ─────────────────────────────────────────────────────────
@@ -409,6 +431,7 @@ intentQueue.process(INTENT_WORKER_CONCURRENCY, async (job) => {
     from: TWILIO_WHATSAPP_FROM,
     to: fromNumber,
     body: replyText,
+    statusCallback: DELIVERY_STATUS_URL,
   });
 
   await logMessageToDb(phoneHash, 'outbound', replyText);
