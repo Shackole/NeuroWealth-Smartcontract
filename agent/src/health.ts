@@ -19,14 +19,14 @@ import { Pool } from 'pg';
 import { rpc as SorobanRpc } from '@stellar/stellar-sdk';
 import { getPoolMetrics } from './db';
 import { openAiKeyManager } from './openAiKeyManager';
-import { lastRebalanceTimestamp, queueDepth } from './healthState';
+import { cacheRpcHealthProbe, lastRebalanceTimestamp, queueDepth } from './healthState';
 import logger from './logger';
 
 const router = express.Router();
 
 // ── Dependency references set at startup ─────────────────────────────────────
 let dbPool: Pool | null = null;
-let rpcServer: SorobanRpc.Server | null = null;
+let checkStellarRpc = createStellarRpcCheck(null);
 /** Optional Redis-compatible client (ioredis or node-redis). */
 let redisClient: { ping(): Promise<string> } | null = null;
 
@@ -91,10 +91,10 @@ export function configureHealthChecks(
 ): void {
   if (poolOrOptions instanceof Pool) {
     dbPool = poolOrOptions;
-    rpcServer = server ?? null;
+    checkStellarRpc = createStellarRpcCheck(server ?? null);
   } else {
     dbPool = poolOrOptions.pool;
-    rpcServer = poolOrOptions.rpcServer;
+    checkStellarRpc = createStellarRpcCheck(poolOrOptions.rpcServer);
     redisClient = poolOrOptions.redis ?? null;
     onAlert = poolOrOptions.alertHandler ?? null;
   }
@@ -139,29 +139,33 @@ async function checkRedis(): Promise<{ status: string; latencyMs?: number }> {
   }
 }
 
-async function checkStellarRpc(): Promise<{
+interface RpcHealthResult {
   status: string;
   latestLedger?: number;
   latencyMs?: number;
-}> {
-  if (!rpcServer) return { status: 'not_configured' };
-  const start = Date.now();
-  try {
-    const ledger = await Promise.race([
-      rpcServer.getLatestLedger(),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('RPC timeout')), 5_000),
-      ),
-    ]);
-    return {
-      status: 'ok',
-      latestLedger: ledger.sequence,
-      latencyMs: Date.now() - start,
-    };
-  } catch (err) {
-    logger.warn({ err }, 'Stellar RPC health check failed');
-    return { status: 'error' };
-  }
+}
+
+function createStellarRpcCheck(server: SorobanRpc.Server | null): () => Promise<RpcHealthResult> {
+  if (!server) return async () => ({ status: 'not_configured' });
+
+  return cacheRpcHealthProbe(async () => {
+    const start = Date.now();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const ledger = await Promise.race([
+        server.getLatestLedger(),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error('RPC timeout')), 5_000);
+        }),
+      ]);
+      return { status: 'ok', latestLedger: ledger.sequence, latencyMs: Date.now() - start };
+    } catch (err) {
+      logger.warn({ err }, 'Stellar RPC health check failed');
+      return { status: 'error' };
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  });
 }
 
 // ── Route handlers ────────────────────────────────────────────────────────────

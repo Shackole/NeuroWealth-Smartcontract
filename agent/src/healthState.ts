@@ -18,3 +18,22 @@ export function setLastRebalanceTimestamp(ts: number): void {
 export function setQueueDepth(depth: number): void {
   queueDepth = depth;
 }
+
+/** Shares one RPC probe and caches its result for a short window after completion. */
+export function cacheRpcHealthProbe<T>(probe: () => Promise<T>, ttlMs = 5_000): () => Promise<T> {
+  let cached: { result: T; expiresAt: number } | undefined;
+  let inFlight: Promise<T> | undefined;
+
+  return () => {
+    if (cached && Date.now() < cached.expiresAt) return Promise.resolve(cached.result);
+
+    inFlight ??= Promise.resolve().then(probe).then((result) => {
+      cached = { result, expiresAt: Date.now() + ttlMs };
+      return result;
+    }).finally(() => {
+      inFlight = undefined;
+    });
+
+    return inFlight;
+  };
+}
