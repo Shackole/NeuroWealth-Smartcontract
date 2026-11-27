@@ -326,6 +326,34 @@ fn test_remove_supported_asset_requires_empty_pool() {
 }
 
 #[test]
+fn test_remove_middle_asset_preserves_registration_order() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (contract_id, _agent, _owner, first_token) = setup_vault_with_token(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+    let middle_token = env.register_contract(None, TestToken);
+    let last_token = env.register_contract(None, TestToken);
+
+    // Reverse alphabetical order distinguishes registration order from sorting.
+    let first = asset(&env, USDT);
+    let middle = asset(&env, USDC);
+    let last = asset(&env, "EURC");
+    client.add_supported_asset(&first, &first_token, &0, &0, &0);
+    client.add_supported_asset(&middle, &middle_token, &0, &0, &0);
+    client.add_supported_asset(&last, &last_token, &0, &0, &0);
+    assert_eq!(
+        client.get_supported_assets(),
+        soroban_sdk::vec![&env, first.clone(), middle.clone(), last.clone()]
+    );
+
+    client.remove_supported_asset(&middle);
+
+    assert_eq!(client.get_supported_assets(), soroban_sdk::vec![&env, first, last]);
+    assert!(client.get_asset_config(&middle).is_none());
+}
+
+#[test]
 fn test_get_asset_balance_view() {
     let env = Env::default();
     env.mock_all_auths();
