@@ -1716,6 +1716,103 @@ The protocol charges a configurable performance fee on earned yield to fund main
 - **Settlement**: Deducted from harvested yield during auto-compounding cycles and directed to the configured Treasury address
 - **Events**: Emits `PerformanceFeeEvent { treasury, yield_gross, fee_amount, bps }`
 
+### Worked Examples: Verifying Fee Calculations Across Consecutive Updates
+
+To aid contributors in auditing and testing fee computations, the following worked examples illustrate how performance fees are calculated across consecutive valuation updates involving **gain**, **loss**, and **recovery**.
+
+All computations follow the implementation specifications:
+- **USDC Units**: Stored as signed `i128` raw integer base units with 7 decimals (`1 USDC = 10,000,000` raw units).
+- **Fee Rate**: Stored as `u32` basis points (`bps`), where `10,000 bps = 100%` (`1 bps = 0.01%`).
+- **High-Water Mark (HWM)**: Tracked in `i128` raw base units. A performance fee is assessed strictly on net new yield that exceeds the existing HWM.
+- **Rounding / Integer Math**: `fee_amount = (yield_gross * bps) / 10_000` using standard integer floor division.
+
+#### Baseline Configuration
+
+- Configured Performance Fee: `500 bps` (5.00%)
+- Configured Treasury Address: `G_TREASURY_EXAMPLE...`
+- Initial Deposit / Starting Assets: `10,000.0000000 USDC` (`100,000,000,000` raw units)
+- Initial High-Water Mark ($HWM_0$): `100,000,000,000` raw units
+
+---
+
+#### Update 1: Gain (Gross Valuation Increase Above HWM)
+
+External yield generation (e.g., lending on Blend) increases the gross vault asset valuation to `11,000.0000000 USDC` (`110,000,000,000` raw units).
+
+1. **Calculate Gross Yield Above HWM**:
+   $$\text{yield\_gross} = \text{new\_total} - HWM_0 = 110,000,000,000 - 100,000,000,000 = 10,000,000,000 \text{ raw units (1,000 USDC)}$$
+2. **Compute Fee Amount**:
+   $$\text{fee\_amount} = \frac{10,000,000,000 \times 500}{10,000} = 500,000,000 \text{ raw units (50 USDC)}$$
+3. **Net Vault Assets**:
+   $$\text{net\_total} = 110,000,000,000 - 500,000,000 = 109,500,000,000 \text{ raw units (10,950 USDC)}$$
+4. **Update High-Water Mark**:
+   $$HWM_1 = 110,000,000,000 \text{ raw units}$$
+5. **Event Emission**:
+   Emits `PerformanceFeeEvent { treasury: G_TREASURY, yield_gross: 10_000_000_000, fee_amount: 500_000_000, bps: 500 }`.
+
+---
+
+#### Update 2: Loss (Controlled Valuation Decrease Below HWM)
+
+A subsequent market downturn or impermanent loss event lowers the vault's gross assets to `10,450.0000000 USDC` (`104,500,000,000` raw units).
+
+1. **Verify Loss Bounds**:
+   - Authorized via `update_total_assets(new_total, allow_decrease=true, max_decrease_bps)` co-signed by the contract owner.
+   - Decrease: $109,500,000,000 - 104,500,000,000 = 5,000,000,000$ raw units ($4.56\% \le \text{max\_decrease\_bps}$).
+2. **Evaluate Fee Condition**:
+   - New gross total ($104,500,000,000$) is below $HWM_1$ ($110,000,000,000$).
+   - $\text{yield\_gross} = 0$.
+   - $\text{fee\_amount} = 0$.
+3. **Net Vault Assets**:
+   $$\text{net\_total} = 104,500,000,000 \text{ raw units (10,450 USDC)}$$
+4. **High-Water Mark Retention**:
+   $$HWM_2 = HWM_1 = 110,000,000,000 \text{ raw units}$$
+   *(The HWM is never decreased during a loss cycle, ensuring depositors do not pay performance fees twice on the same capital).*
+
+---
+
+#### Update 3: Recovery (Consecutive Cycles: Partial Recovery vs. New High)
+
+##### Cycle 3A: Partial Recovery (Below Existing HWM)
+
+Valuation rebounds from $104,500,000,000$ to `108,000.0000000 USDC` (`108,000,000,000` raw units).
+
+1. **Evaluate Fee Condition**:
+   - Although valuation grew by $3,500,000,000$ raw units ($350$ USDC), current valuation ($108,000,000,000$) remains below $HWM_2$ ($110,000,000,000$).
+   - $\text{yield\_gross} = 0$.
+   - $\text{fee\_amount} = 0$.
+2. **Net Vault Assets**:
+   $$\text{net\_total} = 108,000,000,000 \text{ raw units (10,800 USDC)}$$
+3. **High-Water Mark Retention**:
+   $$HWM_{3A} = 110,000,000,000 \text{ raw units}$$
+   *(No fee is charged during recovery until the previous loss is completely offset).*
+
+##### Cycle 3B: Full Recovery and New Peak (Surpassing HWM)
+
+In the following update, vault performance pushes the gross asset total to `112,500.0000000 USDC` (`112,500,000,000` raw units).
+
+1. **Calculate Gross Yield Above HWM**:
+   $$\text{yield\_gross} = 112,500,000,000 - HWM_{3A} = 112,500,000,000 - 110,000,000,000 = 2,500,000,000 \text{ raw units (250 USDC)}$$
+2. **Compute Fee Amount**:
+   $$\text{fee\_amount} = \frac{2,500,000,000 \times 500}{10,000} = 125,000,000 \text{ raw units (12.5 USDC)}$$
+3. **Net Vault Assets**:
+   $$\text{net\_total} = 112,500,000,000 - 125,000,000 = 112,375,000,000 \text{ raw units (11,237.5 USDC)}$$
+4. **Update High-Water Mark**:
+   $$HWM_{3B} = 112,500,000,000 \text{ raw units}$$
+5. **Event Emission**:
+   Emits `PerformanceFeeEvent { treasury: G_TREASURY, yield_gross: 2_500_000_000, fee_amount: 125_000_000, bps: 500 }`.
+
+#### Summary of Consecutive Updates
+
+| Step | Cycle Description | Gross Assets (USDC) | Gross Assets (Raw Units) | HWM (Raw Units) | Eligible Yield (Raw Units) | Fee Amount (Raw Units) | Net Assets (Raw Units) |
+|---|---|---|---|---|---|---|---|
+| 0 | Initial Baseline | $10,000.0000000$ | $100,000,000,000$ | $100,000,000,000$ | - | - | $100,000,000,000$ |
+| 1 | Gain | $11,000.0000000$ | $110,000,000,000$ | $110,000,000,000$ | $10,000,000,000$ | $500,000,000$ | $109,500,000,000$ |
+| 2 | Loss | $10,450.0000000$ | $104,500,000,000$ | $110,000,000,000$ | $0$ | $0$ | $104,500,000,000$ |
+| 3A | Partial Recovery | $108,000.0000000$ | $108,000,000,000$ | $110,000,000,000$ | $0$ | $0$ | $108,000,000,000$ |
+| 3B | New All-Time High | $112,500.0000000$ | $112,500,000,000$ | $112,500,000,000$ | $2,500,000,000$ | $125,000,000$ | $112,375,000,000$ |
+
+
 ## On-chain rate limiting
 
 The vault applies fixed-window rate limits in the contract rather than relying on
