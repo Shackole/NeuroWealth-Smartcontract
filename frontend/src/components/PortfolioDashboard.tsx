@@ -5,6 +5,7 @@ import { RefreshCw, WifiOff } from 'lucide-react';
 import { BalanceCard } from './BalanceCard';
 import { EarningsCard } from './EarningsCard';
 import { StrategyBadge } from './StrategyBadge';
+import { StrategyComparison } from './StrategyComparison';
 import { SkeletonCard } from './SkeletonCard';
 import { SUMMARY_CARD_SIZE } from './dashboardCardLayout';
 import { AssetOverview, type PortfolioAsset } from './AssetOverview';
@@ -141,6 +142,11 @@ export const PortfolioDashboard: React.FC<PortfolioDashboardProps> = ({
           </>
         )}
       </div>
+      <StrategyComparison
+        currentStrategy={isConnected && hasData ? strategy : undefined}
+        onSelectStrategy={isConnected && !offline ? onSelectStrategy : undefined}
+        isUpdating={dataStatus === 'refreshing'}
+      />
       {assets && (
         <AssetOverview assets={assets} totalEstimatedValue={totalEstimatedValue} totalValueSource={totalValueSource} />
       )}

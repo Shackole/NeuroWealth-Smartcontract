@@ -54,7 +54,7 @@ export const ARTICLES: GlossaryEntry[] = [
   },
   {
     slug: 'blend',
-    dashboardLink: { href: '/dashboard', label: 'View your strategies on the dashboard' },
+    dashboardLink: { href: '/dashboard#strategy-comparison', label: 'Compare strategies on the dashboard' },
     term: 'Blend Protocol',
     icon: Layers,
     iconColor: 'text-blue-400',
@@ -64,7 +64,7 @@ export const ARTICLES: GlossaryEntry[] = [
   },
   {
     slug: 'stellar-dex',
-    dashboardLink: { href: '/dashboard', label: 'View your strategies on the dashboard' },
+    dashboardLink: { href: '/dashboard#strategy-comparison', label: 'Compare strategies on the dashboard' },
     term: 'DEX — Decentralised Exchange',
     icon: RefreshCw,
     iconColor: 'text-purple-400',

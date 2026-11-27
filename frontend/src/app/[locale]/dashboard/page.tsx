@@ -7,6 +7,7 @@ import { EarningsCard } from '@/components/EarningsCard';
 import { LazyPortfolioChart } from '@/components/LazyPortfolioChart';
 import { TransactionHistory } from '@/components/TransactionHistory';
 import { ActionModal } from '@/components/ActionModal';
+import { StrategyComparison } from '@/components/StrategyComparison';
 
 export default function DashboardViewPage() {
   const [publicKey, setPublicKey] = useState<string | null>('GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5');
@@ -15,7 +16,7 @@ export default function DashboardViewPage() {
 
   const vaultState = {
     balance: 100.25,
-    strategy: 'Balanced',
+    strategy: 'Balanced' as const,
     exchangeRate: 1.042,
     apy: 8.4,
   };
@@ -94,6 +95,8 @@ export default function DashboardViewPage() {
             isConnected={Boolean(publicKey)}
           />
         </section>
+
+        <StrategyComparison currentStrategy={publicKey ? vaultState.strategy : undefined} />
 
         <section aria-labelledby="history-heading" className="space-y-4">
           <h2 id="history-heading" className="text-xl font-bold text-white">Recent Transactions</h2>
