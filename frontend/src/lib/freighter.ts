@@ -1,6 +1,6 @@
 import {
   isConnected as checkFreighterConnected,
-  getPublicKey as getFreighterPublicKey,
+  requestAccess as requestFreighterAccess,
   signTransaction as signFreighterTx
 } from '@stellar/freighter-api';
 
@@ -28,20 +28,48 @@ export async function isFreighterInstalled(): Promise<boolean> {
   }
 }
 
-/**
- * Requests wallet connection from Freighter and returns the active public key.
- * Non-custodial signing model - private keys never enter web app.
- */
-export async function connectFreighterWallet(): Promise<string | null> {
-  try {
-    const installed = await isFreighterInstalled();
-    if (!installed) {
-      if (typeof window !== 'undefined' && typeof window.alert === 'function') {
-        alert('Freighter wallet extension is not installed. Please install Freighter to connect.');
-      }
-      return null;
-    }
+export const FREIGHTER_TIMEOUT_MESSAGE =
+  'Freighter took too long to respond. Open or enable the extension, then try again.';
 
+async function waitForFreighter(): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let stopped = false;
+
+  async function detect(): Promise<boolean> {
+    while (!stopped) {
+      if (await isFreighterInstalled()) return true;
+      if (!stopped) await new Promise<void>((resolve) => setTimeout(resolve, 250));
+    }
+    return false;
+  }
+
+  try {
+    return await Promise.race([
+      detect(),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(false), 5000);
+      }),
+    ]);
+  } finally {
+    stopped = true;
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Requests wallet access once the extension responds and returns the active public key.
+ */
+export async function connectFreighterWallet(
+  onDetection?: (status: 'pending' | 'timeout' | 'ready') => void,
+): Promise<string | null> {
+  onDetection?.('pending');
+  if (!(await waitForFreighter())) {
+    onDetection?.('timeout');
+    return null;
+  }
+
+  onDetection?.('ready');
+  try {
     if (typeof window !== 'undefined' && (window as any).freighter) {
       const f = (window as any).freighter;
       if (typeof f.getPublicKey === 'function') {
@@ -54,7 +82,7 @@ export async function connectFreighterWallet(): Promise<string | null> {
       }
     }
 
-    const key = await getFreighterPublicKey();
+    const key = await requestFreighterAccess();
     return key || null;
   } catch (err: any) {
     console.error('Failed to connect Freighter wallet:', err);

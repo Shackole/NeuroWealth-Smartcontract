@@ -1,20 +1,24 @@
 'use client';
 
-import React from 'react';
+import React, { useState } from 'react';
 import { Bot, Sparkles, BarChart3 } from 'lucide-react';
 import { WalletConnect } from './WalletConnect';
 import { LanguageSwitcher } from './LanguageSwitcher';
 import Link from 'next/link';
 import { useLocale } from 'next-intl';
+import { useFreighterConnection } from '@/lib/useFreighterConnection';
 
 interface HeaderProps {
-  publicKey: string | null;
-  onConnect: () => void;
-  onDisconnect: () => void;
+  publicKey?: string | null;
+  onConnect?: () => void;
+  onDisconnect?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({ publicKey, onConnect, onDisconnect }) => {
   const locale = useLocale();
+  const [connectedKey, setConnectedKey] = useState<string | null>(null);
+  const connection = useFreighterConnection();
+
   return (
     <header className="sticky top-0 z-50 w-full border-b border-slate-800/80 bg-[#080b11]/80 backdrop-blur-xl">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
@@ -56,7 +60,18 @@ export const Header: React.FC<HeaderProps> = ({ publicKey, onConnect, onDisconne
         {/* Wallet Connection & Language */}
         <div className="flex items-center gap-4">
           <LanguageSwitcher />
-          <WalletConnect publicKey={publicKey} onConnect={onConnect} onDisconnect={onDisconnect} />
+          <div className="relative">
+            <WalletConnect
+              publicKey={publicKey === undefined ? connectedKey : publicKey}
+              onConnect={onConnect ?? (() => void connection.connect(setConnectedKey))}
+              onDisconnect={onDisconnect ?? (() => setConnectedKey(null))}
+              isConnecting={connection.isConnecting}
+              canRetry={connection.canRetry}
+            />
+            <p role="status" className="absolute right-0 top-full mt-1 w-56 rounded bg-slate-950 text-xs text-slate-200 empty:hidden">
+              {connection.message}
+            </p>
+          </div>
         </div>
       </div>
     </header>

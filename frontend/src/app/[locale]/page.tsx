@@ -179,7 +179,7 @@ export default function LandingPage() {
         Skip to main content
       </a>
 
-      <Header publicKey={null} onConnect={() => {}} onDisconnect={() => {}} />
+      <Header />
 
       <main id="main-content" className="flex-1">
         {/* ── Hero ─────────────────────────────────────────────────────── */}
