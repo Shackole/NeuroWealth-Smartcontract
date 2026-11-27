@@ -127,15 +127,41 @@ function AssetBreakdownBar({
   );
 }
 
-// ── Auto-refresh client wrapper ───────────────────────────────────────────────
-// We use a simple <meta http-equiv="refresh"> trick in the layout; the ISR handles
-// the server data. For the client-side countdown we inject a small script.
+type StatsSearchParams = Record<string, string | string[] | undefined>;
 
-// ── Page ─────────────────────────────────────────────────────────────────────
+export default async function VaultStatsPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ locale: string }>;
+  searchParams: Promise<StatsSearchParams>;
+}) {
+  const [{ locale }, filters, stats] = await Promise.all([params, searchParams, fetchVaultStats()]);
+  const period = filters.period === '7d' ? '7d' : '30d';
+  const asset = filters.asset === 'nv-share' ? 'nv-share' : 'usdc';
+  const filterHref = (nextPeriod: string, nextAsset: string) => {
+    const query = new URLSearchParams();
+    for (const [name, value] of Object.entries(filters)) {
+      if (name === 'period' || name === 'asset' || value === undefined) continue;
+      for (const entry of [value].flat()) query.append(name, entry);
+    }
+    query.set('period', nextPeriod);
+    query.set('asset', nextAsset);
+    return `?${query.toString()}`;
+  };
+  const filterClassName = 'rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300 hover:bg-slate-800 aria-[current=true]:border-emerald-500 aria-[current=true]:bg-emerald-500/10 aria-[current=true]:text-emerald-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400';
 
-export default async function VaultStatsPage({ params }: { params: Promise<{ locale: string }> }) {
-  const { locale } = await params;
-  const stats = await fetchVaultStats();
+  const days = period === '7d' ? 7 : 30;
+  const unit = asset === 'usdc' ? 'USDC per NV-SHARE' : 'NV-SHARE per USDC';
+  const rateHistory = stats.rateHistory.slice(-days).map((point) => ({
+    ...point,
+    rate: asset === 'usdc' ? point.rate : 1 / point.rate,
+  }));
+  const firstRate = rateHistory[0]?.rate;
+  const lastRate = rateHistory.at(-1)?.rate;
+  const periodChange = firstRate && lastRate && rateHistory.length > 1
+    ? ((lastRate / firstRate - 1) * 100).toFixed(2)
+    : null;
 
   const fetchedTime = new Date(stats.fetchedAt).toLocaleTimeString('en-US', {
     hour: '2-digit',
@@ -248,17 +274,41 @@ export default async function VaultStatsPage({ params }: { params: Promise<{ loc
         <div className="glass-panel rounded-2xl p-5 border border-slate-800">
           <div className="flex items-start justify-between mb-5">
             <div>
-              <h3 className="text-sm font-bold text-white mb-1">Exchange Rate — Last 30 Days</h3>
+              <h3 className="text-sm font-bold text-white mb-1">Exchange Rate — Last {days} Days</h3>
               <p className="text-xs text-slate-400">
-                NV-SHARE → USDC conversion rate. Rising rate = growing yield.
+                {unit}
               </p>
             </div>
-            <span className="text-xs font-mono text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-1 rounded-lg">
-              +{(((stats.exchangeRate - 1) / 1) * 100).toFixed(2)}% 30d
-            </span>
+            {periodChange !== null && (
+              <span className="text-xs font-mono text-slate-300 bg-slate-800 px-2 py-1 rounded-lg">
+                {Number(periodChange) > 0 ? '+' : ''}{periodChange}% {period}
+              </span>
+            )}
           </div>
-          {stats.rateHistory.length > 0 ? (
-            <ExchangeRateChart data={stats.rateHistory} />
+          <nav aria-label="Exchange rate filters" className="mb-5 flex flex-wrap gap-4">
+            <div role="group" aria-label="Time period" className="grid gap-1">
+              <span className="text-xs text-slate-300">Time period</span>
+              <div className="flex flex-wrap gap-1">
+                {(['7d', '30d'] as const).map((option) => (
+                  <a key={option} href={filterHref(option, asset)} aria-current={period === option} className={filterClassName}>
+                    {option === '7d' ? 'Last 7 days' : 'Last 30 days'}
+                  </a>
+                ))}
+              </div>
+            </div>
+            <div role="group" aria-label="Quote asset" className="grid gap-1">
+              <span className="text-xs text-slate-300">Quote asset</span>
+              <div className="flex flex-wrap gap-1">
+                {(['usdc', 'nv-share'] as const).map((option) => (
+                  <a key={option} href={filterHref(period, option)} aria-current={asset === option} className={filterClassName}>
+                    {option.toUpperCase()}
+                  </a>
+                ))}
+              </div>
+            </div>
+          </nav>
+          {rateHistory.length > 0 ? (
+            <ExchangeRateChart data={rateHistory} unit={unit} />
           ) : (
             <div className="h-64 flex items-center justify-center text-slate-500 text-sm">
               No rate history available yet.
