@@ -24,19 +24,22 @@ import {
   Asset,
   Horizon,
 } from '@stellar/stellar-sdk';
+import { measureRpcRoundTrip } from './rpcMetrics';
 import logger from './logger';
 import { getRequestId } from './requestContext';
 import {
   recordDeadLetterGrowth,
   recordQueueSubmissionFailure,
-  setQueueMetrics,
+  type TransactionJobClass,
 } from './operationalMetrics';
+import { readQueueStats, QUEUE_NAME, DLQ_NAME, type QueueStats } from './queueStats';
+export type { QueueStats } from './queueStats';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
 
-export type TransactionType = 'deposit' | 'withdrawal' | 'rebalance';
+export type TransactionType = TransactionJobClass;
 
 export interface TransactionJobData {
   /** Request correlation ID carried across the queue boundary. */
@@ -75,8 +78,6 @@ const NETWORK_PASSPHRASE =
     : Networks.TESTNET;
 const AGENT_SECRET = process.env.AGENT_SECRET_KEY || '';
 
-const QUEUE_NAME = 'transactions';
-const DLQ_NAME = 'transactions:failed';
 const CONCURRENCY = 5;
 const MAX_SEQUENCE_RETRIES = 3;
 const DEDUP_TTL_MS = 60_000; // 60 seconds
@@ -269,9 +270,8 @@ async function submitWithSequenceRetry(
   for (let attempt = 0; attempt < MAX_SEQUENCE_RETRIES; attempt++) {
     try {
       const xdr = await buildAndSignTransaction(keypair, data);
-      const response = await server.submitTransaction(
-        TransactionBuilder.fromXDR(xdr, NETWORK_PASSPHRASE),
-      );
+      const transaction = TransactionBuilder.fromXDR(xdr, NETWORK_PASSPHRASE);
+      const response = await measureRpcRoundTrip('submission', () => server.submitTransaction(transaction));
 
       return {
         txHash: response.hash,
@@ -369,66 +369,8 @@ transactionQueue.on('error', (err: Error) => {
 // Stats helper — used by the /api/queue/stats endpoint
 // ─────────────────────────────────────────────────────────────────────────────
 
-export interface QueueStats {
-  queue: string;
-  waiting: number;
-  active: number;
-  completed: number;
-  failed: number;
-  delayed: number;
-  paused: boolean;
-  deadLetter: {
-    queue: string;
-    waiting: number;
-    failed: number;
-  };
-  oldestPendingAgeSeconds: number;
-}
-
-export async function getQueueStats(): Promise<QueueStats> {
-  const [waiting, active, completed, failed, delayed, isPaused, pendingJobs] =
-    await Promise.all([
-      transactionQueue.getWaitingCount(),
-      transactionQueue.getActiveCount(),
-      transactionQueue.getCompletedCount(),
-      transactionQueue.getFailedCount(),
-      transactionQueue.getDelayedCount(),
-      transactionQueue.isPaused(),
-      transactionQueue.getJobs(['waiting', 'delayed'], 0, 0),
-    ]);
-
-  const [dlqWaiting, dlqFailed] = await Promise.all([
-    deadLetterQueue.getWaitingCount(),
-    deadLetterQueue.getFailedCount(),
-  ]);
-
-  const now = Date.now();
-  const oldestPendingAgeSeconds = pendingJobs.reduce(
-    (oldest, job) => Math.max(oldest, Math.max(0, now - job.timestamp) / 1000),
-    0,
-  );
-  setQueueMetrics({
-    pending: waiting + delayed,
-    oldestPendingAgeSeconds,
-    activeWorkers: active,
-    deadLetterJobs: dlqWaiting,
-  });
-
-  return {
-    queue: QUEUE_NAME,
-    waiting,
-    active,
-    completed,
-    failed,
-    delayed,
-    oldestPendingAgeSeconds,
-    paused: isPaused,
-    deadLetter: {
-      queue: DLQ_NAME,
-      waiting: dlqWaiting,
-      failed: dlqFailed,
-    },
-  };
+export function getQueueStats(): Promise<QueueStats> {
+  return readQueueStats(transactionQueue, deadLetterQueue);
 }
 
 /**

@@ -1,0 +1,28 @@
+name: WhatsApp Drafts
+
+on:
+  pull_request:
+    paths:
+      - 'whatsapp/**'
+      - '.github/workflows/whatsapp-drafts.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  whatsapp-drafts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: whatsapp
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: whatsapp/package-lock.json
+      - run: npm ci
+      - run: npm run test:drafts

@@ -1,4 +1,5 @@
 import { DEFAULT_LOCALE, Locale } from './locale';
+import { clearTransactionDraft } from './transactionDrafts';
 
 export enum UserState {
   UNVERIFIED = 'UNVERIFIED',
@@ -50,6 +51,7 @@ export function getSession(phoneHash: string): ConversationSession {
 
   // Session timeout check
   if (now - session.lastMessageTime > SESSION_TIMEOUT_MS) {
+    clearTransactionDraft(phoneHash);
     session.state = UserState.UNVERIFIED;
     session.locale = DEFAULT_LOCALE;
     session.messageCount = 0;
@@ -65,6 +67,7 @@ export function getSession(phoneHash: string): ConversationSession {
  */
 export function updateState(phoneHash: string, newState: UserState): void {
   const session = getSession(phoneHash);
+  if (newState !== UserState.VERIFIED) clearTransactionDraft(phoneHash);
   session.state = newState;
   sessions.set(phoneHash, session);
 }

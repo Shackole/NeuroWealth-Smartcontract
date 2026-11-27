@@ -5,9 +5,11 @@ import { evaluateYield } from './yieldComparison';
 import healthRouter, { configureHealthChecks } from './health';
 import logger from './logger';
 import { validateProtocolPoolIdentifiers } from './protocolAdapters';
+import { createQueueMonitor } from './queueRouter';
 import { initializeTracing } from './tracing';
 import { configureHttpSecurity, configureHttpTimeouts } from './httpSecurity';
 
+import { serveAgentMetrics } from './prometheusMetrics';
 import { ipRateLimiter, userRateLimiter } from './rateLimiter';
 
 // Issue #40: USDC issuer freeze contingency monitor
@@ -31,6 +33,17 @@ configureHttpSecurity(app);
 app.use(ipRateLimiter);
 app.use(userRateLimiter);
 app.use(healthRouter);
+
+const queueMonitor = process.env.REDIS_URL ? createQueueMonitor(process.env.REDIS_URL) : undefined;
+if (queueMonitor) app.use(queueMonitor.router);
+app.get('/metrics', async (req, res, next) => {
+  try {
+    await queueMonitor?.refresh();
+    await serveAgentMetrics(req, res, next);
+  } catch (error) {
+    next(error);
+  }
+});
 
 // Mount strategy aggregator API route (Issue #41)
 app.use(strategyRouter);
@@ -136,6 +149,7 @@ async function main() {
       // ignore
     }
 
+    await queueMonitor?.close().catch((err) => logger.error({ err }, 'Failed to close queue monitor'));
     process.exit(0);
   }
 

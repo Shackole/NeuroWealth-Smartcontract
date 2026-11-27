@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { isSequenceMismatch, shouldRetrySequenceMismatch, SubmissionOutcomeUnknownError, submitExactlyOnceOnTimeout } from './transactionSubmission';
+import { agentMetricsRegistry } from './prometheusMetrics';
+import { recordSubmissionProviderSwitch } from './submissionMetrics';
+import { createSubmissionStatusLookup, isSequenceMismatch, shouldRetrySequenceMismatch, SubmissionOutcomeUnknownError, submitExactlyOnceOnTimeout } from './transactionSubmission';
 
 test('sequence mismatches retry within the configured bound', () => {
   const mismatch = new Error('tx_bad_seq: sequence number is too low');
@@ -31,4 +33,20 @@ test('stops for operator reconciliation when a timed-out submission cannot be fo
     'unknown-hash',
   ), SubmissionOutcomeUnknownError);
   assert.equal(submissions, 1);
+});
+
+test('records one bounded provider switch for a submission and none for a primary-only success', async () => {
+  const metric = 'stellar_submission_provider_switches_total';
+  const lookup = createSubmissionStatusLookup(async (hash, onFallback) => {
+    if (hash === 'fallback-hash') onFallback();
+    return { hash, status: 'SUCCESS' };
+  }, recordSubmissionProviderSwitch);
+
+  assert.deepEqual(await lookup('primary-hash'), { hash: 'primary-hash', status: 'SUCCESS' });
+  assert.ok(!(await agentMetricsRegistry.metrics()).includes(`${metric}{`));
+
+  assert.deepEqual(await lookup('fallback-hash'), { hash: 'fallback-hash', status: 'SUCCESS' });
+  await lookup('fallback-hash');
+  const samples = (await agentMetricsRegistry.metrics()).split('\n').filter((line) => line.startsWith(`${metric}{`));
+  assert.deepEqual(samples, [`${metric}{from_provider="primary",to_provider="fallback"} 1`]);
 });
