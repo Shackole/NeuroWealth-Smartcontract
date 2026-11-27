@@ -40,3 +40,57 @@ jobs:
           PGPASSWORD: postgres
           PGDATABASE: migration_fixture
         run: bash supabase/tests/migrations/previous-schema-upgrade.sh
+
+  migration-role-check:
+    name: Migration role permission check
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: migration_fixture
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres -d migration_fixture"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install PostgreSQL client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - name: Apply baseline schema
+        env:
+          PGHOST: localhost
+          PGPORT: '5432'
+          PGUSER: postgres
+          PGPASSWORD: postgres
+          PGDATABASE: migration_fixture
+        run: psql -v ON_ERROR_STOP=1 -f supabase/tests/migrations/previous-schema.sql
+      - name: Create isolated migration_runner role and verify permissions
+        env:
+          PGHOST: localhost
+          PGPORT: '5432'
+          PGUSER: postgres
+          PGPASSWORD: postgres
+          PGDATABASE: migration_fixture
+        run: bash supabase/tests/migrations/verify-migration-role.sh
+      - name: Record permission results in job summary
+        if: always()
+        env:
+          PGHOST: localhost
+          PGPORT: '5432'
+          PGUSER: postgres
+          PGPASSWORD: postgres
+          PGDATABASE: migration_fixture
+        run: |
+          echo "## Migration Role Permission Check" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Operation | Expected | Actual | Status |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-----------|----------|--------|--------|" >> "$GITHUB_STEP_SUMMARY"
+          psql -Atqc "
+            SELECT '| ' || operation || ' | ' || expected_outcome || ' | ' || actual_outcome || ' | ' ||
+                   CASE WHEN passed THEN '✅' ELSE '❌' END || ' |'
+            FROM public.permission_check_results
+            ORDER BY operation;
+          " 2>/dev/null || echo "| (results unavailable) | — | — | — |" >> "$GITHUB_STEP_SUMMARY"
