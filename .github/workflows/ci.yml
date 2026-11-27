@@ -701,9 +701,9 @@ jobs:
           path: scripts/e2e-artifacts/
           retention-days: 14
 
-      - name: Cleanup testnet state
+      - name: Retry cleanup for this run
         if: always()
-        run: ./scripts/e2e-restore.sh --keep-artifacts
+        run: ./scripts/e2e-devnet.sh --cleanup "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 
       - name: Report failure details
         if: failure()

@@ -762,3 +762,36 @@ To view artifacts from a CI run:
 For a full explanation of every artifact file, which outputs are safe to
 delete between runs, and how to restore from CI artifact bundles, see
 [`docs/E2E_ARTIFACT_LIFECYCLE.md`](../docs/E2E_ARTIFACT_LIFECYCLE.md).
+
+### Retry interrupted fixture cleanup
+
+The smoke script logs `fixture_setup` and `fixture_cleanup` with a run ID and
+fixture path. In GitHub Actions the ID defaults to `GITHUB_RUN_ID-GITHUB_RUN_ATTEMPT`.
+Locally you can set `E2E_RUN_ID` or copy the generated ID from the setup log.
+After the smoke process has stopped, retry cleanup on the same host with the
+same runner account and fixture root:
+
+```bash
+./scripts/e2e-devnet.sh --cleanup "$run_id"
+```
+
+The first successful removal logs `outcome=removed`. Subsequent retries log
+`outcome=already_absent`. A removal error logs `outcome=failed` and exits
+nonzero. Cleanup leaves diagnostic artifacts available. Deployed contracts and
+transactions remain on testnet until the network resets.
+
+The following offline rehearsal simulates the local fixtures left by an
+interrupted run and shows that cleanup leaves another run's fixture intact:
+
+```bash
+(
+  set -e
+  export E2E_FIXTURE_ROOT="$(mktemp -d)"
+  trap 'rm -rf -- "$E2E_FIXTURE_ROOT"' EXIT
+  mkdir -p "$E2E_FIXTURE_ROOT/interrupted/.soroban/identity" "$E2E_FIXTURE_ROOT/other-run"
+  touch "$E2E_FIXTURE_ROOT/interrupted/.soroban/identity/e2e-user.toml"
+  ./scripts/e2e-devnet.sh --cleanup interrupted  # outcome=removed
+  ./scripts/e2e-devnet.sh --cleanup interrupted  # outcome=already_absent
+  test -d "$E2E_FIXTURE_ROOT/other-run"
+)
+```
