@@ -162,6 +162,42 @@ NeuroWealth-Smartcontract/
 | Database | `db/schema.sql`, `agent/prisma/`, `supabase/` | SQL schema, Prisma models/migrations, and Supabase assets exist. They are distinct integration paths; review the selected deployment path before applying schema changes. |
 | Shared packages | `packages/` | Vault client, monitoring, admin, bridge, and UI packages. Package presence does not by itself mean the service is deployed or production-integrated. |
 
+### Application Packages & Supported Entry Points
+
+To reduce confusion among the Next.js web application, the reusable vault UI package, and the auto-generated vault client, the following mapping defines each package's intended consumer, start or build commands, and exported surface:
+
+| Package | Location | Intended Consumer | Start / Build Commands | Exported Surface |
+|---|---|---|---|---|
+| **Next.js Web App** (`neurowealth-frontend`) | `frontend/` | End-users, depositors, and operators interacting directly with the full-featured web dashboard and managing portfolio assets | • `npm run dev` (starts Next.js 15 dev server)<br>• `npm run build` (builds Next.js production bundle)<br>• `npm run start` (starts production server)<br>• `npm run lint` / `npm run test:e2e` | • App Router pages: `/[locale]`, `/deposit`, `/withdraw`, `/history`, `/admin`, `/docs`<br>• Dashboard UI views (`PortfolioDashboard`, `AssetOverview`, `BalanceCard`)<br>• Freighter wallet adapter & interactive transaction forms |
+| **Reusable Vault UI** (`@neurowealth/vault-ui`) | `packages/vault-ui/` | External dApp developers, third-party Stellar web apps, and modular embed integrations needing plug-and-play vault UI elements | • `npm run dev` (starts Vite dev server)<br>• `npm run build` (`tsc && vite build`, emits bundled library)<br>• `npm run preview` (previews Vite build)<br>• `npm run test` (`vitest run` with a11y testing) | • React UI components: `DepositWithdrawModal`, `EarningsHistoryPage`, `NotificationSettings`<br>• Standalone theme-compatible Tailwind CSS/PostCSS styles |
+| **Vault Client SDK** (`@neurowealth/vault-client`) | `packages/vault-client/` | Automation agents (`agent/`), internal frontend packages (`frontend/`, `packages/vault-ui/`), indexers, and external programmatic integrators | • `npm run build` (`tsc`, outputs to `dist/`)<br>• `npm run typecheck` (`tsc --noEmit`)<br>• `npm run test` (node test runner)<br>• `node scripts/generate-client.js` (regenerates from spec) | • `VaultClient`: typed RPC methods for all 65 contract functions<br>• `VaultEventListener`: real-time Soroban event stream listener<br>• Type bindings: `UserInfo`, `AssetBreakdown`, `RateLimitConfig`, event interfaces<br>• `VaultErrorCode` enum & numeric error constants |
+
+#### Package Architectural Relationship
+
+```text
++-----------------------------------------------------------------------------------+
+|                           Next.js App (`frontend/`)                               |
+|   (Complete end-user dashboard: Freighter wallet, localized routes, charts)       |
++-----------------------------------------------------------------------------------+
+          |                                                       |
+          | consumes component flows                              | consumes contract RPC
+          v                                                       v
++------------------------------------+          +-----------------------------------+
+|  Reusable UI (`packages/vault-ui`) |          | Vault Client (`@neurowealth/      |
+|  - DepositWithdrawModal            | -------> | vault-client`)                    |
+|  - EarningsHistoryPage             | consumes | - VaultClient                     |
+|  - NotificationSettings            |          | - VaultEventListener              |
++------------------------------------+          | - Typed Soroban bindings          |
+                                                +-----------------------------------+
+                                                                  ^
+                                                                  | consumes contract RPC
+                                                +-----------------------------------+
+                                                |     AI Agent Daemon (`agent/`)    |
+                                                |  - Hourly rebalance & APY updates |
+                                                +-----------------------------------+
+```
+
+
 ## Getting Started
 
 ### Prerequisites
