@@ -89,7 +89,7 @@ jobs:
           path: |
             ${{ runner.temp }}/staging-contracts.env
             ${{ runner.temp }}/staging-contracts.env.manifest.json
-          retention-days: 14
+          retention-days: 30
 
   deploy-services:
     name: Deploy frontend and agent

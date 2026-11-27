@@ -34,8 +34,7 @@ jobs:
           format: cyclonedx-json
           syft-version: 1.54.1
           output-file: ${{ runner.temp }}/sbom-source-${{ github.sha }}.cdx.json
-          artifact-name: sbom-source-${{ github.sha }}
-          upload-artifact: true
+          upload-artifact: false
           upload-release-assets: true
 
       - name: Generate agent runtime image inventory
@@ -45,8 +44,7 @@ jobs:
           format: cyclonedx-json
           syft-version: 1.54.1
           output-file: ${{ runner.temp }}/sbom-agent-${{ github.sha }}.cdx.json
-          artifact-name: sbom-agent-${{ github.sha }}
-          upload-artifact: true
+          upload-artifact: false
           upload-release-assets: true
 
       - name: Generate monitoring runtime image inventory
@@ -56,6 +54,13 @@ jobs:
           format: cyclonedx-json
           syft-version: 1.54.1
           output-file: ${{ runner.temp }}/sbom-monitoring-${{ github.sha }}.cdx.json
-          artifact-name: sbom-monitoring-${{ github.sha }}
-          upload-artifact: true
+          upload-artifact: false
           upload-release-assets: true
+
+      - name: Archive release SBOMs
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-sboms-${{ github.sha }}
+          path: ${{ runner.temp }}/sbom-*.cdx.json
+          if-no-files-found: error
+          retention-days: 90

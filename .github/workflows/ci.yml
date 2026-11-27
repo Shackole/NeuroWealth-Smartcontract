@@ -273,7 +273,7 @@ jobs:
         with:
           name: neurowealth-vault-wasm
           path: ${{ env.WASM_FILE }}
-          retention-days: 14
+          retention-days: 30
 
       - name: Publish runtime summary
         if: always() && (matrix.step == 'test' || matrix.step == 'build-wasm' || matrix.step == 'vault-client-typecheck' || matrix.step == 'vault-ui-test')
