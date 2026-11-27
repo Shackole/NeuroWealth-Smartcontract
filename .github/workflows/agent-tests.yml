@@ -33,9 +33,15 @@ jobs:
           node-version: 20
           cache: npm
           cache-dependency-path: agent/package-lock.json
+      - name: Verify historical date range boundaries
+        working-directory: agent
+        run: npx --yes tsx@4.20.6 src/historyDateRange.test.ts
       - name: Install agent dependencies
         working-directory: agent
         run: npm ci
+      - name: Verify notification batch cutoff
+        working-directory: agent
+        run: npx --yes tsx@4.20.6 src/alertEngine.test.ts
       - name: Run the discovered agent test suite
         working-directory: agent
         run: npm test

@@ -55,10 +55,20 @@ export interface StrategyDistribution {
   computedAt: string;
 }
 
+export interface ApyObservation {
+  protocol: string;
+  apyBps: number;
+  provenance: {
+    source: string;
+    observedAt: string;
+  };
+}
+
 /** Full API response shape for GET /api/agent/strategy-distribution. */
 export interface StrategyDistributionResponse {
   distribution: StrategyDistribution;
   recommendedAllocation: StrategyWeights;
+  apyObservations: ApyObservation[];
 }
 
 /** Injectable RPC adapter so the aggregator can be tested without a live node. */
@@ -253,6 +263,28 @@ async function persistDistribution(d: StrategyDistribution): Promise<void> {
   }
 }
 
+/** Return the latest stored observation from each protocol source. */
+export async function loadLatestApyObservations(): Promise<ApyObservation[]> {
+  const { rows } = await pool.query<{
+    protocol: string;
+    apy_bps: number;
+    recorded_at: Date;
+  }>(
+    `SELECT DISTINCT ON (protocol) protocol, apy_bps, recorded_at
+     FROM apy_snapshots
+     ORDER BY protocol, recorded_at DESC, id DESC`,
+  );
+
+  return rows.map((row) => ({
+    protocol: row.protocol,
+    apyBps: row.apy_bps,
+    provenance: {
+      source: row.protocol,
+      observedAt: row.recorded_at.toISOString(),
+    },
+  }));
+}
+
 // ── In-memory cache for the API endpoint ─────────────────────────────────────
 
 /** Latest computed distribution (populated after each decision cycle). */
@@ -280,7 +312,7 @@ export const strategyRouter = express.Router();
  *
  * 204 when no distribution has been computed yet (first cycle not complete).
  */
-strategyRouter.get('/api/agent/strategy-distribution', (_req, res) => {
+strategyRouter.get('/api/agent/strategy-distribution', async (_req, res) => {
   const dist = getLatestDistribution();
   if (!dist) {
     res.status(204).json({ message: 'No distribution available yet; first decision cycle pending' });
@@ -293,9 +325,15 @@ strategyRouter.get('/api/agent/strategy-distribution', (_req, res) => {
     growth: dist.growth,
   });
 
+  const apyObservations = await loadLatestApyObservations().catch((error: unknown) => {
+    logger.warn({ error }, '[StrategyAggregator] APY observations unavailable');
+    return [];
+  });
+
   const response: StrategyDistributionResponse = {
     distribution: dist,
     recommendedAllocation,
+    apyObservations,
   };
 
   res.status(200).json(response);

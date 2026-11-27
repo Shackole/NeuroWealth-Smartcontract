@@ -13,6 +13,42 @@ and `strategyRouter`. Its HTTP routes are:
 | `GET /health/live` | None | Process liveness |
 | `GET /api/agent/strategy-distribution` | None | Latest strategy distribution; 204 before first calculation |
 
+The strategy distribution includes the latest stored APY observation for each
+protocol source. `apyBps` is in basis points and `provenance.observedAt` is the
+original observation time in UTC ISO 8601 format. Snapshot source identifiers
+are the stored protocol names. `apyObservations` is empty when snapshots are
+unavailable. Older snapshots use their original database recording time.
+
+Example HTTP 200 response fixture:
+
+```json
+{
+  "distribution": {
+    "total": 1,
+    "conservative": 0,
+    "balanced": 1,
+    "growth": 0,
+    "conservativePct": 0,
+    "balancedPct": 100,
+    "growthPct": 0,
+    "aggregateBlendBps": 6000,
+    "aggregateDexBps": 4000,
+    "computedAt": "2026-09-26T05:00:00.000Z"
+  },
+  "recommendedAllocation": { "blendBps": 6000, "dexBps": 4000 },
+  "apyObservations": [
+    {
+      "protocol": "blend",
+      "apyBps": 850,
+      "provenance": {
+        "source": "blend",
+        "observedAt": "2026-09-26T04:58:00.000Z"
+      }
+    }
+  ]
+}
+```
+
 The production entrypoint also starts the event listener, an hourly decision
 loop, and the issuer-freeze monitor. It stops those loops and closes the
 database pool on `SIGTERM` or `SIGINT`.
@@ -83,6 +119,33 @@ The router's paths already include `/api`. Mounting it at `/api` would produce
 and `POST /api/auth/refresh`. It returns a 15-minute access token and a
 seven-day rotating refresh token, backed by Redis. That router is also not
 mounted by the production entrypoint or `app.ts`.
+
+## Earnings history date ranges
+
+Both earnings routes accept paired `startDate` and `endDate` query parameters
+in UTC calendar date format (`YYYY-MM-DD`). The dates are inclusive. A
+same-day range is valid and the maximum range contains 365 calendar days.
+The addressed route accepts either the paired dates or its existing `range`
+parameter. The alternate app applies the dates to `history` and keeps its
+existing `today`, `week`, and `month` summaries.
+
+Example request path:
+
+```text
+/api/earnings?startDate=2025-01-01&endDate=2025-12-31
+```
+
+Missing partners, invalid calendar dates, reversed dates, and ranges over
+365 inclusive days return HTTP 400. The alternate app includes
+`code: "INVALID_HISTORY_DATE_RANGE"` and the usual request ID when available.
+The addressed route returns an `error` string and appends
+`"; omit range when using dates"`.
+
+```json
+{
+  "error": "startDate and endDate must be YYYY-MM-DD UTC dates in order, spanning at most 365 inclusive days"
+}
+```
 
 ## Error handling and safe examples
 

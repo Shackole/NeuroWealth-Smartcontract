@@ -1,11 +1,13 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
+import { StrKey } from '@stellar/stellar-sdk';
 import {
   AdapterContext,
   ProtocolAdapterRegistry,
   PhoenixDexAdapter,
   AquariusAmmAdapter,
   SorobanGateway,
+  validateProtocolPoolIdentifiers,
 } from './protocolAdapters';
 import { ProtocolRiskScoringEngine, RiskDimensionScores } from './riskScoring';
 
@@ -218,3 +220,29 @@ const HIGH_RISK: RiskDimensionScores = {
   centralizationRisk: 65,
 };
 
+
+describe('startup protocol pool configuration', () => {
+  const contract = StrKey.encodeContract(Buffer.alloc(32, 1));
+  const valid = {
+    BLEND_POOL_ADDRESS: contract,
+    BLEND_USDC_ASSET: contract,
+    DEX_USDC_POOL_ID: 'ab'.repeat(32),
+    PHOENIX_POOL_ADDRESS: contract,
+    AQUARIUS_POOL_ADDRESS: contract,
+  };
+
+  it('accepts all configured identifiers and allows adapters to be unconfigured', () => {
+    assert.doesNotThrow(() => validateProtocolPoolIdentifiers(valid));
+    assert.doesNotThrow(() => validateProtocolPoolIdentifiers({}));
+    assert.doesNotThrow(() => validateProtocolPoolIdentifiers({
+      ...valid, BLEND_USDC_ASSET: 'ab'.repeat(32),
+    }));
+  });
+
+  it('reports every invalid field without exposing configured values', () => {
+    const invalid = Object.fromEntries(Object.keys(valid).map((field) => [field, 'private-value']));
+    assert.throws(() => validateProtocolPoolIdentifiers(invalid), {
+      message: `Invalid protocol pool configuration: ${Object.keys(valid).join(', ')}`,
+    });
+  });
+});

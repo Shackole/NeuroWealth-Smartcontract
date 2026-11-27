@@ -18,10 +18,11 @@
  *  - Uses @stellar/stellar-sdk to submit the rebalance transaction
  */
 
+import { recordYieldSkip, type YieldSkipReason } from './operationalMetrics';
 import { Pool } from 'pg';
 import { ApyRetryBudget } from './apyRetryBudget';
 import logger from './logger';
-import { YieldComparisonEngine, ProtocolYieldData } from './yieldComparison';
+import { YieldComparisonEngine, ProtocolYieldData, type StrategyDecisionInputs } from './yieldComparison';
 
 // A 1,000% APY is the upper sanity bound for automated allocation inputs.
 const MAX_APY_DECIMAL = 10;
@@ -80,7 +81,7 @@ export interface YieldCheckResult {
   bestApy: number;
   rebalanceTriggered: boolean;
   /** Why rebalance was skipped, when applicable. */
-  skipReason?: string;
+  skipReason?: YieldSkipReason;
   txHash?: string;
   minOut?: number;
   deployedAmount?: number;
@@ -146,20 +147,37 @@ const CREATE_TABLE_SQL = `
     error          TEXT,
     created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
   );
+  ALTER TABLE yield_check_history ADD COLUMN IF NOT EXISTS input_snapshot JSONB;
 `;
 
 async function ensureTable(pool: Pool): Promise<void> {
   await pool.query(CREATE_TABLE_SQL);
 }
 
-async function storeResult(pool: Pool, result: YieldCheckResult): Promise<void> {
+/** Read the saved inputs by history row ID. Older decisions may have no snapshot. */
+export async function readStrategyDecisionInputs(
+  pool: Pool,
+  historyId: string,
+): Promise<StrategyDecisionInputs | null> {
+  const { rows } = await pool.query<{ input_snapshot: StrategyDecisionInputs | null }>(
+    'SELECT input_snapshot FROM yield_check_history WHERE id = $1',
+    [historyId],
+  );
+  return rows[0]?.input_snapshot ?? null;
+}
+
+async function storeResult(
+  pool: Pool,
+  result: YieldCheckResult,
+  inputSnapshot?: StrategyDecisionInputs,
+): Promise<void> {
   const sql = `
     INSERT INTO yield_check_history (
       job_id, checked_at, current_protocol, current_apy, best_protocol, best_apy,
       rebalance_triggered, skip_reason, tx_hash, min_out, deployed_amount,
-      cooldown_remaining, error
+      cooldown_remaining, error, input_snapshot
     ) VALUES (
-      $1, to_timestamp($2 / 1000.0), $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
+      $1, to_timestamp($2 / 1000.0), $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb
     )
   `;
   await pool.query(sql, [
@@ -176,6 +194,7 @@ async function storeResult(pool: Pool, result: YieldCheckResult): Promise<void> 
     result.deployedAmount ?? null,
     result.cooldownLedgersRemaining ?? null,
     result.error ?? null,
+    inputSnapshot ? JSON.stringify(inputSnapshot) : null,
   ]);
 }
 
@@ -230,9 +249,10 @@ export class YieldCheckJob {
 
     logger.info({ jobId }, 'Yield check job started');
 
+    let inputSnapshot: StrategyDecisionInputs | undefined;
     let result: YieldCheckResult;
     try {
-      result = await this.execute(jobId, checkedAt);
+      result = await this.execute(jobId, checkedAt, (snapshot) => { inputSnapshot = snapshot; });
     } catch (err) {
       result = {
         jobId,
@@ -243,13 +263,26 @@ export class YieldCheckJob {
         bestApy: 0,
         rebalanceTriggered: false,
         error: err instanceof Error ? err.message : String(err),
+        skipReason: 'evaluation_failed',
       };
       logger.error({ jobId, error: result.error }, 'Yield check job threw unexpectedly');
     }
 
+    if (result.skipReason) {
+      recordYieldSkip(result.skipReason);
+      logger.info({
+        jobId,
+        reason: result.skipReason,
+        cooldownLedgersRemaining: result.cooldownLedgersRemaining,
+        currentApy: result.currentApy,
+        bestApy: result.bestApy,
+        minImprovementThreshold: this.config.minImprovementThreshold,
+      }, 'Yield check skipped');
+    }
+
     // Persist regardless of outcome
     try {
-      await withTimeout(storeResult(this.pool, result), 'database result persistence', this.dependencyTimeoutMs());
+      await withTimeout(storeResult(this.pool, result, inputSnapshot), 'database result persistence', this.dependencyTimeoutMs());
     } catch (err) {
       const persistError = `result_persist_failed: ${err instanceof Error ? err.message : String(err)}`;
       result.error = result.error ? `${result.error}; ${persistError}` : persistError;
@@ -294,7 +327,11 @@ export class YieldCheckJob {
 
   // ── Core execution ────────────────────────────────────────────────────────
 
-  private async execute(jobId: string, checkedAt: number): Promise<YieldCheckResult> {
+  private async execute(
+    jobId: string,
+    checkedAt: number,
+    captureInputs: (snapshot: StrategyDecisionInputs) => void,
+  ): Promise<YieldCheckResult> {
     // 1. Fetch current protocol and deployed amount
     const { protocolId: currentProtocol, deployedAmountStroops } = await withTimeout(
       this.hooks.getCurrentProtocol(), 'current vault state', this.dependencyTimeoutMs(),
@@ -332,11 +369,6 @@ export class YieldCheckJob {
     const ledgersSinceRebalance = currentLedger - lastRebalanceLedger;
     if (cooldownLedgers > 0 && ledgersSinceRebalance < cooldownLedgers) {
       const remaining = cooldownLedgers - ledgersSinceRebalance;
-      logger.info(
-        { jobId, remaining, cooldownLedgers, ledgersSinceRebalance },
-        'Rebalance cooldown active — skipping',
-      );
-
       // Still need current APY for the log record; use a best-effort fetch
       const currentApyData = await this.fetchApySafe(currentProtocol);
 
@@ -348,7 +380,7 @@ export class YieldCheckJob {
         bestProtocol: currentProtocol,
         bestApy: currentApyData?.currentApy ?? 0,
         rebalanceTriggered: false,
-        skipReason: `cooldown_active: ${remaining} ledgers remaining`,
+        skipReason: 'cooldown_active',
         cooldownLedgersRemaining: remaining,
         deployedAmount: deployedAmountStroops,
       };
@@ -383,6 +415,7 @@ export class YieldCheckJob {
     }
     const currentApy = currentSnapshot.currentApy;
 
+    captureInputs(this.engine.snapshotInputs(yieldSnapshots));
     const ranked = this.engine.rankOpportunities(yieldSnapshots).filter(
       (opportunity) => Number.isFinite(opportunity.netApy) && Number.isFinite(opportunity.riskAdjustedScore),
     );
@@ -418,9 +451,7 @@ export class YieldCheckJob {
       const reason =
         bestProtocol === currentProtocol
           ? 'already_on_best_protocol'
-          : `improvement_below_threshold: ${((bestApy - currentApy) * 100).toFixed(3)}% < ${(this.config.minImprovementThreshold * 100).toFixed(1)}%`;
-
-      logger.info({ jobId, reason }, 'No rebalance needed');
+          : 'improvement_below_threshold';
 
       return {
         jobId,
@@ -504,7 +535,7 @@ export class YieldCheckJob {
             return {
               jobId, checkedAt, currentProtocol, currentApy, bestProtocol, bestApy,
               rebalanceTriggered: true, txHash: reconciled.txHash, minOut,
-              deployedAmount: deployedAmountStroops, skipReason: 'submission_reconciled_after_uncertain_response',
+              deployedAmount: deployedAmountStroops,
             };
           }
         } catch (reconcileError) {

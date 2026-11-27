@@ -20,6 +20,7 @@ import {
   VaultRpcAdapter,
   Strategy,
 } from './strategyAggregator';
+import { ProtocolYieldData, YieldComparisonEngine } from './yieldComparison';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -67,6 +68,34 @@ function makeRpc(
 
 async function run() {
   console.log('\nStrategyAggregator tests\n');
+
+  await test('ranks by descending score, breaking ties by ascending protocol ID in any input order', () => {
+    const observation: ProtocolYieldData = {
+      protocolId: 'blend',
+      name: 'Blend',
+      type: 'blend',
+      currentApy: 0.08,
+      historicalApy7d: 0.08,
+      historicalApy30d: 0.08,
+      tvlUsdc: 1_000_000,
+      volatility: 0.02,
+      riskScore: 20,
+    };
+    const blend = observation;
+    const dex = { ...observation, protocolId: 'dex', name: 'DEX' };
+    const other = { ...observation, protocolId: 'yield', currentApy: 0.10 };
+    const engine = new YieldComparisonEngine();
+
+    for (const input of [
+      [blend, dex, other], [blend, other, dex], [dex, blend, other],
+      [dex, other, blend], [other, blend, dex], [other, dex, blend],
+    ]) {
+      const ranked = engine.rankOpportunities(input);
+      assert(ranked[1].riskAdjustedScore === ranked[2].riskAdjustedScore, 'Fixture must contain tied scores');
+      assert(ranked.map(({ protocolId }) => protocolId).join(',') === 'yield,blend,dex',
+        'A higher score wins, and equal scores sort by protocol ID');
+    }
+  });
 
   // STRATEGY_WEIGHTS ──────────────────────────────────────────────────────────
 

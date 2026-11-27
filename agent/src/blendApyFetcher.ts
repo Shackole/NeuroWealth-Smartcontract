@@ -21,7 +21,7 @@
  *   REDIS_URL            — Redis connection URL (default: redis://localhost:6379)
  */
 
-import { SorobanRpc, Contract, xdr, scValToNative } from '@stellar/stellar-sdk';
+import { SorobanRpc, Contract, StrKey, xdr, scValToNative } from '@stellar/stellar-sdk';
 import type { Request, Response, Router } from 'express';
 import { Router as createRouter } from 'express';
 import { Redis } from 'ioredis';
@@ -114,7 +114,9 @@ async function fetchBlendApyFromContract(): Promise<number> {
     'get_reserve',
     xdr.ScVal.scvAddress(
       xdr.ScAddress.scAddressTypeContract(
-        Buffer.from(usdcAsset, 'hex'),
+        StrKey.isValidContract(usdcAsset)
+          ? StrKey.decodeContract(usdcAsset)
+          : Buffer.from(usdcAsset, 'hex'),
       ),
     ),
   );
@@ -155,12 +157,12 @@ async function fetchBlendApyFromContract(): Promise<number> {
  * Writes an APY snapshot row to the `apy_snapshots` DB table.
  * Failures are logged but do not surface to callers.
  */
-async function persistApySnapshot(apyBps: number): Promise<void> {
+async function persistApySnapshot(apyBps: number, observedAt: string): Promise<void> {
   try {
     await pool.query(
       `INSERT INTO apy_snapshots (protocol, apy_bps, recorded_at)
-       VALUES ('blend', $1, NOW())`,
-      [apyBps],
+       VALUES ('blend', $1, $2)`,
+      [apyBps, observedAt],
     );
     logger.debug({ apyBps }, 'blend-apy: snapshot persisted');
   } catch (err) {
@@ -234,7 +236,7 @@ export async function getBlendApySample(): Promise<ApySample> {
     }
 
     // 4. Persist DB snapshot (fire-and-forget)
-    void persistApySnapshot(apyBps);
+    void persistApySnapshot(apyBps, observedAt);
 
     logger.info({ apyBps, observedAt }, 'blend-apy: fetched and cached');
     return { apyBps, source: SOURCE_ID, observedAt, cached: false };

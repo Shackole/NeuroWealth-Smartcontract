@@ -25,6 +25,7 @@ import {
   Horizon,
 } from '@stellar/stellar-sdk';
 import logger from './logger';
+import { getRequestId } from './requestContext';
 import {
   recordDeadLetterGrowth,
   recordQueueSubmissionFailure,
@@ -38,6 +39,8 @@ import {
 export type TransactionType = 'deposit' | 'withdrawal' | 'rebalance';
 
 export interface TransactionJobData {
+  /** Request correlation ID carried across the queue boundary. */
+  requestId?: string;
   /** Unique key used for deduplication — same key within TTL is skipped. */
   deduplicationKey: string;
   /** Who is initiating this transaction (Stellar public key). */
@@ -153,19 +156,20 @@ async function markSeen(
 export async function enqueueTransaction(
   data: TransactionJobData,
 ): Promise<Job<TransactionJobData> | null> {
+  const requestId = data.requestId ?? getRequestId();
   if (await isDuplicate(transactionQueue, data.deduplicationKey)) {
     logger.warn(
-      { deduplicationKey: data.deduplicationKey },
+      { requestId, type: data.type },
       'Transaction deduplicated — already queued',
     );
     return null;
   }
 
   await markSeen(transactionQueue, data.deduplicationKey);
-  const job = await transactionQueue.add(data);
+  const job = await transactionQueue.add({ ...data, requestId });
 
   logger.info(
-    { jobId: job.id, type: data.type, userAddress: data.userAddress },
+    { jobId: job.id, requestId, type: data.type },
     'Transaction enqueued',
   );
   return job;
@@ -303,7 +307,7 @@ transactionQueue.process(CONCURRENCY, async (job: Job<TransactionJobData>) => {
   const { data } = job;
 
   logger.info(
-    { jobId: job.id, type: data.type, attempt: job.attemptsMade },
+    { jobId: job.id, requestId: data.requestId, type: data.type, attempt: job.attemptsMade },
     'Processing transaction job',
   );
 
@@ -315,7 +319,7 @@ transactionQueue.process(CONCURRENCY, async (job: Job<TransactionJobData>) => {
   const result = await submitWithSequenceRetry(keypair, data);
 
   logger.info(
-    { jobId: job.id, txHash: result.txHash, ledger: result.ledger },
+    { jobId: job.id, requestId: data.requestId, txHash: result.txHash, ledger: result.ledger },
     'Transaction submitted successfully',
   );
 
@@ -330,7 +334,7 @@ transactionQueue.on('failed', async (job: Job<TransactionJobData>, err: Error) =
       {
         jobId: job.id,
         type: job.data.type,
-        userAddress: job.data.userAddress,
+        requestId: job.data.requestId,
         error: err.message,
         attempts: job.attemptsMade,
       },
@@ -352,7 +356,7 @@ transactionQueue.on('failed', async (job: Job<TransactionJobData>, err: Error) =
 
 transactionQueue.on('completed', (job: Job<TransactionJobData>, result: TransactionJobResult) => {
   logger.info(
-    { jobId: job.id, txHash: result.txHash },
+    { jobId: job.id, requestId: job.data.requestId, txHash: result.txHash },
     'Transaction job completed',
   );
 });

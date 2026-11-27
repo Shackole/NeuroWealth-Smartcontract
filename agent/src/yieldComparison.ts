@@ -12,6 +12,16 @@ export interface ProtocolYieldData {
   fetchedAt?: number;
 }
 
+// Bump when ranking or the rebalance decision formula changes.
+export const YIELD_MODEL_REVISION = 'yield-ranking-v1';
+
+export interface StrategyDecisionInputs {
+  modelRevision: string;
+  riskFreeRate: number;
+  minImprovementThreshold: number;
+  observations: Array<Omit<ProtocolYieldData, 'fetchedAt'> & { fetchedAt: number | null }>;
+}
+
 export interface YieldOpportunity {
   protocolId: string;
   name: string;
@@ -29,11 +39,24 @@ export class YieldComparisonEngine {
     this.riskFreeRate = riskFreeRate;
   }
 
+  public snapshotInputs(protocols: readonly ProtocolYieldData[]): StrategyDecisionInputs {
+    return {
+      modelRevision: YIELD_MODEL_REVISION,
+      riskFreeRate: this.riskFreeRate,
+      minImprovementThreshold: this.minImprovementThreshold,
+      observations: protocols.map((protocol) => ({
+        ...protocol,
+        fetchedAt: protocol.fetchedAt ?? null,
+      })),
+    };
+  }
+
   public calculateSharpeRatio(apy: number, volatility: number): number {
     if (volatility <= 0) return apy / 0.01;
     return (apy - this.riskFreeRate) / volatility;
   }
 
+  /** Rank by descending score, then by protocol ID in ascending code-unit order. */
   public rankOpportunities(protocols: ProtocolYieldData[]): YieldOpportunity[] {
     return protocols
       .map((p) => {
@@ -50,10 +73,20 @@ export class YieldComparisonEngine {
           recommendedAllocationPercent: 0,
         };
       })
-      .sort((a, b) => b.riskAdjustedScore - a.riskAdjustedScore);
+      .sort((a, b) =>
+        b.riskAdjustedScore - a.riskAdjustedScore ||
+        compareText(a.protocolId, b.protocolId) ||
+        b.netApy - a.netApy ||
+        compareText(a.name, b.name),
+      );
   }
 
   public shouldRebalance(currentApy: number, targetApy: number): boolean {
     return targetApy - currentApy >= this.minImprovementThreshold;
   }
+}
+
+function compareText(a: string, b: string): number {
+  if (a === b) return 0;
+  return a < b ? -1 : 1;
 }

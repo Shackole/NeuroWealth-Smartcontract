@@ -47,6 +47,14 @@ location /api/whatsapp/webhook {
 ### Replay / duplicate delivery handling
 Providers may retry deliveries. Each inbound message carries a unique `MessageSid`. The handler records processed IDs and short-circuits duplicates so a retried delivery is acknowledged (`200`) without re-executing the intent (no double deposit/withdraw).
 
+## Conversation language
+
+Send `language es` for Spanish or `language en` for English at any point in
+the conversation. Regional tags such as `es-MX` use their base language.
+New sessions and unsupported language selections use English. The preference
+lasts until the conversation session expires. The command examples shown in
+each language use the bot's existing command vocabulary.
+
 ## Verification Flow
 1. User sends `"hi"` to WhatsApp number.
 2. Bot sends 6-digit OTP code (expires in 5 minutes).

@@ -64,6 +64,26 @@ fn setup_multi_funded(
 // ===========================================================================
 
 #[test]
+fn test_allocation_getters_before_pool_configuration() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (vault_id, _agent, _owner, _token) = setup_vault_with_token(&env);
+    let client = NeuroWealthVaultClient::new(&env, &vault_id);
+
+    assert_eq!(client.get_current_protocol(), symbol_short!("none"));
+    assert_eq!(client.get_blend_pool(), None);
+    assert_eq!(client.get_dex_pool(), None);
+    assert!(!client.is_multi_protocol_enabled());
+    assert_eq!(client.get_allocation(), (0, 0));
+    assert_eq!(client.get_idle_balance(), 0);
+    assert_eq!(client.get_deployed_assets(), 0);
+    assert_eq!(client.get_asset_breakdown(), (0, 0));
+    assert_eq!(client.get_protocol_breakdown(), (0, 0));
+    assert_eq!(client.get_deployed_to_blend(), 0);
+    assert_eq!(client.get_deployed_to_dex(), 0);
+}
+
+#[test]
 fn test_multi_protocol_disabled_by_default() {
     let env = Env::default();
     env.mock_all_auths();

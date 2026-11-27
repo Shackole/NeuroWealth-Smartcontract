@@ -81,6 +81,36 @@ services:
       timeout: 10s
       retries: 3
 
+  # ── RPC TLS certificate expiry exporter (#788) ────────────────────────────
+  # Probes the configured Soroban RPC endpoint(s) and exposes certificate
+  # expiry metrics on :9469 for the rpc_tls_certificate Prometheus job.
+  rpc-tls-exporter:
+    build:
+      context: ./metrics
+    <<: *restart-policy
+    logging: *bounded-logging
+    cpus: "0.25"
+    mem_limit: 64m
+    pids_limit: 64
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 64M
+    networks: [monitoring]
+    ports:
+      - "9469:9469"
+    environment:
+      RPC_TLS_ENDPOINTS: "${RPC_TLS_ENDPOINTS:-${SOROBAN_RPC_URL:-https://soroban.stellar.org}}"
+      RPC_TLS_PROBE_INTERVAL_SECONDS: "${RPC_TLS_PROBE_INTERVAL_SECONDS:-300}"
+      RPC_TLS_WARNING_DAYS: "${RPC_TLS_WARNING_DAYS:-21}"
+      RPC_TLS_CRITICAL_DAYS: "${RPC_TLS_CRITICAL_DAYS:-7}"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9469/healthz"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+
   # ── Alertmanager ───────────────────────────────────────────────────────────
   alertmanager:
     image: prom/alertmanager:v0.27.0

@@ -629,3 +629,27 @@ fn test_cancel_emits_event() {
         "at least one event must be emitted on cancellation"
     );
 }
+
+#[test]
+fn test_switch_to_standby_preserves_pending_agent_update() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (contract_id, primary, _owner, _usdc_token) = setup_vault_with_token(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+    let standby = Address::generate(&env);
+    let proposed = Address::generate(&env);
+
+    client.update_standby_agent(&standby);
+    client.update_agent(&proposed);
+    let (pending, expiry) = client.get_pending_agent_update().expect("pending rotation");
+    assert_eq!(pending, proposed);
+    assert!(env.ledger().sequence() < expiry);
+    assert_eq!(client.get_agent(), primary);
+
+    client.switch_to_standby_agent();
+
+    assert_eq!(client.get_agent(), standby);
+    assert_eq!(client.get_standby_agent(), Some(primary));
+    assert_eq!(client.get_pending_agent_update(), Some((proposed, expiry)));
+}

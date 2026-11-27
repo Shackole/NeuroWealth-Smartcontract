@@ -12,6 +12,28 @@ const queue = {
   deadLetterGrowth: 0,
 };
 
+/** Stable metric labels and the decision conditions they represent. */
+const yieldSkipCounts = {
+  invalid_current_vault_position: 0, // Missing protocol or invalid deployed amount.
+  invalid_cooldown_state: 0, // Invalid ledger values.
+  cooldown_active: 0, // Cooldown interval has not elapsed.
+  no_apy_data_available: 0, // No valid APY observations.
+  current_protocol_apy_unavailable: 0, // Current protocol lacks a valid APY.
+  no_usable_ranked_protocol_data: 0, // No finite ranked opportunity.
+  already_on_best_protocol: 0, // The current protocol ranked first.
+  improvement_below_threshold: 0, // Candidate APY gain is too small.
+  invalid_rebalance_bounds: 0, // Slippage or minimum output is invalid.
+  submission_outcome_uncertain: 0, // Reconciliation could not confirm submission.
+  rebalance_submission_failed: 0, // Submission returned an error.
+  evaluation_failed: 0, // Evaluation threw before returning a decision.
+};
+
+export type YieldSkipReason = keyof typeof yieldSkipCounts;
+
+export function recordYieldSkip(reason: YieldSkipReason): void {
+  yieldSkipCounts[reason] += 1;
+}
+
 const events = {
   lastProcessedLedger: 0,
   latestObservedLedger: 0,
@@ -98,5 +120,12 @@ export function renderOperationalMetrics(): string {
     '# TYPE neurowealth_event_listener_processing_failures_total counter',
     `neurowealth_event_listener_processing_failures_total{${labels}} ${events.processingFailures}`,
   ];
+  lines.push(
+    '# HELP neurowealth_yield_skips_total Yield checks skipped by decision reason.',
+    '# TYPE neurowealth_yield_skips_total counter',
+    ...Object.entries(yieldSkipCounts).map(([reason, count]) =>
+      `neurowealth_yield_skips_total{${labels},reason="${reason}"} ${count}`,
+    ),
+  );
   return `${lines.join('\n')}\n`;
 }

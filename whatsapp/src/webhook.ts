@@ -14,7 +14,8 @@
 import { Request, Response, NextFunction } from 'express';
 import twilio from 'twilio';
 import { hashPhoneNumber } from './cryptoUtils';
-import { getSession, updateState, UserState } from './stateManager';
+import { getSession, getSessionLocale, updateState, UserState } from './stateManager';
+import { resolveLocale, translate } from './locale';
 import { generateOTP, verifyOTP } from './otpService';
 import { createCustodialWallet, getWallet } from './walletService';
 import { getPortfolio, handleDeposit, handleWithdraw } from './vaultRouter';
@@ -182,25 +183,42 @@ export async function handleWhatsAppWebhook(
 
   // ── Rate limiting ─────────────────────────────────────────────────────────
   if (!checkWebhookRateLimit(phoneHash)) {
-    twiml.message(
+    const reply = translate(
+      getSessionLocale(phoneHash),
       '⚠️ Rate limit exceeded. Please wait a minute before sending another message.',
+      '⚠️ Alcanzaste el límite de mensajes. Espera un minuto antes de enviar otro.',
     );
+    twiml.message(reply);
     res.type('text/xml').send(twiml.toString());
 
     await logMessageToDb(phoneHash, 'inbound', messageBody);
-    await logMessageToDb(
-      phoneHash,
-      'outbound',
-      '⚠️ Rate limit exceeded.',
-    );
+    await logMessageToDb(phoneHash, 'outbound', reply);
     return;
   }
 
   // ── Log inbound message ───────────────────────────────────────────────────
   await logMessageToDb(phoneHash, 'inbound', messageBody, mediaUrl);
 
-  // ── Session state ─────────────────────────────────────────────────────────
   const session = getSession(phoneHash);
+  const t = (english: string, spanish: string) => translate(session.locale, english, spanish);
+
+  // Language can be selected before verification and changed at any step.
+  const languageCommand = /^(?:language|idioma)(?:\s+(\S+))?$/i.exec(messageBody);
+  if (languageCommand) {
+    const requested = languageCommand[1];
+    if (requested) session.locale = resolveLocale(requested);
+    const reply = requested
+      ? t('Language set to English.', 'Idioma cambiado a español.')
+      : t(
+        'Send "language en" for English or "language es" for Spanish.',
+        'Envía "language en" para inglés o "language es" para español.',
+      );
+    twiml.message(reply);
+    const outbound = twiml.toString();
+    await logMessageToDb(phoneHash, 'outbound', outbound);
+    res.type('text/xml').send(outbound);
+    return;
+  }
 
   // ── New-user flow: immediate synchronous OTP exchange ────────────────────
   // (fast path — no queue needed, no on-chain calls)
@@ -215,16 +233,21 @@ export async function handleWhatsAppWebhook(
       const otpCode = generateOTP(phoneHash);
       updateState(phoneHash, UserState.AWAITING_OTP);
 
-      twiml.message(
+      twiml.message(t(
         `👋 Welcome to NeuroWealth AI!\n\n` +
-          `To secure your wallet, please enter your 6-digit OTP code.\n\n` +
-          `🔑 Your OTP code is: ${otpCode}\n` +
-          `(Expires in 5 minutes)`,
-      );
+        `To secure your wallet, please enter your 6-digit OTP code.\n\n` +
+        `🔑 Your OTP code is: ${otpCode}\n` +
+        `(Expires in 5 minutes)`,
+        `👋 ¡Te damos la bienvenida a NeuroWealth AI!\n\n` +
+        `Para proteger tu billetera, introduce tu código de verificación de 6 dígitos.\n\n` +
+        `🔑 Tu código de verificación es: ${otpCode}\n` +
+        `(Caduca en 5 minutos)`,
+      ));
     } else {
-      twiml.message(
+      twiml.message(t(
         'Welcome to NeuroWealth! Send "hi" to start verification.',
-      );
+        '¡Te damos la bienvenida a NeuroWealth! Envía "hi" para iniciar la verificación.',
+      ));
     }
 
     const outbound = twiml.toString();
@@ -236,23 +259,29 @@ export async function handleWhatsAppWebhook(
   if (session.state === UserState.AWAITING_OTP) {
     const digits = messageBody.replace(/\D/g, '');
     if (digits.length === 6) {
-      const result = verifyOTP(phoneHash, digits);
+      const result = verifyOTP(phoneHash, digits, session.locale);
       if (result.success) {
         updateState(phoneHash, UserState.AWAITING_CUSTODIAL_CONSENT);
-        twiml.message(
+        twiml.message(t(
           `✅ Phone verified. Before we create a wallet, please review how this WhatsApp account works.\n\n` +
-            `NeuroWealth creates and operates a custodial Stellar wallet for you. The signing key is encrypted and held by NeuroWealth's backend; you do not control or receive the secret key. Transfers are signed by the service after your WhatsApp request.\n\n` +
-            `Recovery is limited: if the service loses the key or cannot verify your phone, it may not be possible to recover wallet access. Keep your phone number secure and contact support before changing it. Do not send passwords, OTPs, or secret keys in chat.\n\n` +
-            `After setup you can ask for help, check balance or earnings, deposit USDC, withdraw USDC, and change your strategy. To fund the wallet, first create it, then send USDC on Stellar to the address we provide.\n\n` +
-            `Reply AGREE to create this custodial wallet, or DECLINE to stop. Reply HELP for these details again.`,
-        );
+          `NeuroWealth creates and operates a custodial Stellar wallet for you. The signing key is encrypted and held by NeuroWealth's backend; you do not control or receive the secret key. Transfers are signed by the service after your WhatsApp request.\n\n` +
+          `Recovery is limited: if the service loses the key or cannot verify your phone, it may not be possible to recover wallet access. Keep your phone number secure and contact support before changing it. Do not send passwords, OTPs, or secret keys in chat.\n\n` +
+          `After setup you can ask for help, check balance or earnings, deposit USDC, withdraw USDC, and change your strategy. To fund the wallet, first create it, then send USDC on Stellar to the address we provide.\n\n` +
+          `Reply AGREE to create this custodial wallet, or DECLINE to stop. Reply HELP for these details again.`,
+          `✅ Teléfono verificado. Antes de crear una billetera, revisa cómo funciona esta cuenta de WhatsApp.\n\n` +
+          `NeuroWealth crea y opera una billetera de custodia en Stellar para ti. NeuroWealth guarda la clave de firma cifrada en sus servidores. Tú no controlas ni recibes la clave secreta. El servicio firma las transferencias que solicitas por WhatsApp.\n\n` +
+          `La recuperación es limitada. Si el servicio pierde la clave o no puede verificar tu teléfono, es posible que no puedas recuperar el acceso. Protege tu número y contacta con soporte antes de cambiarlo. No envíes contraseñas, códigos de verificación ni claves secretas por chat.\n\n` +
+          `Después de configurar la billetera, podrás pedir ayuda, consultar el saldo o las ganancias, depositar o retirar USDC y cambiar de estrategia. Para añadir fondos, primero crea la billetera y luego envía USDC por Stellar a la dirección que te indiquemos.\n\n` +
+          `Responde AGREE para crear la billetera de custodia, DECLINE para cancelar o HELP para volver a ver estos detalles.`,
+        ));
       } else {
         twiml.message(`❌ ${result.message}`);
       }
     } else {
-      twiml.message(
+      twiml.message(t(
         'Please enter the 6-digit verification code (digits only).',
-      );
+        'Introduce el código de verificación de 6 dígitos (solo números).',
+      ));
     }
 
     const outbound = twiml.toString();
@@ -264,23 +293,34 @@ export async function handleWhatsAppWebhook(
   if (session.state === UserState.AWAITING_CUSTODIAL_CONSENT) {
     const answer = messageBody.toLowerCase().trim();
     if (answer === 'help') {
-      twiml.message(
+      twiml.message(t(
         `This WhatsApp service uses a custodial Stellar wallet: NeuroWealth holds the encrypted signing key and signs transactions after your requests. Recovery can be limited if the key or verified phone access is lost. Once created, supported actions are balance, earnings, deposit USDC, withdraw USDC, and change strategy. Fund it by sending USDC on Stellar to the wallet address shown after setup.\n\nReply AGREE to create the wallet or DECLINE to stop.`,
-      );
+        `Este servicio usa una billetera de custodia en Stellar. NeuroWealth guarda la clave de firma cifrada y firma las transacciones que solicitas. La recuperación puede ser limitada si se pierde la clave o el acceso al teléfono verificado. Una vez creada, podrás consultar el saldo y las ganancias, depositar o retirar USDC y cambiar de estrategia. Para añadir fondos, envía USDC por Stellar a la dirección que verás al finalizar la configuración.\n\nResponde AGREE para crear la billetera o DECLINE para cancelar.`,
+      ));
     } else if (answer === 'agree' || answer === 'yes') {
       const wallet = createCustodialWallet(phoneHash);
       updateState(phoneHash, UserState.VERIFIED);
-      twiml.message(
+      twiml.message(t(
         `✅ Custodial wallet created on Stellar.\n` +
-          `Wallet address: ${wallet.publicKey}\n\n` +
-          `To fund it, send USDC on the Stellar network to this address. Check the network and token before sending; transfers on the wrong network or asset may be unrecoverable.\n\n` +
-          `You can now ask for help, check your balance or earnings, deposit USDC, withdraw USDC, or change your strategy.`,
-      );
+        `Wallet address: ${wallet.publicKey}\n\n` +
+        `To fund it, send USDC on the Stellar network to this address. Check the network and token before sending; transfers on the wrong network or asset may be unrecoverable.\n\n` +
+        `You can now ask for help, check your balance or earnings, deposit USDC, withdraw USDC, or change your strategy.`,
+        `✅ Se creó tu billetera de custodia en Stellar.\n` +
+        `Dirección de la billetera: ${wallet.publicKey}\n\n` +
+        `Para añadir fondos, envía USDC por la red Stellar a esta dirección. Verifica la red y el activo antes de enviar. Las transferencias en otra red o de otro activo podrían ser irrecuperables.\n\n` +
+        `Ya puedes pedir ayuda, consultar el saldo o las ganancias, depositar o retirar USDC y cambiar de estrategia.`,
+      ));
     } else if (answer === 'decline' || answer === 'no') {
       updateState(phoneHash, UserState.UNVERIFIED);
-      twiml.message('No wallet was created. You can message START if you want to begin again.');
+      twiml.message(t(
+        'No wallet was created. You can message START if you want to begin again.',
+        'No se creó ninguna billetera. Envía START si quieres volver a empezar.',
+      ));
     } else {
-      twiml.message('No wallet has been created yet. Reply AGREE to accept custodial wallet use, DECLINE to stop, or HELP for details.');
+      twiml.message(t(
+        'No wallet has been created yet. Reply AGREE to accept custodial wallet use, DECLINE to stop, or HELP for details.',
+        'Aún no se ha creado una billetera. Responde AGREE para aceptar la custodia, DECLINE para cancelar o HELP para más información.',
+      ));
     }
 
     const outbound = twiml.toString();
@@ -295,7 +335,10 @@ export async function handleWhatsAppWebhook(
     if (!wallet) {
       // Stale session — reset
       updateState(phoneHash, UserState.UNVERIFIED);
-      twiml.message('Session expired. Send "hi" to re-verify.');
+      twiml.message(t(
+        'Session expired. Send "hi" to re-verify.',
+        'La sesión caducó. Envía "hi" para volver a verificarte.',
+      ));
       const outbound = twiml.toString();
       await logMessageToDb(phoneHash, 'outbound', outbound);
       res.type('text/xml').send(outbound);
@@ -303,7 +346,10 @@ export async function handleWhatsAppWebhook(
     }
 
     // Acknowledge immediately to stay within Twilio's 15 s window
-    twiml.message('⏳ Processing your request…');
+    twiml.message(t(
+      '⏳ Processing your request…',
+      '⏳ Estamos procesando tu solicitud…',
+    ));
     const ack = twiml.toString();
     await logMessageToDb(phoneHash, 'outbound', ack);
     res.type('text/xml').send(ack);
@@ -325,7 +371,10 @@ export async function handleWhatsAppWebhook(
   }
 
   // Fallback
-  twiml.message('Something went wrong. Please send "hi" to start over.');
+  twiml.message(t(
+    'Something went wrong. Please send "hi" to start over.',
+    'Ocurrió un error. Envía "hi" para empezar de nuevo.',
+  ));
   res.type('text/xml').send(twiml.toString());
 }
 
@@ -336,14 +385,22 @@ export async function handleWhatsAppWebhook(
 intentQueue.process(INTENT_WORKER_CONCURRENCY, async (job) => {
   const { phoneHash, fromNumber, messageBody } = job.data;
 
+  const locale = getSessionLocale(phoneHash);
   let replyText: string;
   if (!canExecuteIntent(phoneHash)) {
-    replyText = 'Session expired. Send "hi" to re-verify before requesting another transaction.';
+    replyText = translate(
+      locale,
+      'Session expired. Send "hi" to re-verify before requesting another transaction.',
+      'La sesión caducó. Envía "hi" para volver a verificarte antes de solicitar otra transacción.',
+    );
   } else try {
     replyText = await processVerifiedIntent(phoneHash, messageBody);
   } catch (err) {
-    replyText =
-      '❌ An error occurred. Please try again in a few moments.';
+    replyText = translate(
+      locale,
+      '❌ An error occurred. Please try again in a few moments.',
+      '❌ Ocurrió un error. Vuelve a intentarlo en unos momentos.',
+    );
     console.error('[intentQueue] job failed:', err);
   }
 
@@ -365,6 +422,8 @@ export async function processVerifiedIntent(
   phoneHash: string,
   messageBody: string,
 ): Promise<string> {
+  const locale = getSessionLocale(phoneHash);
+  const t = (english: string, spanish: string) => translate(locale, english, spanish);
   const lower = messageBody.toLowerCase().trim();
 
   // Balance / portfolio
@@ -375,12 +434,17 @@ export async function processVerifiedIntent(
     lower.includes('my account')
   ) {
     const portfolio = await getPortfolio(phoneHash);
-    return (
+    return t(
       `💰 Your NeuroWealth Portfolio\n\n` +
       `Balance: ${portfolio.balance.toFixed(2)} USDC ($${portfolio.usdEquivalent.toFixed(2)})\n` +
       `Earnings today: +$${portfolio.dailyEarnings.toFixed(2)}\n` +
       `Current APY: ${portfolio.apy}%\n` +
-      `Strategy: ${portfolio.strategy}`
+      `Strategy: ${portfolio.strategy}`,
+      `💰 Tu cartera de NeuroWealth\n\n` +
+      `Saldo: ${portfolio.balance.toFixed(2)} USDC ($${portfolio.usdEquivalent.toFixed(2)})\n` +
+      `Ganancias de hoy: +$${portfolio.dailyEarnings.toFixed(2)}\n` +
+      `APY actual: ${portfolio.apy}%\n` +
+      `Estrategia: ${portfolio.strategy}`,
     );
   }
 
@@ -390,7 +454,7 @@ export async function processVerifiedIntent(
     const amount = parseFloat(depositMatch[1]);
     const strategyMatch = lower.match(/\b(conservative|balanced|growth)\b/);
     const strategy = strategyMatch ? strategyMatch[1] : undefined;
-    const result = await handleDeposit(phoneHash, amount, strategy);
+    const result = await handleDeposit(phoneHash, amount, strategy, locale);
     return `🤖 ${result.message}`;
   }
 
@@ -399,7 +463,7 @@ export async function processVerifiedIntent(
     lower.includes('withdraw all') ||
     lower.includes('withdraw everything')
   ) {
-    const result = await handleWithdraw(phoneHash, undefined, true);
+    const result = await handleWithdraw(phoneHash, undefined, true, locale);
     return `🤖 ${result.message}`;
   }
 
@@ -407,7 +471,7 @@ export async function processVerifiedIntent(
   const withdrawMatch = lower.match(/withdraw\s+([\d.]+)/);
   if (withdrawMatch) {
     const amount = parseFloat(withdrawMatch[1]);
-    const result = await handleWithdraw(phoneHash, amount, false);
+    const result = await handleWithdraw(phoneHash, amount, false, locale);
     return `🤖 ${result.message}`;
   }
 
@@ -417,39 +481,60 @@ export async function processVerifiedIntent(
   );
   if (stratMatch) {
     const strat = stratMatch[1];
-    return `✅ Strategy updated to ${strat.toUpperCase()}. The AI agent will rebalance on the next scheduled run.`;
+    return t(
+      `✅ Strategy updated to ${strat.toUpperCase()}. The AI agent will rebalance on the next scheduled run.`,
+      `✅ Estrategia cambiada a ${strat.toUpperCase()}. El agente hará el rebalanceo en la próxima ejecución programada.`,
+    );
   }
 
   // Earnings
   if (lower.includes('earn') || lower.includes('yield') || lower.includes('apy')) {
     const portfolio = await getPortfolio(phoneHash);
-    return (
+    return t(
       `📈 Earnings Summary\n\n` +
       `Today: +$${portfolio.dailyEarnings.toFixed(2)}\n` +
       `Current APY: ${portfolio.apy}%\n` +
-      `Strategy: ${portfolio.strategy}`
+      `Strategy: ${portfolio.strategy}`,
+      `📈 Resumen de ganancias\n\n` +
+      `Hoy: +$${portfolio.dailyEarnings.toFixed(2)}\n` +
+      `APY actual: ${portfolio.apy}%\n` +
+      `Estrategia: ${portfolio.strategy}`,
     );
   }
 
   // Greeting
   if (lower === 'hi' || lower === 'hello' || lower === 'help') {
-    return (
+    return t(
       `🤖 Hi! I'm your NeuroWealth AI Agent.\n\n` +
       `Commands:\n` +
       `• "balance" — view portfolio\n` +
       `• "deposit 100 USDC" — deposit funds\n` +
       `• "withdraw 50" — withdraw USDC\n` +
       `• "switch to growth" — change strategy\n` +
-      `• "earnings" — view yield stats`
+      `• "earnings" — view yield stats\n` +
+      `• "language es" — switch to Spanish`,
+      `🤖 ¡Hola! Soy tu agente de NeuroWealth.\n\n` +
+      `Comandos:\n` +
+      `• "balance" — consultar la cartera\n` +
+      `• "deposit 100 USDC" — depositar fondos\n` +
+      `• "withdraw 50" — retirar USDC\n` +
+      `• "switch to growth" — cambiar de estrategia\n` +
+      `• "earnings" — consultar las ganancias\n` +
+      `• "language en" — cambiar a inglés`,
     );
   }
 
-  return (
+  return t(
     `I didn't quite catch that. Try:\n` +
     `• "deposit 50 USDC"\n` +
     `• "what's my balance"\n` +
     `• "withdraw all"\n` +
-    `• "switch to conservative"`
+    `• "switch to conservative"`,
+    `No entendí tu solicitud. Prueba con:\n` +
+    `• "deposit 50 USDC"\n` +
+    `• "balance"\n` +
+    `• "withdraw all"\n` +
+    `• "switch to conservative"`,
   );
 }
 

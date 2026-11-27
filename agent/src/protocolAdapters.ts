@@ -25,9 +25,33 @@
  * than a zero value, so failed data can never look like a zero-risk venue.
  */
 
+import { StrKey } from '@stellar/stellar-sdk';
 import { ProtocolRiskScoringEngine, RiskDimensionScores } from './riskScoring';
 
 export type ProtocolId = 'blend' | 'dex' | 'phoenix' | 'aquarius' | 'none';
+
+const isPoolHash = (value: string): boolean => value.length === 64 && /^[0-9a-f]+$/i.test(value);
+const isContractId = (value: string): boolean => StrKey.isValidContract(value);
+
+/** Optional identifiers are checked whenever their environment field is configured. */
+export function validateProtocolPoolIdentifiers(env: NodeJS.ProcessEnv = process.env): void {
+  const fields = [
+    ['BLEND_POOL_ADDRESS', isContractId],
+    ['BLEND_USDC_ASSET', (value: string) => isContractId(value) || isPoolHash(value)],
+    ['DEX_USDC_POOL_ID', isPoolHash],
+    ['PHOENIX_POOL_ADDRESS', isContractId],
+    ['AQUARIUS_POOL_ADDRESS', isContractId],
+  ] as const;
+
+  const invalid = fields.filter(([field, validate]) => {
+    const value = env[field];
+    return value !== undefined && !validate(value);
+  }).map(([field]) => field);
+
+  if (invalid.length) {
+    throw new Error(`Invalid protocol pool configuration: ${invalid.join(', ')}`);
+  }
+}
 
 /** Default per-adapter deadline for read-only calls (yield/balance). */
 export const DEFAULT_ADAPTER_DEADLINE_MS = 5_000;

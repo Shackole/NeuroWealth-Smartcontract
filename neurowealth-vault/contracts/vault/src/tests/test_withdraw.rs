@@ -1,8 +1,11 @@
 //! Tests for withdrawal functionality
 
 use super::utils::*;
-use crate::{DataKey, WithdrawEvent, TOPIC_WITHDRAW};
-use soroban_sdk::{testutils::Address as _, Address, Env, TryFromVal};
+use crate::{DataKey, VaultError, WithdrawEvent, TOPIC_WITHDRAW};
+use soroban_sdk::{
+    testutils::{Address as _, Ledger as _},
+    vec, Address, Env, IntoVal, Symbol, TryFromVal,
+};
 
 /// Reads the raw `Shares(user)` value persisted in storage.
 fn stored_shares(env: &Env, contract_id: &Address, user: &Address) -> Option<i128> {
@@ -294,5 +297,40 @@ fn test_withdraw_emits_event() {
     assert_eq!(
         event.amount, withdraw_amount,
         "Event amount should match withdrawal"
+    );
+}
+
+#[test]
+fn test_maximum_holding_period_does_not_wrap_the_unlock_ledger() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_sequence_number(100);
+    let (contract_id, _agent, _owner, token) = setup_vault_with_token(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+
+    client.set_min_holding_period(&u32::MAX);
+    assert_eq!(client.get_min_holding_period(), u32::MAX);
+
+    // The wire type is u32. A wider value above the bound is rejected by
+    // argument decoding, and the configured maximum is preserved.
+    let above_max = u64::from(u32::MAX) + 1;
+    let result = env.try_invoke_contract::<(), VaultError>(
+        &contract_id,
+        &Symbol::new(&env, "set_min_holding_period"),
+        vec![&env, above_max.into_val(&env)],
+    );
+    assert!(result.is_err());
+    assert_eq!(client.get_min_holding_period(), u32::MAX);
+
+    let user = Address::generate(&env);
+    let amount = 10_000_000_i128;
+    mint_and_deposit(&env, &client, &token, &user, amount);
+
+    // Adding the period to ledger 100 would overflow. Elapsed-ledger
+    // arithmetic keeps the withdrawal locked even after ledger advances.
+    env.ledger().set_sequence_number(101);
+    assert_eq!(
+        client.try_withdraw(&user, &amount),
+        Err(Ok(VaultError::HoldingPeriodNotElapsed)),
     );
 }

@@ -4,6 +4,7 @@ import { startEventListener, stopEventListener, server, pool } from './eventList
 import { evaluateYield } from './yieldComparison';
 import healthRouter, { configureHealthChecks } from './health';
 import logger from './logger';
+import { validateProtocolPoolIdentifiers } from './protocolAdapters';
 import { initializeTracing } from './tracing';
 import { configureHttpSecurity, configureHttpTimeouts } from './httpSecurity';
 
@@ -97,6 +98,7 @@ function startDecisionLoop() {
 async function main() {
   logger.info('Starting NeuroWealth AI Agent');
 
+  validateProtocolPoolIdentifiers();
   configureHealthChecks(pool, server);
   await startEventListener();
   startDecisionLoop();
