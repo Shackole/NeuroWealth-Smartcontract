@@ -10,7 +10,7 @@
  * import { VaultEventListener } from '@neurowealth/vault-client';
  * import * as StellarSdk from '@stellar/stellar-sdk';
  *
- * const server = new StellarSdk.SorobanRpc.Server('https://soroban-testnet.stellar.org');
+ * const server = new StellarSdk.rpc.Server('https://soroban-testnet.stellar.org');
  *
  * const listener = new VaultEventListener({
  *   contractId: 'C...',
@@ -115,14 +115,14 @@ const EVENT_TOPICS = {
 // ---------------------------------------------------------------------------
 
 /** Callback type for event handlers. */
-export type EventHandler<T> = (event: T, raw: StellarSdk.SorobanRpc.Api.EventResponse) => void;
+export type EventHandler<T> = (event: T, raw: StellarSdk.rpc.Api.EventResponse) => void;
 
 /** Options for creating a VaultEventListener. */
 export interface EventListenerOptions {
   /** Deployed vault contract address (C...). */
   contractId: string;
   /** Soroban RPC server instance. */
-  server: StellarSdk.SorobanRpc.Server;
+  server: StellarSdk.rpc.Server;
   /** Network passphrase. */
   networkPassphrase: string;
   /** Start ledger for event streaming (defaults to latest). */
@@ -140,7 +140,7 @@ export interface EventListenerOptions {
  * The event's `value` is the XDR-encoded ScVal; we decode it with
  * `scValToNative` which returns a JS object matching the struct shape.
  */
-function decodeEvent<T>(response: StellarSdk.SorobanRpc.Api.EventResponse): T {
+function decodeEvent<T>(response: StellarSdk.rpc.Api.EventResponse): T {
   return StellarSdk.scValToNative(response.value) as unknown as T;
 }
 
@@ -149,7 +149,7 @@ function decodeEvent<T>(response: StellarSdk.SorobanRpc.Api.EventResponse): T {
  * first (or any) topic entry.
  */
 function hasTopic(
-  response: StellarSdk.SorobanRpc.Api.EventResponse,
+  response: StellarSdk.rpc.Api.EventResponse,
   topic: string,
 ): boolean {
   return response.topic.some((t) => {
@@ -164,7 +164,7 @@ function hasTopic(
  * user's Address as topic 1.
  */
 function extractUserTopic(
-  response: StellarSdk.SorobanRpc.Api.EventResponse,
+  response: StellarSdk.rpc.Api.EventResponse,
 ): string | undefined {
   if (response.topic.length < 2) return undefined;
   const native = StellarSdk.scValToNative(response.topic[1]);
@@ -183,7 +183,7 @@ function extractUserTopic(
  */
 export class VaultEventListener {
   private readonly contractId: string;
-  private readonly server: StellarSdk.SorobanRpc.Server;
+  private readonly server: StellarSdk.rpc.Server;
   private readonly networkPassphrase: string;
   private readonly batchSize: number;
 
@@ -461,7 +461,7 @@ export class VaultEventListener {
   // Internal
   // -----------------------------------------------------------------------
 
-  private dispatchEvent(event: StellarSdk.SorobanRpc.Api.EventResponse): void {
+  private dispatchEvent(event: StellarSdk.rpc.Api.EventResponse): void {
     if (event.topic.length === 0) return;
 
     const primaryTopic = StellarSdk.scValToNative(event.topic[0]);
