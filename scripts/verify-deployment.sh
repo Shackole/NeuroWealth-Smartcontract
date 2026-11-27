@@ -9,6 +9,7 @@
 #
 # Usage:
 #   ./scripts/verify-deployment.sh [--help] [ENV_FILE]
+#   ./scripts/verify-deployment.sh --manifest FILE --environment ENVIRONMENT [--wasm FILE]
 #
 # Arguments:
 #   ENV_FILE   Path to contract env file (default: scripts/devnet-contracts.env)
@@ -77,6 +78,7 @@ NeuroWealth Vault — Post-Deploy Verification (Mainnet Preflight Checks)
 
 USAGE:
     $0 [--help] [ENV_FILE]
+    $0 --manifest FILE --environment ENVIRONMENT [--wasm FILE]
 
 ARGUMENTS:
     ENV_FILE    Contract env file (default: $DEFAULT_ENV_FILE)
@@ -140,6 +142,11 @@ normalize_int() {
 # ---------------------------------------------------------------------------
 # Argument parsing
 # ---------------------------------------------------------------------------
+
+if [[ "${1:-}" == "--manifest" ]]; then
+  shift
+  exec python3 "$SCRIPT_DIR/verify-deployment-manifest.py" "$@"
+fi
 
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
   show_help

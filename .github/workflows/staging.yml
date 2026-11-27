@@ -44,7 +44,9 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: staging-contracts
-          path: ${{ runner.temp }}/staging-contracts.env
+          path: |
+            ${{ runner.temp }}/staging-contracts.env
+            ${{ runner.temp }}/staging-contracts.env.manifest.json
           retention-days: 14
 
   deploy-services:
