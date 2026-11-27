@@ -13,6 +13,10 @@
  * @see docs/DESIGN_SYSTEM.md
  */
 
+import { getExplorerUrl } from './explorer';
+
+export { getExplorerUrl } from './explorer';
+
 export type TransactionProgressStatus =
   | 'review'
   | 'signature_request'
@@ -101,12 +105,6 @@ export interface TransactionStepVocabulary {
 export function formatAddressOrHash(val: string, prefix = 6, suffix = 6): string {
   if (!val || val.length <= prefix + suffix) return val || '';
   return `${val.slice(0, prefix)}…${val.slice(-suffix)}`;
-}
-
-/** Default Stellar Explorer URL generator */
-export function getExplorerUrl(txHash: string, network = 'testnet'): string {
-  const cleanNetwork = network.toLowerCase().includes('mainnet') ? 'public' : 'testnet';
-  return `https://stellar.expert/explorer/${cleanNetwork}/tx/${txHash}`;
 }
 
 /** Format Stellar stroops into explicit XLM unit string */
@@ -277,7 +275,7 @@ export const TRANSACTION_VOCABULARY: Record<
         actionKey: 'view_explorer_pending',
         ariaLabel: 'Open pending transaction on Stellar Expert explorer',
         variant: 'external',
-        href: ctx.txHash ? getExplorerUrl(ctx.txHash, ctx.networkName) : undefined,
+        href: getExplorerUrl(ctx.txHash, ctx.networkPassphrase ?? ctx.networkName),
       },
       boundary: 'contract',
     };
@@ -308,7 +306,7 @@ export const TRANSACTION_VOCABULARY: Record<
         actionKey: 'check_explorer_delayed',
         ariaLabel: 'Verify pending status on Stellar Expert explorer without resubmitting',
         variant: 'external',
-        href: ctx.txHash ? getExplorerUrl(ctx.txHash, ctx.networkName) : undefined,
+        href: getExplorerUrl(ctx.txHash, ctx.networkPassphrase ?? ctx.networkName),
       },
       boundary: 'service',
     };
@@ -340,7 +338,7 @@ export const TRANSACTION_VOCABULARY: Record<
         actionKey: 'view_explorer_confirmed',
         ariaLabel: 'View verified transaction receipt on Stellar Expert explorer',
         variant: 'external',
-        href: ctx.txHash ? getExplorerUrl(ctx.txHash, ctx.networkName) : undefined,
+        href: getExplorerUrl(ctx.txHash, ctx.networkPassphrase ?? ctx.networkName),
       },
       boundary: 'contract',
     };
@@ -439,8 +437,8 @@ export function buildStandardSteps(
       status: state,
       errorMessage: isTerminalErr && idx === currentIdx ? context.errorMessage : undefined,
       explorerUrl:
-        stepKey === 'confirmed' && context.txHash
-          ? getExplorerUrl(context.txHash, context.networkName)
+        stepKey === 'confirmed'
+          ? getExplorerUrl(context.txHash, context.networkPassphrase ?? context.networkName)
           : undefined,
       nextAction: vocab.nextAction,
       recoveryAction: vocab.recoveryAction,

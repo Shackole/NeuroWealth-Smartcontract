@@ -1,5 +1,7 @@
 'use client';
 
+import { AssetAmountInput } from '@/components/AssetAmountInput';
+
 import React, { useState, useCallback } from 'react';
 import {
   X,
@@ -171,8 +173,11 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
                 <span>Available: {balance.toFixed(2)} USDC</span>
               </div>
               <div className="relative">
-                <input
-                  type="number"
+                <AssetAmountInput
+                  onPasteAmount={(value) => {
+                    setIsWithdrawAll(false);
+                    setAmount(value);
+                  }}
                   step="0.01"
                   min="0"
                   max={balance}

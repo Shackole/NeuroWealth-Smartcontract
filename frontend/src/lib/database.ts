@@ -14,12 +14,12 @@ export interface ChartDataPoint {
 
 export interface TransactionRecord {
   id: string;
-  type: 'deposit' | 'withdrawal' | 'rebalance' | 'withdraw';
+  type: 'deposit' | 'withdrawal' | 'rebalance' | 'withdraw' | 'yield';
   amount: number;
   asset?: string;
   address?: string;
   strategy?: string;
-  txHash: string;
+  txHash?: string;
   timestamp: string;
   status: 'confirmed' | 'pending' | 'failed';
 }

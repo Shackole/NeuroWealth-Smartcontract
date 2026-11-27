@@ -1,5 +1,7 @@
 'use client';
 
+import { AssetAmountInput } from '@/components/AssetAmountInput';
+
 import React, { useState } from 'react';
 import { DEPOSIT_ASSET, getDepositAsset } from '@/lib/depositAsset';
 import { Header } from '@/components/Header';
@@ -75,9 +77,9 @@ export default function DepositView({ initialAsset }: { initialAsset: typeof DEP
                 Deposit Amount (USDC)
               </label>
               <div className="relative">
-                <input
+                <AssetAmountInput
                   id="deposit-amount"
-                  type="number"
+                  onPasteAmount={setAmount}
                   min="1"
                   step="any"
                   required

@@ -1,5 +1,7 @@
 'use client';
 
+import { AssetAmountInput } from '@/components/AssetAmountInput';
+
 /**
  * DepositForm.tsx
  *
@@ -233,6 +235,7 @@ const SuccessState: React.FC<SuccessStateProps> = ({
 }) => {
   const meta = STRATEGY_META[strategy];
   const Icon: LucideIcon = meta.icon;
+  const transactionUrl = explorerUrl(depositHash);
 
   return (
     <div className="text-center py-4" role="status" aria-live="polite">
@@ -250,20 +253,21 @@ const SuccessState: React.FC<SuccessStateProps> = ({
         strategy
       </p>
 
-      {/* Transaction link */}
-      <a
-        href={explorerUrl(depositHash)}
-        target="_blank"
-        rel="noreferrer"
-        className="inline-flex items-center gap-1.5 text-xs text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 px-3 py-2 rounded-lg border border-emerald-500/20 mb-2 transition-colors font-mono"
-        aria-label="View deposit transaction on Stellar Expert explorer"
-      >
-        <ExternalLink size={12} aria-hidden="true" />
-        View on Stellar Explorer
-        <span className="text-slate-500 ml-1">
-          {depositHash.slice(0, 8)}…{depositHash.slice(-6)}
-        </span>
-      </a>
+      {transactionUrl && (
+        <a
+          href={transactionUrl}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex items-center gap-1.5 text-xs text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 px-3 py-2 rounded-lg border border-emerald-500/20 mb-2 transition-colors font-mono"
+          aria-label="View deposit transaction on Stellar Expert explorer"
+        >
+          <ExternalLink size={12} aria-hidden="true" />
+          View on Stellar Explorer
+          <span className="text-slate-500 ml-1">
+            {depositHash.slice(0, 8)}…{depositHash.slice(-6)}
+          </span>
+        </a>
+      )}
 
       <p className="text-xs text-emerald-400 bg-emerald-500/10 py-2 px-3 rounded-lg border border-emerald-500/20 mb-6 mt-3">
         Confirmed on Stellar Testnet · ~3–5 second finality
@@ -595,9 +599,10 @@ export const DepositForm: React.FC<DepositFormProps> = ({
                 </div>
 
                 <div className="relative">
-                  <input
+                  <AssetAmountInput
                     id="deposit-amount"
-                    type="number"
+                    value={watchedAmount}
+                    onPasteAmount={(value) => setValue('amount', value, { shouldValidate: true, shouldDirty: true })}
                     step="0.01"
                     min="1"
                     max="10000"
@@ -614,7 +619,7 @@ export const DepositForm: React.FC<DepositFormProps> = ({
                   <button
                     type="button"
                     onClick={handleMax}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 hover:bg-emerald-500/20 px-2.5 py-1 rounded-lg transition-colors border border-emerald-500/20"
+                    className="absolute right-3 top-3 text-xs font-bold text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 hover:bg-emerald-500/20 px-2.5 py-1 rounded-lg transition-colors border border-emerald-500/20"
                     aria-label="Fill maximum USDC balance"
                   >
                     MAX

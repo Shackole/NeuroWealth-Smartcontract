@@ -1,5 +1,7 @@
 'use client';
 
+import { AssetAmountInput } from '@/components/AssetAmountInput';
+
 import React, { useEffect, useState } from 'react';
 import { Header } from '@/components/Header';
 import { ArrowDownLeft, ShieldCheck, ArrowRight } from 'lucide-react';
@@ -125,9 +127,12 @@ export default function WithdrawPage() {
                 Withdraw Amount (USDC)
               </label>
               <div className="relative">
-                <input
+                <AssetAmountInput
                   id="withdraw-amount"
-                  type="number"
+                  onPasteAmount={(value) => {
+                    setWithdrawAll(false);
+                    setAmount(value);
+                  }}
                   min="0.01"
                   max={availableBalance}
                   step="any"

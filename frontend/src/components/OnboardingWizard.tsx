@@ -1,5 +1,7 @@
 'use client';
 
+import { AssetAmountInput } from '@/components/AssetAmountInput';
+
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   X,
@@ -13,7 +15,7 @@ import {
   ShieldCheck,
   BarChart3,
 } from 'lucide-react';
-import { connectFreighterWallet } from '@/lib/freighter';
+import { useFreighterConnection } from '@/lib/useFreighterConnection';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -114,23 +116,7 @@ function ConnectWalletStep({
   publicKey: string | null;
   onConnect: (key: string) => void;
 }) {
-  const [connecting, setConnecting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const handleConnect = async () => {
-    setConnecting(true);
-    setError(null);
-    try {
-      const key = await connectFreighterWallet();
-      if (key) {
-        onConnect(key);
-      } else {
-        setError('Connection cancelled or Freighter not installed.');
-      }
-    } finally {
-      setConnecting(false);
-    }
-  };
+  const { connect, isConnecting, message, canRetry } = useFreighterConnection();
 
   return (
     <div className="flex flex-col items-center text-center gap-5">
@@ -154,11 +140,11 @@ function ConnectWalletStep({
         <>
           <button
             id="connect-wallet-btn"
-            onClick={handleConnect}
-            disabled={connecting}
+            onClick={() => void connect(onConnect)}
+            disabled={isConnecting}
             className="w-full flex items-center justify-center gap-2 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-slate-950 font-bold py-3.5 rounded-xl transition-all shadow-glow-emerald disabled:opacity-60"
           >
-            {connecting ? (
+            {isConnecting ? (
               <span className="flex items-center gap-2">
                 <span className="h-4 w-4 border-2 border-slate-950/30 border-t-slate-950 rounded-full animate-spin" />
                 Connecting…
@@ -166,15 +152,11 @@ function ConnectWalletStep({
             ) : (
               <>
                 <Wallet size={18} />
-                Connect Freighter Wallet
+                {canRetry ? 'Retry Wallet Connection' : 'Connect Freighter Wallet'}
               </>
             )}
           </button>
-          {error && (
-            <p className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2 w-full text-center">
-              {error}
-            </p>
-          )}
+          <p role="status" className="text-xs text-slate-300">{message}</p>
           <p className="text-xs text-slate-500">
             Don&apos;t have Freighter?{' '}
             <a
@@ -289,9 +271,9 @@ function DepositStep({
           Amount (USDC)
         </label>
         <div className="relative">
-          <input
+          <AssetAmountInput
             id="deposit-amount"
-            type="number"
+            onPasteAmount={onChange}
             step="0.01"
             min="1"
             max="10000"
