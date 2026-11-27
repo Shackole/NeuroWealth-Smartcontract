@@ -3,8 +3,29 @@
 const environment = process.env.DEPLOYMENT_ENVIRONMENT || process.env.NODE_ENV || 'development';
 const network = process.env.STELLAR_NETWORK || 'testnet';
 
+export const TRANSACTION_JOB_CLASSES = ['deposit', 'withdrawal', 'rebalance'] as const;
+export type TransactionJobClass = typeof TRANSACTION_JOB_CLASSES[number];
+const jobClasses = [...TRANSACTION_JOB_CLASSES, 'other'] as const;
+type QueueDepthByClass = Record<typeof jobClasses[number], number>;
+
+interface QueueJob {
+  data?: { type?: unknown };
+}
+
+function countJobsByClass(jobs: readonly QueueJob[]): QueueDepthByClass {
+  const counts: QueueDepthByClass = { deposit: 0, withdrawal: 0, rebalance: 0, other: 0 };
+  for (const job of jobs) {
+    const type = job.data?.type;
+    const jobClass = TRANSACTION_JOB_CLASSES.find((knownClass) => knownClass === type) ?? 'other';
+    counts[jobClass] += 1;
+  }
+  return counts;
+}
+
 const queue = {
   pending: 0,
+  waitingByClass: countJobsByClass([]),
+  activeByClass: countJobsByClass([]),
   oldestPendingAgeSeconds: 0,
   activeWorkers: 0,
   deadLetterJobs: 0,
@@ -52,8 +73,12 @@ export function setQueueMetrics(input: {
   oldestPendingAgeSeconds: number;
   activeWorkers: number;
   deadLetterJobs: number;
+  waitingJobs: readonly QueueJob[];
+  activeJobs: readonly QueueJob[];
 }): void {
   queue.pending = input.pending;
+  queue.waitingByClass = countJobsByClass(input.waitingJobs);
+  queue.activeByClass = countJobsByClass(input.activeJobs);
   queue.oldestPendingAgeSeconds = input.oldestPendingAgeSeconds;
   queue.activeWorkers = input.activeWorkers;
   queue.deadLetterJobs = input.deadLetterJobs;
@@ -98,6 +123,16 @@ export function renderOperationalMetrics(): string {
     '# HELP neurowealth_queue_active_workers Number of active transaction jobs (worker concurrency is five).',
     '# TYPE neurowealth_queue_active_workers gauge',
     `neurowealth_queue_active_workers{${labels},queue_name="transactions"} ${queue.activeWorkers}`,
+    '# HELP neurowealth_queue_waiting_jobs_by_class Waiting transaction jobs grouped by class.',
+    '# TYPE neurowealth_queue_waiting_jobs_by_class gauge',
+    ...jobClasses.map((jobClass) =>
+      `neurowealth_queue_waiting_jobs_by_class{${labels},queue_name="transactions",job_class="${jobClass}"} ${queue.waitingByClass[jobClass]}`,
+    ),
+    '# HELP neurowealth_queue_active_jobs_by_class Active transaction jobs grouped by class.',
+    '# TYPE neurowealth_queue_active_jobs_by_class gauge',
+    ...jobClasses.map((jobClass) =>
+      `neurowealth_queue_active_jobs_by_class{${labels},queue_name="transactions",job_class="${jobClass}"} ${queue.activeByClass[jobClass]}`,
+    ),
     '# HELP neurowealth_queue_dead_letter_jobs Current dead-letter queue size.',
     '# TYPE neurowealth_queue_dead_letter_jobs gauge',
     `neurowealth_queue_dead_letter_jobs{${labels},queue_name="transactions"} ${queue.deadLetterJobs}`,
