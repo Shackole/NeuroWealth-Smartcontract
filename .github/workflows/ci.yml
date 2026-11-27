@@ -67,25 +67,57 @@ jobs:
           components: rustfmt, clippy
           targets: wasm32-unknown-unknown
 
-      - name: Cache Rust dependencies
-        if: matrix.working_directory == 'neurowealth-vault'
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: neurowealth-vault
+      - name: Compute target-specific Rust cache key
+        id: rust-cache-key
+        if: matrix.step == 'build-wasm' || matrix.step == 'test' || matrix.step == 'clippy' || matrix.step == 'doc'
+        working-directory: neurowealth-vault
+        env:
+          CACHE_OS: ${{ runner.os }}
+          CACHE_ARCH: ${{ runner.arch }}
+          BUILD_STEP: ${{ matrix.step }}
+          SOURCE_HASH: ${{ hashFiles('neurowealth-vault/**/Cargo.lock', 'neurowealth-vault/**/Cargo.toml', 'neurowealth-vault/rust-toolchain.toml') }}
+        run: |
+          rustc_metadata="$(rustc -vV)"
+          cargo_version="$(cargo -V)"
+          host_target="$(sed -n 's/^host: //p' <<< "$rustc_metadata")"
+          wasm_target=wasm32-unknown-unknown
+          [[ -n "$host_target" && -n "$SOURCE_HASH" ]]
+          toolchain_hash="$(printf '%s\n' "$rustc_metadata" "$cargo_version" | sha256sum | cut -d' ' -f1)"
 
-      - name: Cache cargo registry and tooling
-        if: matrix.step == 'build-wasm'
+          cache_key() {
+            printf 'rust-v1-%s-%s-%s-%s-%s-%s' \
+              "$CACHE_OS" "$CACHE_ARCH" "$1" "$2" "$toolchain_hash" "$SOURCE_HASH"
+          }
+
+          # Compare both targets under the same workload and toolchain so
+          # the check catches accidental removal of the target from the key.
+          if [[ "$(cache_key test "$host_target")" == "$(cache_key test "$wasm_target")" ]]; then
+            echo "::error::Native and WASM Rust cache keys must differ"
+            exit 1
+          fi
+
+          target="$host_target"
+          if [[ "$BUILD_STEP" == build-wasm ]]; then
+            target="$wasm_target"
+          fi
+          echo "key=$(cache_key "$BUILD_STEP" "$target")" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Rust build artifacts
+        if: steps.rust-cache-key.outputs.key != ''
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/neurowealth-target
+          key: ${{ steps.rust-cache-key.outputs.key }}
+
+      - name: Cache Cargo dependency downloads
+        if: steps.rust-cache-key.outputs.key != ''
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/bin/
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-            ~/.local/bin/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-downloads-${{ hashFiles('neurowealth-vault/**/Cargo.lock') }}
 
       - name: Install Stellar CLI
         if: matrix.step == 'build-wasm'
@@ -273,7 +305,7 @@ jobs:
         with:
           name: neurowealth-vault-wasm
           path: ${{ env.WASM_FILE }}
-          retention-days: 14
+          retention-days: 30
 
       - name: Publish runtime summary
         if: always() && (matrix.step == 'test' || matrix.step == 'build-wasm' || matrix.step == 'vault-client-typecheck' || matrix.step == 'vault-ui-test')

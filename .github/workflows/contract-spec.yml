@@ -166,7 +166,7 @@ jobs:
           path: |
             contract-spec.json
             packages/vault-client/src/generated/vault.ts
-          retention-days: 30
+          retention-days: 90
       
       - name: 💾 Commit generated spec and client if changed
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'

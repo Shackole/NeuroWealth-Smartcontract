@@ -3,6 +3,7 @@ import { TrendingUp, Layers, RefreshCw, DollarSign, Zap } from 'lucide-react';
 
 interface GlossaryEntry {
   slug: string;
+  dashboardLink: { href: string; label: string };
   term: string;
   icon: ElementType;
   iconColor: string;
@@ -13,6 +14,7 @@ interface GlossaryEntry {
 export const ARTICLES: GlossaryEntry[] = [
   {
     slug: 'apy',
+    dashboardLink: { href: '/dashboard#chart-heading', label: 'View current APY on the dashboard' },
     term: 'APY — Annual Percentage Yield',
     icon: TrendingUp,
     iconColor: 'text-emerald-400',
@@ -22,6 +24,7 @@ export const ARTICLES: GlossaryEntry[] = [
   },
   {
     slug: 'shares',
+    dashboardLink: { href: '/dashboard#portfolio-summary-heading', label: 'View your share balance on the dashboard' },
     term: 'Shares',
     icon: DollarSign,
     iconColor: 'text-indigo-400',
@@ -31,6 +34,7 @@ export const ARTICLES: GlossaryEntry[] = [
   },
   {
     slug: 'exchange-rate',
+    dashboardLink: { href: '/stats', label: 'View the vault exchange-rate chart' },
     term: 'Exchange Rate',
     icon: RefreshCw,
     iconColor: 'text-amber-400',
@@ -40,6 +44,7 @@ export const ARTICLES: GlossaryEntry[] = [
   },
   {
     slug: 'rebalancing',
+    dashboardLink: { href: '/dashboard#history-heading', label: 'View rebalance activity on the dashboard' },
     term: 'Rebalancing',
     icon: Zap,
     iconColor: 'text-emerald-400',
@@ -49,6 +54,7 @@ export const ARTICLES: GlossaryEntry[] = [
   },
   {
     slug: 'blend',
+    dashboardLink: { href: '/dashboard', label: 'View your strategies on the dashboard' },
     term: 'Blend Protocol',
     icon: Layers,
     iconColor: 'text-blue-400',
@@ -58,6 +64,7 @@ export const ARTICLES: GlossaryEntry[] = [
   },
   {
     slug: 'stellar-dex',
+    dashboardLink: { href: '/dashboard', label: 'View your strategies on the dashboard' },
     term: 'DEX — Decentralised Exchange',
     icon: RefreshCw,
     iconColor: 'text-purple-400',
