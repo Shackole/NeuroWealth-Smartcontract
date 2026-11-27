@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect, useMemo, useState } from 'react';
+import { AccountAddress } from './AccountAddress';
 import {
   createColumnHelper,
   flexRender,
@@ -358,7 +359,14 @@ export const TransactionHistoryTable: React.FC<TransactionHistoryTableProps> = (
                   <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
                     <dt className="text-slate-400">Date</dt><dd className="min-w-0 break-words text-slate-200">{transaction.timestamp}</dd>
                     <dt className="text-slate-400">Strategy</dt><dd className="min-w-0 break-words text-slate-200">{transaction.strategy || 'Not specified'}</dd>
-                    {transaction.address && <><dt className="text-slate-400">Wallet address</dt><dd className="flex min-w-0 items-start gap-1 text-slate-200"><span className="break-all font-mono">{transaction.address}</span><button type="button" onClick={() => void copyValue(transaction.address!)} className="min-h-11 min-w-11 shrink-0 rounded p-3 text-slate-300 hover:bg-slate-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400" aria-label={copiedValue === transaction.address ? 'Wallet address copied' : 'Copy wallet address'}>{copiedValue === transaction.address ? <Check size={15} /> : <Copy size={15} />}</button></dd></>}
+                    {transaction.address && (
+                      <>
+                        <dt className="text-slate-400">Wallet address</dt>
+                        <dd className="min-w-0 text-slate-200">
+                          <AccountAddress key={transaction.address} address={transaction.address} />
+                        </dd>
+                      </>
+                    )}
                   </dl>
                   <div className="mt-3 flex min-w-0 items-center gap-2 border-t border-slate-800 pt-3">
                     <a href={`https://stellar.expert/explorer/testnet/tx/${fullHash}`} target="_blank" rel="noreferrer" className="min-w-0 flex-1 break-all font-mono text-xs text-emerald-300 underline underline-offset-2">{fullHash}<span className="sr-only"> (open transaction in Stellar Expert)</span></a>
