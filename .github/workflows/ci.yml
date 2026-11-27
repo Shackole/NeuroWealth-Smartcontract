@@ -260,7 +260,7 @@ jobs:
 
       - name: Upload optimised WASM artifact
         if: matrix.step == 'build-wasm'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: neurowealth-vault-wasm
           path: ${{ env.WASM_FILE }}
@@ -556,7 +556,7 @@ jobs:
 
       - name: Upload E2E artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-devnet-artifacts
           path: scripts/e2e-artifacts/
@@ -678,7 +678,7 @@ jobs:
 
       - name: Upload Accessibility Report Artifacts (HTML + JSON)
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: accessibility-reports
           path: frontend/accessibility-reports/

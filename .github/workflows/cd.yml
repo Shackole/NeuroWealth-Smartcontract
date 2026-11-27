@@ -168,7 +168,7 @@ jobs:
 
       - name: Retain immutable deployment evidence
         if: steps.context.outputs.is_production == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: deployment-provenance-${{ github.sha }}-${{ github.run_id }}
           path: ${{ runner.temp }}/release-provenance/

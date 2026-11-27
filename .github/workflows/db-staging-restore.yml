@@ -78,7 +78,7 @@ jobs:
 
       - name: Upload restore report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: staging-database-restore-report-${{ github.run_id }}
           path: ${{ runner.temp }}/restore-report.json
