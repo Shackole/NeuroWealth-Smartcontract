@@ -165,6 +165,55 @@ assume the similar endpoint names have identical payloads or authentication:
 the configured production process presently mounts none of those data/auth
 routers.
 
+## Transaction and Queue Status Reason Codes
+
+Integrators interacting with transaction queues (`/api/queue/stats`), asynchronous submission workers, and automated rebalance decisions receive machine-readable reason and status codes. The tables below specify the exact meaning of each returned status and reason, whether the condition is terminal or non-terminal, and the required polling interval or backoff strategy.
+
+### 1. Transaction Queue and Submission Status Codes
+
+These statuses reflect the lifecycle of transactions enqueued in the Redis/Bull submission pipeline (`transactions` and dead-letter `transactions:failed` queues) and tracked across service recovery.
+
+| Status / Reason Code | Terminality | Meaning & Internal Pipeline State | When to Poll Again / Integrator Action |
+| --- | --- | --- | --- |
+| `waiting` / `queued` | **Non-Terminal** | Job is accepted and waiting in the Redis queue for an available worker thread (concurrency limit: 5 workers). | Poll after **2–3 seconds**. |
+| `active` / `in_flight` | **Non-Terminal** | Worker is currently fetching sequence numbers, building/signing the Soroban envelope, or waiting on Horizon RPC broadcast. | Poll after **2–3 seconds**. |
+| `completed` / `confirmed` / `SUCCESS` | **Terminal** (Success) | Transaction was successfully submitted and confirmed on-chain in a closed Stellar ledger. Returns `{ txHash, ledger, submittedAt }`. | **Stop polling**. Transaction state is final and immutable. |
+| `deduplicated` / `skipped_duplicate` | **Terminal** (Ignored) | An identical transaction with the same `deduplicationKey` was submitted within the 60-second TTL window (`DEDUP_TTL_MS = 60000`), or previously confirmed on-chain/DB during recovery. | **Stop polling** for duplicate job. Wait **60 seconds** before re-submitting with the same key if unintended. |
+| `tx_bad_seq` / `sequence_mismatch` | **Non-Terminal** | Sequence number mismatch occurred against the Stellar Horizon node. The agent worker automatically re-fetches the account sequence number and re-signs with jitter (up to 3 internal attempts). | Poll after **2–4 seconds**. The worker resolves sequence conflicts automatically without requiring client re-submission. |
+| `delayed` / `failed` (transient attempt < 3) | **Non-Terminal** | Submission failed due to a transient RPC timeout or network interruption. The job enters Bull's exponential backoff queue (2 s → 4 s → 8 s). | Poll after **4–8 seconds** (aligning with the exponential backoff window). |
+| `dead_letter` / `retries_exhausted` | **Terminal** (Permanent Failure) | The transaction exhausted all retry attempts (3 attempts) and was moved to the dead-letter queue (`transactions:failed`) with `failedReason` attached. | **Stop polling**. Operational or manual intervention is required to inspect the DLQ record. |
+| `blocked` | **Terminal** (Validation Failure) | The job failed pre-execution invariants during recovery (e.g., mismatched `networkPassphrase`, mismatched vault `contractId`, or unverified on-chain finality). | **Stop polling**. Check payload parameters and contract deployment settings. |
+
+### 2. Strategy and Rebalance Decision Reason Codes
+
+Automated rebalance checks (`GET /api/agent/strategy-distribution` and internal evaluation loops) return explicit `skipReason` explanations when no rebalancing transaction is dispatched.
+
+| Reason Code | Terminality | Meaning | When to Poll Again / Integrator Action |
+| --- | --- | --- | --- |
+| `already_on_best_protocol` | **Terminal for cycle** | The current vault allocation is already deployed to the protocol offering the highest risk-adjusted yield. | Poll at the next scheduled rebalance interval (typically **60 minutes**). |
+| `improvement_below_threshold` | **Terminal for cycle** | A candidate protocol offers higher yield, but the delta does not meet the minimum improvement threshold (e.g. 50 bps). Rebalancing gas cost exceeds expected gain. | Poll at the next scheduled hourly cycle (**60 minutes**). |
+| `cooldown_active` | **Non-Terminal** | Vault contract is in a post-rebalance lock period (`remaining` ledgers pending). Prevents rebalance oscillations. | Poll after the cooldown expires. Each Stellar ledger closes in ~5 seconds (e.g. `remaining * 5` seconds). |
+| `current_protocol_apy_unavailable` | **Terminal for cycle** | Upstream adapter failed to fetch APY for the active protocol. Rebalance skipped for safety. | Poll in **5–15 minutes** or next hourly decision loop. |
+| `no_apy_data_available` | **Terminal for cycle** | Price oracle or protocol adapters returned no usable APY metrics across all candidate protocols. | Poll in **5–15 minutes** after oracle refresh. |
+| `no_usable_ranked_protocol_data` | **Terminal for cycle** | Candidate protocols failed whitelist validation or risk score ceiling checks. | Poll at next evaluation cycle (**60 minutes**). |
+| `invalid_rebalance_bounds` | **Terminal for cycle** | Target rebalance amount violates liquidity caps, idle balance reserves, or maximum slippage parameters. | Poll after vault deposits/withdrawals alter pool liquidity. |
+| `submission_outcome_uncertain` | **Non-Terminal** | Rebalance transaction timed out during broadcast. Agent reconciliation job is verifying on-chain event status. | Poll after **15–30 seconds** for reconciliation result. |
+| `rebalance_submission_failed` | **Terminal for attempt** | On-chain contract invocation failed or reverted. Increments the consecutive failure tracker. | **Stop polling**. If consecutive failures exceed threshold, inspect `/health` for degraded health status. |
+
+### 3. HTTP API Error Reasons and Polling Guidance
+
+When interacting with synchronous REST endpoints (`apiRouter.ts`, `api.ts`, `authRouter.ts`), callers should observe standard HTTP error semantics:
+
+| HTTP Code | Error Code / Reason | Terminality | Integrator Action & Polling Strategy |
+| --- | --- | --- | --- |
+| `400` | `INVALID_INPUT` | **Terminal** | Request payload is malformed, missing required fields, or address is not a valid Stellar `G...` key. Fix request body before retrying; do not poll without code changes. |
+| `401` | `UNAUTHORIZED` | **Terminal** | Bearer token is missing, expired, or SIWS challenge signature failed. Re-authenticate immediately via login/SIWS flow before retrying. |
+| `403` | `FORBIDDEN` | **Terminal** | Authenticated wallet does not match the requested route address, or user lacks the required `operator` scope. Do not poll. |
+| `404` | `NOT_FOUND` | **Terminal** | Stellar account or database entity does not exist. Do not poll until the account is funded on-chain. |
+| `429` | `RATE_LIMITED` | **Non-Terminal** | In-memory IP rate limit (100 req/min) or user limit exceeded. Wait until the 60-second window resets (or respect `Retry-After` header) before polling. |
+| `503` | `SERVICE_UNAVAILABLE` | **Non-Terminal** | Upstream database pool, Horizon node, or Redis queue is temporarily unreachable. Implement exponential backoff: retry after **2s**, **4s**, **8s**, up to **30s**. |
+
+
 ## Source review evidence
 
 - `agent/package.json` selects `src/index.ts` for `start:prod`.
