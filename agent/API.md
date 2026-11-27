@@ -120,6 +120,33 @@ and `POST /api/auth/refresh`. It returns a 15-minute access token and a
 seven-day rotating refresh token, backed by Redis. That router is also not
 mounted by the production entrypoint or `app.ts`.
 
+## Earnings history date ranges
+
+Both earnings routes accept paired `startDate` and `endDate` query parameters
+in UTC calendar date format (`YYYY-MM-DD`). The dates are inclusive. A
+same-day range is valid and the maximum range contains 365 calendar days.
+The addressed route accepts either the paired dates or its existing `range`
+parameter. The alternate app applies the dates to `history` and keeps its
+existing `today`, `week`, and `month` summaries.
+
+Example request path:
+
+```text
+/api/earnings?startDate=2025-01-01&endDate=2025-12-31
+```
+
+Missing partners, invalid calendar dates, reversed dates, and ranges over
+365 inclusive days return HTTP 400. The alternate app includes
+`code: "INVALID_HISTORY_DATE_RANGE"` and the usual request ID when available.
+The addressed route returns an `error` string and appends
+`"; omit range when using dates"`.
+
+```json
+{
+  "error": "startDate and endDate must be YYYY-MM-DD UTC dates in order, spanning at most 365 inclusive days"
+}
+```
+
 ## Error handling and safe examples
 
 Treat status codes as part of the response contract:

@@ -20,6 +20,7 @@ import { Pool } from 'pg';
 import { Horizon, Networks, Asset } from '@stellar/stellar-sdk';
 import { requireAuth } from './authRouter';
 import logger from './logger';
+import { HISTORY_DATE_RANGE_ERROR, parseHistoryDateRange } from './historyDateRange';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Config
@@ -105,7 +106,7 @@ function isOperator(req: Request & { stellarAddress?: string }): boolean {
 // Router
 // ─────────────────────────────────────────────────────────────────────────────
 
-const apiRouter = Router();
+export const apiRouter = Router();
 apiRouter.use(apiRateLimiter);
 
 // ─── GET /api/balance/:address ────────────────────────────────────────────────
@@ -201,7 +202,16 @@ apiRouter.get(
       return;
     }
 
+    const dates = parseHistoryDateRange(req.query.startDate, req.query.endDate);
+    if (dates.kind === 'invalid' || (dates.kind === 'explicit' && req.query.range !== undefined)) {
+      res.status(400).json({ error: HISTORY_DATE_RANGE_ERROR + '; omit range when using dates' });
+      return;
+    }
+
     const days = parseDays(req.query.range);
+    const range = dates.kind === 'explicit'
+      ? { startDate: dates.startDate, endDate: dates.endDate }
+      : { range: `${days}d` };
 
     try {
       const pool = getPool();
@@ -213,7 +223,7 @@ apiRouter.get(
       );
 
       if (userRow.rowCount === 0) {
-        res.json({ address, range: `${days}d`, totalEarnings: '0.0000000', series: [] });
+        res.json({ address, ...range, totalEarnings: '0.0000000', series: [] });
         return;
       }
 
@@ -223,9 +233,11 @@ apiRouter.get(
         `SELECT date::text, daily_earnings::text
          FROM earnings_history
          WHERE user_id = $1
-           AND date >= CURRENT_DATE - ($2 || ' days')::INTERVAL
+           AND ${dates.kind === 'explicit'
+             ? 'date BETWEEN $2::date AND $3::date'
+             : "date >= CURRENT_DATE - ($2 || ' days')::INTERVAL"}
          ORDER BY date ASC`,
-        [userId, days],
+        dates.kind === 'explicit' ? [userId, dates.startDate, dates.endDate] : [userId, days],
       );
 
       const series = rows.rows.map((r) => ({
@@ -237,7 +249,7 @@ apiRouter.get(
         .reduce((sum, r) => sum + parseFloat(r.earnings), 0)
         .toFixed(7);
 
-      res.json({ address, range: `${days}d`, totalEarnings: total, series });
+      res.json({ address, ...range, totalEarnings: total, series });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       logger.error({ address, error: msg }, 'Failed to fetch earnings');

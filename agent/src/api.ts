@@ -3,6 +3,7 @@ import type { PoolClient } from 'pg';
 import { pool } from './db';
 import { authenticateToken, generateToken, UserPayload } from './auth';
 import logger from './logger';
+import { HISTORY_DATE_RANGE_ERROR, parseHistoryDateRange } from './historyDateRange';
 import { getRequestId } from './requestContext';
 
 export const apiRouter = Router();
@@ -144,6 +145,11 @@ apiRouter.get('/balance', authenticateToken, async (req: Request, res: Response)
 
 apiRouter.get('/earnings', authenticateToken, async (req: Request, res: Response): Promise<void> => {
   const userId = req.user!.userId;
+  const dates = parseHistoryDateRange(req.query.startDate, req.query.endDate);
+  if (dates.kind === 'invalid') {
+    sendApiError(req, res, 400, 'INVALID_HISTORY_DATE_RANGE', HISTORY_DATE_RANGE_ERROR);
+    return;
+  }
 
   try {
     const historyRes = await pool.query(
@@ -166,11 +172,21 @@ apiRouter.get('/earnings', authenticateToken, async (req: Request, res: Response
       month = rows.reduce((acc, row) => acc + parseFloat(row.daily_earnings), 0);
     }
 
+    const historyRows = dates.kind === 'explicit'
+      ? (await pool.query(
+          `SELECT date, daily_earnings
+           FROM earnings_history
+           WHERE user_id = $1 AND date BETWEEN $2::date AND $3::date
+           ORDER BY date DESC`,
+          [userId, dates.startDate, dates.endDate],
+        )).rows
+      : rows;
+
     res.status(200).json({
       today: Number(today.toFixed(2)),
       week: Number(week.toFixed(2)),
       month: Number(month.toFixed(2)),
-      history: rows.map(r => ({
+      history: historyRows.map(r => ({
         date: r.date,
         dailyEarnings: parseFloat(r.daily_earnings),
       })),
