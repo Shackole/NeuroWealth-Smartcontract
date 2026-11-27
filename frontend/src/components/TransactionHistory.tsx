@@ -94,7 +94,7 @@ function exportToCSV(transactions: TransactionRecord[]): void {
     tx.type,
     tx.amount.toString(),
     transactionAsset(tx),
-    tx.txHash,
+    tx.txHash ?? '',
     tx.timestamp,
     tx.status,
   ]);
