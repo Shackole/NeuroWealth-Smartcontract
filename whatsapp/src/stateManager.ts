@@ -1,3 +1,5 @@
+import { DEFAULT_LOCALE, Locale } from './locale';
+
 export enum UserState {
   UNVERIFIED = 'UNVERIFIED',
   AWAITING_OTP = 'AWAITING_OTP',
@@ -7,6 +9,7 @@ export enum UserState {
 
 export interface ConversationSession {
   state: UserState;
+  locale: Locale;
   lastMessageTime: number;
   messageCount: number;
   rateLimitWindowStart: number;
@@ -18,6 +21,14 @@ const RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute window
 
 const sessions = new Map<string, ConversationSession>();
 
+/** Read the language for a rate-limited reply without extending the session. */
+export function getSessionLocale(phoneHash: string): Locale {
+  const session = sessions.get(phoneHash);
+  return session && Date.now() - session.lastMessageTime <= SESSION_TIMEOUT_MS
+    ? session.locale
+    : DEFAULT_LOCALE;
+}
+
 /**
  * Retrieves session for phone hash, resetting if timed out.
  */
@@ -28,6 +39,7 @@ export function getSession(phoneHash: string): ConversationSession {
   if (!session) {
     session = {
       state: UserState.UNVERIFIED,
+      locale: DEFAULT_LOCALE,
       lastMessageTime: now,
       messageCount: 0,
       rateLimitWindowStart: now
@@ -39,6 +51,7 @@ export function getSession(phoneHash: string): ConversationSession {
   // Session timeout check
   if (now - session.lastMessageTime > SESSION_TIMEOUT_MS) {
     session.state = UserState.UNVERIFIED;
+    session.locale = DEFAULT_LOCALE;
     session.messageCount = 0;
     session.rateLimitWindowStart = now;
   }

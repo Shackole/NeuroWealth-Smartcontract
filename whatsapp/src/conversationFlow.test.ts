@@ -53,6 +53,8 @@ interface MockResponse extends Partial<Response> {
   type(t: string): this;
 }
 
+let messageSequence = 0;
+
 function createMockReq(
   body: Record<string, any> = {},
   headers: Record<string, string> = {},
@@ -60,7 +62,7 @@ function createMockReq(
   host = 'example.com',
 ): Request {
   return {
-    body,
+    body: { MessageSid: `SM-test-${++messageSequence}`, ...body },
     headers,
     protocol,
     get: (header: string) => {
@@ -131,6 +133,51 @@ async function runAllTests() {
       process.env.TWILIO_AUTH_TOKEN = savedToken;
       process.env.WEBHOOK_BASE_URL = savedBaseUrl;
     }
+  });
+
+  await runTest('locale persists across messages and can switch back to English', async () => {
+    const fromPhone = 'whatsapp:+15550001114';
+    const phoneHash = hashPhoneNumber(fromPhone);
+
+    async function send(body: string): Promise<string> {
+      const res = createMockRes();
+      await handleWhatsAppWebhook(
+        createMockReq({ From: fromPhone, Body: body }),
+        res as unknown as Response,
+      );
+      assert.strictEqual(res.statusCode, 200);
+      return String(res.bodyData);
+    }
+
+    assert.match(await send('language es-MX'), /Idioma cambiado a español/);
+    assert.strictEqual(getSession(phoneHash).locale, 'es');
+    assert.match(await send('hi'), /Tu código de verificación es/);
+    assert.strictEqual(getSession(phoneHash).state, UserState.AWAITING_OTP);
+    assert.match(await send('language en'), /Language set to English/);
+    assert.match(await send('invalid code'), /Please enter the 6-digit verification code/);
+    assert.strictEqual(getSession(phoneHash).locale, 'en');
+  });
+
+  await runTest('unsupported locale falls back to English for subsequent replies', async () => {
+    const fromPhone = 'whatsapp:+15550001115';
+    const phoneHash = hashPhoneNumber(fromPhone);
+    updateState(phoneHash, UserState.VERIFIED);
+    createCustodialWallet(phoneHash);
+    const spanish = createMockRes();
+    await handleWhatsAppWebhook(
+      createMockReq({ From: fromPhone, Body: 'idioma es' }),
+      spanish as unknown as Response,
+    );
+    assert.match(await processVerifiedIntent(phoneHash, 'help'), /Comandos/);
+
+    const fallback = createMockRes();
+    await handleWhatsAppWebhook(
+      createMockReq({ From: fromPhone, Body: 'language fr' }),
+      fallback as unknown as Response,
+    );
+    assert.match(String(fallback.bodyData), /Language set to English/);
+    assert.strictEqual(getSession(phoneHash).locale, 'en');
+    assert.match(await processVerifiedIntent(phoneHash, 'help'), /Commands/);
   });
 
   await runTest('verified phone must consent before custodial wallet creation', async () => {
