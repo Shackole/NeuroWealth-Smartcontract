@@ -6,7 +6,7 @@
   "scripts": {
     "build": "tsc",
     "replay:yields": "tsc -p scripts/tsconfig.replay.json && node dist/replay/scripts/replay-yields.js",
-    "test": "tsx src/openAiKeyManager.test.ts && tsx src/rateLimiter.test.ts && tsx src/db.test.ts",
+    "test": "tsx src/openAiKeyManager.test.ts && tsx src/rateLimiter.test.ts && tsx src/db.test.ts && tsx src/__tests__/eventListener.health.test.ts",
     "start:prod": "npx ts-node src/index.ts",
     "start:dev": "ts-node src/index.ts",
     "pretest": "tsx --test src/apy*.test.ts",
