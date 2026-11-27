@@ -684,3 +684,5 @@ jobs:
           path: frontend/accessibility-reports/
           retention-days: 14
 
+
+# Cold/warm cache build benchmark (issue #791)
