@@ -69,6 +69,135 @@ drift on pull requests.
 
 ---
 
+## Client and Contract Revision Compatibility
+
+The table below indicates compatibility across `@neurowealth/vault-client` releases, Soroban smart contract versions (`Version` storage key / release tags), Soroban SDK dependencies, and contract specification revisions.
+
+### Consumer Compatibility Table
+
+| Vault Client (`@neurowealth/vault-client`) | Contract WASM / Version | Spec Version (`contract-spec.json`) | Soroban SDK | Breaking Changes / Highlights | Supported Consumers |
+|---|---|---|---|---|---|
+| `^1.0.1` | v1.1.0 (Version 2) | `1.0.0` (digest match) | `28.0.0` | Multi-protocol allocation (`rebalance_multi`), fixed-window rate limiting (`set_rate_limit`), user TTL maintenance (`touch_user_ttl`), emergency pause, asset breakdown | Current recommended for all frontend, admin, and agent integrations |
+| `1.0.0` | v1.0.0 (Version 1) | `1.0.0` (initial) | `21.0.0` / `28.0.0` | Initial release with ERC-4626 share accounting, single-protocol Blend lending, and timelocked upgrades | Legacy consumers with single-protocol deployment |
+| `< 1.0.0` | v0.x (Phase 1) | N/A (unversioned) | `< 21.0.0` | Legacy 1:1 balance tracking (no shares, deprecated) | Unsupported |
+
+### Finding the Contract Spec Digest
+
+The contract specification file `contract-spec.json` serves as the authoritative interface contract between the Rust Soroban smart contract and off-chain clients. Every generated client build directly derives from a specific snapshot of `contract-spec.json`.
+
+Consumers can identify and verify the SHA-256 digest of the contract specification using any of the following methods:
+
+#### Method 1: Using the Command Line (POSIX / shasum)
+
+```bash
+# SHA-256 digest of the spec file
+sha256sum contract-spec.json
+# or on macOS:
+shasum -a 256 contract-spec.json
+```
+
+#### Method 2: In Node.js / JavaScript
+
+```javascript
+const fs = require('fs');
+const crypto = require('crypto');
+
+const specContent = fs.readFileSync('contract-spec.json', 'utf8');
+const digest = crypto.createHash('sha256').update(specContent).digest('hex');
+console.log('Contract Spec SHA-256 Digest:', digest);
+```
+
+#### Method 3: Via Git Object Hash
+
+To track the exact Git blob hash corresponding to a specific contract revision:
+
+```bash
+git rev-parse HEAD:contract-spec.json
+```
+
+If the spec digest differs between the client package and the target on-chain contract deployment, consumers should verify whether method signatures, event schemas, or parameter layouts have changed before invoking contract calls.
+
+### Consumer Upgrade Examples
+
+Depending on consumer architecture, projects integrate with `@neurowealth/vault-client` using either **pinned dependency versions** or **tracking latest releases**.
+
+#### 1. Pinned Consumers (Production Apps & Enterprise Services)
+
+Pinned consumers require reproducible builds and explicit verification of interface compatibility before upgrading.
+
+##### Upgrade Steps:
+
+1. **Audit compatibility**: Check the compatibility table above to verify that the upgraded `@neurowealth/vault-client` release supports the target network's deployed contract `Version`.
+2. **Update dependency in `package.json`**:
+   Pin to the exact package version or fixed patch:
+   ```json
+   {
+     "dependencies": {
+       "@neurowealth/vault-client": "1.0.1",
+       "@stellar/stellar-sdk": "^17.2.1"
+     }
+   }
+   ```
+3. **Install and refresh lockfile**:
+   ```bash
+   npm install --save-exact @neurowealth/vault-client@1.0.1
+   # or with yarn:
+   yarn add --exact @neurowealth/vault-client@1.0.1
+   ```
+4. **Compile and run type checks**:
+   Ensure no breaking method signatures or removed getters affect application code:
+   ```bash
+   npm run typecheck # or tsc --noEmit
+   ```
+5. **Handle interface migrations**:
+   For example, migrating from deprecated methods to current equivalents:
+   ```typescript
+   // Legacy method:
+   // await client.set_limits(signer, userCap, tvlCap);
+   
+   // Upgraded method (v1.0.1+):
+   await client.set_caps(signer, userCap, tvlCap);
+   ```
+
+#### 2. Latest Consumers (CI/CD Pipelines, Monorepo Packages, & Devnet Testing)
+
+Latest consumers continuously integrate with the newest smart contract interface updates (e.g., local monorepo packages like `frontend/` referencing `file:../packages/vault-client`).
+
+##### Upgrade Steps:
+
+1. **Regenerate client from updated contract spec**:
+   When smart contract entrypoints or events change in `neurowealth-vault/`:
+   ```bash
+   # From the repository root
+   python3 scripts/generate-spec.py
+   python3 scripts/validate-spec.py
+   node scripts/generate-client.js
+   node scripts/bump-client-version.js
+   ```
+2. **Rebuild the client package**:
+   ```bash
+   cd packages/vault-client
+   npm run build
+   npm run typecheck
+   ```
+3. **Consume in workspace / latest npm tag**:
+   If consuming via npm:
+   ```bash
+   npm install @neurowealth/vault-client@latest
+   ```
+   Or inside the repository monorepo:
+   ```json
+   {
+     "dependencies": {
+       "@neurowealth/vault-client": "file:../packages/vault-client"
+     }
+   }
+   ```
+4. **Automate validation in CI**:
+   Run `.github/workflows/contract-spec.yml` on pull requests to ensure that `contract-spec.json`, the generated TypeScript bindings, and consuming services remain in sync without uncommitted drift.
+
+---
+
 ## Quick start
 
 ```typescript
