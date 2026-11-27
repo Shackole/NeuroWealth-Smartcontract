@@ -13,6 +13,42 @@ and `strategyRouter`. Its HTTP routes are:
 | `GET /health/live` | None | Process liveness |
 | `GET /api/agent/strategy-distribution` | None | Latest strategy distribution; 204 before first calculation |
 
+The strategy distribution includes the latest stored APY observation for each
+protocol source. `apyBps` is in basis points and `provenance.observedAt` is the
+original observation time in UTC ISO 8601 format. Snapshot source identifiers
+are the stored protocol names. `apyObservations` is empty when snapshots are
+unavailable. Older snapshots use their original database recording time.
+
+Example HTTP 200 response fixture:
+
+```json
+{
+  "distribution": {
+    "total": 1,
+    "conservative": 0,
+    "balanced": 1,
+    "growth": 0,
+    "conservativePct": 0,
+    "balancedPct": 100,
+    "growthPct": 0,
+    "aggregateBlendBps": 6000,
+    "aggregateDexBps": 4000,
+    "computedAt": "2026-09-26T05:00:00.000Z"
+  },
+  "recommendedAllocation": { "blendBps": 6000, "dexBps": 4000 },
+  "apyObservations": [
+    {
+      "protocol": "blend",
+      "apyBps": 850,
+      "provenance": {
+        "source": "blend",
+        "observedAt": "2026-09-26T04:58:00.000Z"
+      }
+    }
+  ]
+}
+```
+
 The production entrypoint also starts the event listener, an hourly decision
 loop, and the issuer-freeze monitor. It stops those loops and closes the
 database pool on `SIGTERM` or `SIGINT`.

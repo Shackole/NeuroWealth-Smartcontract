@@ -157,12 +157,12 @@ async function fetchBlendApyFromContract(): Promise<number> {
  * Writes an APY snapshot row to the `apy_snapshots` DB table.
  * Failures are logged but do not surface to callers.
  */
-async function persistApySnapshot(apyBps: number): Promise<void> {
+async function persistApySnapshot(apyBps: number, observedAt: string): Promise<void> {
   try {
     await pool.query(
       `INSERT INTO apy_snapshots (protocol, apy_bps, recorded_at)
-       VALUES ('blend', $1, NOW())`,
-      [apyBps],
+       VALUES ('blend', $1, $2)`,
+      [apyBps, observedAt],
     );
     logger.debug({ apyBps }, 'blend-apy: snapshot persisted');
   } catch (err) {
@@ -236,7 +236,7 @@ export async function getBlendApySample(): Promise<ApySample> {
     }
 
     // 4. Persist DB snapshot (fire-and-forget)
-    void persistApySnapshot(apyBps);
+    void persistApySnapshot(apyBps, observedAt);
 
     logger.info({ apyBps, observedAt }, 'blend-apy: fetched and cached');
     return { apyBps, source: SOURCE_ID, observedAt, cached: false };
