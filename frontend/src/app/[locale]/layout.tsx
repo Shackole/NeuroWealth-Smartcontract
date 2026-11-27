@@ -6,7 +6,7 @@ import { VaultPauseBanner } from '@/components/VaultPauseBanner';
 import { NextIntlClientProvider } from 'next-intl';
 import { getMessages } from 'next-intl/server';
 import { notFound } from 'next/navigation';
-import { locales } from '@/i18n/request';
+import { isSupportedLocale } from '@/i18n/routing';
 
 export const metadata: Metadata = {
   title: 'NeuroWealth | AI-Powered DeFi Yield Platform on Stellar',
@@ -21,7 +21,7 @@ export default async function RootLayout({
   params: Promise<{ locale: string }>;
 }) {
   const { locale } = await params;
-  if (!locales.includes(locale as any)) notFound();
+  if (!isSupportedLocale(locale)) notFound();
   
   const messages = await getMessages({ locale });
 
