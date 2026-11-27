@@ -42,64 +42,39 @@ jobs:
 
   ci-matrix:
     name: CI Matrix
+    needs: changes
+    if: needs.changes.outputs.matrix != '{"include":[]}'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - name: "Format Check"
-            step: "fmt"
-            working_directory: "neurowealth-vault"
-          - name: "Clippy Lint"
-            step: "clippy"
-            working_directory: "neurowealth-vault"
-          - name: "Tests"
-            step: "test"
-            working_directory: "neurowealth-vault"
-          - name: "Documentation Check"
-            step: "doc"
-            working_directory: "neurowealth-vault"
-          - name: "Vault Client Typecheck"
-            step: "vault-client-typecheck"
-            working_directory: "packages/vault-client"
-          - name: "Vault UI Accessibility & Notifications"
-            step: "vault-ui-test"
-            working_directory: "packages/vault-ui"
-          - name: "Frontend Lint"
-            step: "frontend-lint"
-            working_directory: "frontend"
-          - name: "Build WASM"
-            step: "build-wasm"
-            working_directory: "neurowealth-vault"
-          - name: "No Bare Panic Check"
-            step: "no-bare-panic"
-            working_directory: "."
-          - name: "Stale-State Audit Check"
-            step: "stale-state-audit"
-            working_directory: "."
+      matrix: ${{ fromJSON(needs.changes.outputs.matrix) }}
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
 
       - name: Read Stellar CLI version
+        if: matrix.step == 'build-wasm'
         id: cli-version
         run: |
           VERSION=$(cat .stellar-version | tr -d '[:space:]')
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Install Rust toolchain with components
+        if: matrix.working_directory == 'neurowealth-vault'
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
           targets: wasm32-unknown-unknown
 
       - name: Cache Rust dependencies
+        if: matrix.working_directory == 'neurowealth-vault'
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: neurowealth-vault
 
       - name: Cache cargo registry and tooling
+        if: matrix.step == 'build-wasm'
         uses: actions/cache@v4
         with:
           path: |
@@ -293,6 +268,8 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   kani-share-math:
+    needs: changes
+    if: needs.changes.outputs.contract == 'true'
     name: Kani Share-Accounting Proofs
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -305,6 +282,8 @@ jobs:
           args: --manifest-path neurowealth-vault/Cargo.toml -p share-math
 
   cargo-deny:
+    needs: changes
+    if: needs.changes.outputs.rust_audit == 'true'
     name: Dependency Audit (cargo-deny)
     runs-on: ubuntu-latest
     # The workflow-level weekly cron (Sunday 03:00 UTC) re-runs this job
@@ -405,6 +384,7 @@ jobs:
       - name: Dual build + hash comparison
         run: bash scripts/check-reproducible-build.sh
 
+  # README links can target files anywhere in the repository.
   readme-check:
     name: README Validation
     runs-on: ubuntu-latest
@@ -416,6 +396,8 @@ jobs:
         run: bash scripts/check-readme.sh .
 
   security-audit:
+    needs: changes
+    if: needs.changes.outputs.security_docs == 'true'
     name: Security Documentation Audit
     runs-on: ubuntu-latest
     steps:
@@ -437,21 +419,129 @@ jobs:
   changes:
     name: Detect changes
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
     outputs:
-      contract: ${{ steps.filter.outputs.contract }}
-      vault_src: ${{ steps.filter.outputs.vault_src }}
+      contract: ${{ steps.select.outputs.contract }}
+      contract_changed: ${{ steps.filter.outputs.contract }}
+      frontend: ${{ steps.select.outputs.frontend }}
+      rust_audit: ${{ steps.select.outputs.rust_audit }}
+      security_docs: ${{ steps.select.outputs.security_docs }}
+      matrix: ${{ steps.select.outputs.matrix }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
-      - name: Check for contract changes
+      - name: Group changed paths
+        if: github.event_name == 'push' || github.event_name == 'pull_request'
         uses: dorny/paths-filter@v4
         id: filter
         with:
+          base: ${{ github.ref_name == 'develop' && 'develop' || github.event.repository.default_branch }}
           filters: |
+            # A CI workflow edit exercises every group. Rust tooling and the
+            # contracts symlink are shared by the Cargo-based checks.
+            ci:
+              - '.github/workflows/ci.yml'
             contract:
               - 'neurowealth-vault/**'
-            vault_src:
+              - 'contracts'
+              - 'rust-toolchain*'
+              - '.cargo/**'
+            wasm:
+              - 'neurowealth-vault/**'
+              - 'contracts'
+              - 'rust-toolchain*'
+              - '.cargo/**'
+              - '.stellar-version'
+              - '.github/wasm-size-history.json'
+              - 'scripts/check-storage-layout.py'
+              - 'scripts/update_wasm_baseline.py'
+              - 'docs/UPGRADE_MIGRATION.md'
+            rust_audit:
+              - 'neurowealth-vault/**'
+              - 'contracts'
+              - 'rust-toolchain*'
+              - '.cargo/**'
+              - 'deny.toml'
+            panic_check:
+              - 'neurowealth-vault/**'
+              - 'contracts'
+              - 'rust-toolchain*'
+              - '.cargo/**'
+              - 'scripts/check-no-bare-panic.sh'
+            stale_check:
+              - 'neurowealth-vault/**'
+              - 'contracts'
+              - 'rust-toolchain*'
+              - '.cargo/**'
+              - 'scripts/check-stale-state-audit.sh'
+            # Both consumers install the vault client from a local file path.
+            client:
+              - 'packages/vault-client/**'
+              - 'contract-spec.json'
+              - 'shared/**'
+              - 'package*.json'
+              - 'tsconfig.json'
+            ui:
+              - 'packages/vault-client/**'
+              - 'contract-spec.json'
+              - 'shared/**'
+              - 'package*.json'
+              - 'tsconfig.json'
+              - 'packages/vault-ui/**'
+            frontend:
+              - 'packages/vault-client/**'
+              - 'contract-spec.json'
+              - 'shared/**'
+              - 'package*.json'
+              - 'tsconfig.json'
+              - 'frontend/**'
+              - 'playwright.config.ts'
+            security_docs:
+              - 'ARCHITECTURE.md'
+              - 'SECURITY.md'
+              - 'contract-spec.json'
+              - 'contracts'
               - 'neurowealth-vault/contracts/vault/src/**'
+              - 'scripts/check-access-control.sh'
+              - 'scripts/check-auth-matrix.py'
+              - 'scripts/check-balance-deprecation.sh'
+              - 'scripts/check-data-key-docs.sh'
+
+      - name: Select workspace checks
+        id: select
+        env:
+          CHANGED_GROUPS: ${{ steps.filter.outputs.changes || '[]' }}
+          RUN_ALL: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || steps.filter.outputs.ci == 'true' }}
+          RUN_E2E: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'run-e2e') }}
+        run: |
+          if [[ "$RUN_ALL" == true ]]; then
+            CHANGED_GROUPS='["contract","wasm","rust_audit","panic_check","stale_check","client","ui","frontend","security_docs"]'
+          elif [[ "$RUN_E2E" == true ]]; then
+            CHANGED_GROUPS=$(jq -c '. + ["wasm"]' <<< "$CHANGED_GROUPS")
+          fi
+
+          for group in contract frontend rust_audit security_docs; do
+            selected=$(jq -c --arg group "$group" 'index($group) != null' <<< "$CHANGED_GROUPS")
+            echo "$group=$selected" >> "$GITHUB_OUTPUT"
+          done
+
+          matrix=$(jq -nc --argjson groups "$CHANGED_GROUPS" '
+            {include: [
+              {"name": "Format Check", "step": "fmt", "working_directory": "neurowealth-vault", "group": "contract"},
+              {"name": "Clippy Lint", "step": "clippy", "working_directory": "neurowealth-vault", "group": "contract"},
+              {"name": "Tests", "step": "test", "working_directory": "neurowealth-vault", "group": "contract"},
+              {"name": "Documentation Check", "step": "doc", "working_directory": "neurowealth-vault", "group": "contract"},
+              {"name": "Vault Client Typecheck", "step": "vault-client-typecheck", "working_directory": "packages/vault-client", "group": "client"},
+              {"name": "Vault UI Accessibility & Notifications", "step": "vault-ui-test", "working_directory": "packages/vault-ui", "group": "ui"},
+              {"name": "Frontend Lint", "step": "frontend-lint", "working_directory": "frontend", "group": "frontend"},
+              {"name": "Build WASM", "step": "build-wasm", "working_directory": "neurowealth-vault", "group": "wasm"},
+              {"name": "No Bare Panic Check", "step": "no-bare-panic", "working_directory": ".", "group": "panic_check"},
+              {"name": "Stale-State Audit Check", "step": "stale-state-audit", "working_directory": ".", "group": "stale_check"}
+            ] | map(select(.group as $group | $groups | index($group)) | del(.group))}
+          ')
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
   fuzz:
     name: Fuzz ${{ matrix.target }}
@@ -460,7 +550,7 @@ jobs:
     needs: [changes]
     if: |
       github.event_name == 'schedule' ||
-      (github.event_name == 'pull_request' && needs.changes.outputs.vault_src == 'true')
+      (github.event_name == 'pull_request' && needs.changes.outputs.contract == 'true')
     strategy:
       fail-fast: false
       matrix:
@@ -506,7 +596,7 @@ jobs:
       github.event_name == 'schedule' ||
       (github.event_name == 'pull_request' && (
         contains(github.event.pull_request.labels.*.name, 'run-e2e') ||
-        needs.changes.outputs.contract == 'true'
+        needs.changes.outputs.contract_changed == 'true'
       ))
 
     # Required secrets:
@@ -636,6 +726,8 @@ jobs:
           fi
 
   arithmetic-guard:
+    needs: changes
+    if: needs.changes.outputs.contract == 'true'
     name: Arithmetic overflow guard
     runs-on: ubuntu-latest
     steps:
@@ -672,6 +764,8 @@ jobs:
       # Summary is written to the GitHub Actions step summary by the script.
 
   a11y-playwright:
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
     name: Accessibility Automated Tests (axe-core via Playwright)
     runs-on: ubuntu-latest
     timeout-minutes: 15
