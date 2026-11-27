@@ -63,6 +63,8 @@ study status.
    to prevent duplicate submissions, and success is strictly bound to verified ledger confirmation.
    Full spec in [TRANSACTION_PROGRESS_VOCABULARY.md](TRANSACTION_PROGRESS_VOCABULARY.md).
 
+9. **Chart gap annotations (#689)** — Visual and accessible distinction between missing-data gaps (dashed bridge line + hatched fill + "Data unavailable" annotation) and zero-activity periods (solid line + "No change" tooltip). Full spec in [CHART_GAP_ANNOTATIONS.md](CHART_GAP_ANNOTATIONS.md).
+
 ---
 
 ## Amount entry and transaction review (Issue #494)
