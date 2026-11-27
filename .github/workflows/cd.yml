@@ -175,6 +175,16 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
 
+      - name: Install the pinned Stellar CLI
+        if: steps.context.outputs.is_production == 'true'
+        run: |
+          version="$(tr -d '[:space:]' < .stellar-version)"
+          mkdir -p "$RUNNER_TEMP/stellar-cli"
+          curl --fail --silent --show-error --location \
+            "https://github.com/stellar/stellar-cli/releases/download/v${version}/stellar-cli-${version}-x86_64-unknown-linux-gnu.tar.gz" \
+            | tar -xz -C "$RUNNER_TEMP/stellar-cli" stellar
+          echo "$RUNNER_TEMP/stellar-cli" >> "$GITHUB_PATH"
+
       - name: Build the contract WASM included in release provenance
         if: steps.context.outputs.is_production == 'true'
         env:
@@ -210,6 +220,29 @@ jobs:
             echo "configuration_file_hashes:"
             sha256sum .github/workflows/cd.yml frontend/package-lock.json agent/Dockerfile infra/docker-compose.monitoring.yml
           } > "$RUNNER_TEMP/release-provenance/manifest.txt"
+
+      - name: Record release toolchain versions
+        if: steps.context.outputs.is_production == 'true'
+        run: |
+          export NODE_VERSION="$(node --version)"
+          export NPM_VERSION="$(npm --version)"
+          export RUSTC_VERSION="$(rustc --version)"
+          export CARGO_VERSION="$(cargo --version)"
+          export STELLAR_VERSION="$(stellar --version)"
+          node <<'JS' > "$RUNNER_TEMP/release-provenance/toolchain-versions.json"
+          const { NODE_VERSION, NPM_VERSION, RUSTC_VERSION, CARGO_VERSION, STELLAR_VERSION } = process.env;
+          const versions = {
+            node: NODE_VERSION.trim(),
+            npm: NPM_VERSION.trim(),
+            rustc: RUSTC_VERSION.trim(),
+            cargo: CARGO_VERSION.trim(),
+            stellar_cli: STELLAR_VERSION.trim(),
+          };
+          if (Object.values(versions).some(version => !version)) {
+            throw new Error("Missing release toolchain version");
+          }
+          console.log(JSON.stringify(versions, null, 2));
+          JS
 
       - name: Retain immutable deployment evidence
         if: steps.context.outputs.is_production == 'true'
