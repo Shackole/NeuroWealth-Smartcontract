@@ -7,17 +7,37 @@ import { DEPOSIT_ASSET, getDepositAsset } from '@/lib/depositAsset';
 import { Header } from '@/components/Header';
 import { Zap, ShieldCheck, ArrowRight } from 'lucide-react';
 
+type Strategy = 'conservative' | 'balanced' | 'growth';
+
+interface DepositReview {
+  amount: string;
+  asset: typeof DEPOSIT_ASSET;
+  strategy: Strategy;
+}
+
 export default function DepositView({ initialAsset }: { initialAsset: typeof DEPOSIT_ASSET | '' }) {
   const [asset, setAsset] = useState(initialAsset);
   const [amount, setAmount] = useState<string>('50');
-  const [strategy, setStrategy] = useState<'conservative' | 'balanced' | 'growth'>('balanced');
-  const [isSuccess, setIsSuccess] = useState<boolean>(false);
+  const [strategy, setStrategy] = useState<Strategy>('balanced');
+  const [review, setReview] = useState<DepositReview | null>(null);
+  const [confirmed, setConfirmed] = useState<DepositReview | null>(null);
 
   const estimatedShares = (parseFloat(amount || '0') * 0.9596).toFixed(4);
 
+  const updateAmount = (value: string) => {
+    setAmount(value);
+    setReview(null);
+  };
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (asset) setIsSuccess(true);
+    if (!asset) return;
+    if (!review) {
+      setReview({ amount, asset, strategy });
+      return;
+    }
+    setConfirmed(review);
+    setReview(null);
   };
 
   return (
@@ -39,18 +59,18 @@ export default function DepositView({ initialAsset }: { initialAsset: typeof DEP
           </p>
         </header>
 
-        {isSuccess ? (
+        {confirmed ? (
           <section aria-live="polite" className="glass-panel p-6 rounded-2xl border border-emerald-500/30 bg-emerald-950/20 text-center space-y-4">
             <div className="h-12 w-12 rounded-full bg-emerald-500/20 text-emerald-400 mx-auto flex items-center justify-center">
               <ShieldCheck size={28} aria-hidden="true" />
             </div>
             <h2 className="text-xl font-bold text-white">Deposit Confirmed!</h2>
             <p className="text-slate-300 text-sm">
-              Successfully deposited {amount} {asset} into the {strategy} yield strategy.
+              Successfully deposited {confirmed.amount} {confirmed.asset} into the {confirmed.strategy} yield strategy.
             </p>
             <button
               type="button"
-              onClick={() => setIsSuccess(false)}
+              onClick={() => setConfirmed(null)}
               className="mt-4 px-6 py-2.5 bg-emerald-500 text-black font-semibold rounded-xl hover:bg-emerald-400 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400"
             >
               Make Another Deposit
@@ -64,7 +84,10 @@ export default function DepositView({ initialAsset }: { initialAsset: typeof DEP
                 name="asset"
                 required
                 value={asset}
-                onChange={(e) => setAsset(getDepositAsset(e.target.value))}
+                onChange={(e) => {
+                  setAsset(getDepositAsset(e.target.value));
+                  setReview(null);
+                }}
                 className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-500"
               >
                 <option value="" disabled>Select an asset</option>
@@ -79,12 +102,12 @@ export default function DepositView({ initialAsset }: { initialAsset: typeof DEP
               <div className="relative">
                 <AssetAmountInput
                   id="deposit-amount"
-                  onPasteAmount={setAmount}
+                  onPasteAmount={updateAmount}
                   min="1"
                   step="any"
                   required
                   value={amount}
-                  onChange={(e) => setAmount(e.target.value)}
+                  onChange={(e) => updateAmount(e.target.value)}
                   className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-white placeholder-slate-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-500 text-lg"
                   aria-describedby="amount-hint"
                 />
@@ -98,11 +121,11 @@ export default function DepositView({ initialAsset }: { initialAsset: typeof DEP
             <fieldset className="space-y-3">
               <legend className="text-sm font-semibold text-slate-200">Select Yield Strategy</legend>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                {[
+                {([
                   { id: 'conservative', label: 'Conservative', apy: '6.2% APY' },
                   { id: 'balanced', label: 'Balanced', apy: '8.4% APY' },
                   { id: 'growth', label: 'Growth', apy: '12.8% APY' },
-                ].map((s) => (
+                ] as const).map((s) => (
                   <label
                     key={s.id}
                     className={`flex flex-col p-4 rounded-xl border cursor-pointer transition-colors ${
@@ -118,7 +141,10 @@ export default function DepositView({ initialAsset }: { initialAsset: typeof DEP
                         name="strategy"
                         value={s.id}
                         checked={strategy === s.id}
-                        onChange={() => setStrategy(s.id as any)}
+                        onChange={() => {
+                          setStrategy(s.id);
+                          setReview(null);
+                        }}
                         className="text-emerald-500 focus:ring-emerald-500 h-4 w-4"
                       />
                     </div>
@@ -139,11 +165,18 @@ export default function DepositView({ initialAsset }: { initialAsset: typeof DEP
               </div>
             </div>
 
+            {review && (
+              <section aria-label="Deposit review" aria-live="polite" className="p-4 rounded-xl border border-emerald-500/30">
+                <h2 className="font-semibold">Review your deposit</h2>
+                <p className="text-sm text-slate-300">{review.amount} {review.asset} · {review.strategy}</p>
+              </section>
+            )}
+
             <button
               type="submit"
               className="w-full py-3.5 px-6 rounded-xl bg-gradient-to-r from-emerald-500 to-indigo-600 text-black font-bold text-base hover:opacity-95 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-400 flex items-center justify-center gap-2"
             >
-              <span>Confirm Deposit</span>
+              <span>{review ? 'Confirm Deposit' : 'Review Deposit'}</span>
               <ArrowRight size={18} aria-hidden="true" />
             </button>
           </form>
