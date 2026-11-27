@@ -125,6 +125,86 @@ EOF
 netlify deploy --prod
 ```
 
+## Administrative Roles & Operational Access Control
+
+To maintain least-privilege security and eliminate single points of failure across production environments, administrative duties are divided into explicit operational roles. Each role maps directly to permitted contract invocations, required signer security profiles, and operational boundaries.
+
+### Role-to-Task Mapping Matrix
+
+| Role Name | Permitted Operational Tasks | Prohibited Tasks | Signing Profile & Key Custody | Dual-Control / Multi-sig Required |
+|---|---|---|---|---|
+| **Contract Owner (Super Admin)** | • Two-step ownership transfer (`transfer_ownership`, `accept_ownership`)<br>• Protocol contract upgrade scheduling and execution (`upgrade`, `set_upgrade_timelock`)<br>• Cap & limits management (`set_tvl_cap`, `set_user_deposit_cap`, `set_deposit_limits`)<br>• Protocol policy tuning (`set_insurance_fee`, `set_pool_config`, `set_approval_ttl`)<br>• Full unpause & resume (`unpause`)<br>• Agent appointment & timelock updates (`set_agent`) | • Direct arbitrary fund extraction to untracked accounts<br>• Single-signature instant upgrades without timelock | Air-gapped cold storage or hardware signer (Ledger). Never stored in environment variables or cloud keys. | **Yes** (2-of-3 or 3-of-5 Stellar multi-sig threshold required on mainnet) |
+| **Emergency Guardian** | • Rapid circuit breaking (`emergency_pause`, `pause`)<br>• Monitoring anomalous invariant breaks or oracle price deviations | • Unpausing the vault (`unpause`)<br>• Modifying financial caps or fee parameters<br>• Upgrading contracts or appointing agents | Hardware wallet or secure hot key behind automated sentinel monitoring with hardware-backed KMS. | **No** (single emergency trigger allowed for sub-second incident response) |
+| **Rebalance Agent / Bot Operator** | • Routine automated asset rebalancing (`rebalance`) across Blend and DEX liquidity pools<br>• Updating total assets and accounting state (`update_total_assets`)<br>• Yield harvesting (`harvest`) | • Modifying vault pause states<br>• Altering caps, fees, or cooldown timers<br>• Appointing new agents or transferring ownership | Dedicated Soroban service account key, strictly restricted to rebalance contract entrypoints. | **No** (automated cron / pipeline, but rate-limited by contract cooldowns) |
+| **Risk & Parameters Officer** | • Evaluating vault liquidity and setting cap recommendations<br>• Testing pool configurations on testnet staging<br>• Staging upgrade proposals in admin panel<br>• Inspecting queue health and withdrawal settlement | • Executing mainnet parameter changes independently<br>• Initiating unauthorized contract upgrades | Standard Freighter browser wallet authenticated to testnet; read-only on mainnet. | **N/A** (proposals submitted to Owner multi-sig for execution) |
+| **Read-Only Observer / Auditor** | • Querying contract state (`get_exchange_rate`, `get_total_assets`, `get_tvl_cap`, `is_paused`)<br>• Inspecting Soroban event logs and indexer feeds<br>• Reconciling ledger reserves against on-chain protocol balances | • All state-mutating contract invocations | Public read-only connection; no signing private key required. | **No** |
+
+---
+
+## Operator Access Granting & Onboarding Process
+
+Follow this repeatable, documented procedure whenever onboarding an operator colleague to ensure authorization integrity:
+
+```
+[1. Access Request & Verification]
+               │
+               ▼
+[2. Key Generation & Custody Setup]
+               │
+               ▼
+[3. Testnet Dry Run & Role Simulation]
+               │
+               ▼
+[4. Multi-Sig Proposal / Key Delegation]
+               │
+               ▼
+[5. Onboarding Verification Checklist Sign-Off]
+```
+
+### Step 1: Access Request & Role Scoping
+1. The sponsoring lead operator submits an access request detailing:
+   - Candidate full name, role, and corporate email
+   - Target environment (`testnet`, `devnet`, or `mainnet`)
+   - Specific role requested (e.g., `Emergency Guardian`, `Rebalance Agent Operator`)
+   - Business justification and operational tasks to be performed
+2. Two existing Owner keyholders review and approve the justification in the operational log.
+
+### Step 2: Key Generation & Custody Verification
+1. The colleague generates a dedicated Stellar keypair using an approved hardware device (Ledger Nano S/X) running the Stellar app.
+2. The colleague verifies their public address (`G...`) on the hardware screen and provides only the public key to the admin team.
+3. Under no circumstances may private keys, secret seeds (`S...`), or recovery mnemonic phrases be transmitted via email, chat, or saved to shared drives.
+
+### Step 3: Testnet Dry Run & Verification
+1. The colleague is granted the corresponding role on the testnet contract.
+2. In the admin panel (`npm run dev` pointing to testnet):
+   - Colleague connects Freighter with their testnet account.
+   - Colleague performs a simulated permitted action (e.g., triggering a test pause or submitting a test cap update).
+   - Colleague attempts a prohibited action and confirms that the contract properly rejects the unauthorized invocation (`Error(Contract, #100)` / `NotAuthorized`).
+
+### Step 4: Multi-Sig Quorum Grant (Mainnet)
+1. For Owner/Guardian roles: An existing owner initiates a multi-sig transaction on Stellar to add the colleague's public key with the appropriate signing weight.
+2. At least two current multi-sig signers review the public key and payload hash on their hardware screens before confirming.
+3. The transaction is submitted to the Soroban network and confirmed on the ledger.
+
+---
+
+## Operator Onboarding Verification Checklist
+
+Before an operator is declared active and permitted to conduct production operations, all items on this checklist must be verified and logged:
+
+- [ ] **Role Definition & Approval**: Exact role assigned matches the Role-to-Task Mapping Matrix, with written dual-operator sign-off.
+- [ ] **Hardware Custody Verified**: Operator possesses an approved hardware wallet with PIN protection; seed phrase backed up in fireproof, air-gapped storage.
+- [ ] **Freighter Extension Configured**: Official Freighter extension installed from verified source; network RPC endpoints match production configuration.
+- [ ] **Public Key Authenticated**: Operator public key verified out-of-band (e.g., via video confirmation or in-person fingerprint check) to prevent MITM substitution.
+- [ ] **Testnet Rehearsal Completed**: Operator successfully executed permitted task on testnet and demonstrated familiarity with emergency procedures.
+- [ ] **Negative Permission Tested**: Operator confirmed unauthorized tasks fail with appropriate contract error codes.
+- [ ] **Incident Communication Enrolled**: Operator added to high-priority alert channels (PagerDuty, emergency Slack channel) with 2FA enabled.
+- [ ] **Timelock Awareness**: Operator trained on the upgrade timelock delay period and emergency cancellation procedures.
+- [ ] **Revocation Runbook Provided**: Colleague provided with standard revocation instructions in the event of lost hardware or suspect compromise.
+- [ ] **Audit Trail Logged**: Operator public key, assigned role, grantor public keys, and ledger transaction hash recorded in the administrative access registry.
+
+---
+
 ## Security Checklist
 
 Before going to production:
