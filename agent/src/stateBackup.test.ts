@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   AGENT_STATE_VERSION,
+  STATE_BACKUP_ARTIFACT_VERSION,
   AgentState,
   FileStateStore,
   MultiStateStore,
@@ -120,14 +121,38 @@ describe('Agent state backup & restoration (#655)', () => {
     const store = new FileStateStore(tmpFile);
     const manager = new StateBackupManager(store, 'agent:state', () => 1_234);
     const backed = await manager.backup(validState());
+    assert.strictEqual(backed.artifactVersion, STATE_BACKUP_ARTIFACT_VERSION);
     assert.strictEqual(backed.version, AGENT_STATE_VERSION);
     assert.strictEqual(backed.savedAt, 1_234);
     assert.strictEqual(manager.getLastState()?.lastLedger, 42);
 
-    const restored = await manager.restore();
+    const restored = await new StateBackupManager(store).restore();
     assert.ok(restored);
+    assert.strictEqual(restored.artifactVersion, STATE_BACKUP_ARTIFACT_VERSION);
     assert.strictEqual(restored.lastLedger, 42);
     assert.strictEqual(restored.metrics.tvl, 1_000_000);
+  });
+
+  it('restores legacy artifacts containing a supported state schema', async () => {
+    const store = new FileStateStore(tmpFile);
+    const legacy = { ...validState(), version: AGENT_STATE_VERSION, savedAt: 1 };
+    await store.save('agent:state', legacy);
+
+    assert.deepStrictEqual(await new StateBackupManager(store).restore(), legacy);
+  });
+
+  it('rejects unknown artifact versions even when the state schema is supported', async () => {
+    const store = new FileStateStore(tmpFile);
+    await store.save('agent:state', {
+      ...validState(),
+      artifactVersion: STATE_BACKUP_ARTIFACT_VERSION + 1,
+      version: AGENT_STATE_VERSION,
+      savedAt: 1,
+    });
+    const manager = new StateBackupManager(store);
+
+    assert.strictEqual(await manager.restore(), null);
+    assert.strictEqual(manager.getLastState(), null);
   });
 
   it('StateBackupManager.restore rejects incompatible backups instead of corrupting state', async () => {
