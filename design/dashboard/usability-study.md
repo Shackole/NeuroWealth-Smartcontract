@@ -36,9 +36,12 @@ the prompt and any assistance provided.
    would notice that the wrong network is active.
 3. **Review an amount:** Enter a small test amount and describe the asset,
    precision, fee estimate, and resulting balance shown before submission.
-4. **Confirm a deposit:** Review and submit the test deposit. Explain what the
+4. **Validate unit conversion (Tokens vs Shares):** Open the contextual help next
+   to "Estimated shares". Perform the sample conversion (e.g. 100 USDC to ~95.96 shares
+   at 1.042 rate). Explain whether funds were lost and how future value is calculated.
+5. **Confirm a deposit:** Review and submit the test deposit. Explain what the
    confirmation state means and how you would know whether it completed.
-5. **Understand withdrawal:** Open the withdrawal flow without submitting a
+6. **Understand withdrawal:** Open the withdrawal flow without submitting a
    real transaction. Explain the available amount, fee/receipt information,
    and what happens if the vault cannot provide immediate liquidity.
 
@@ -65,6 +68,7 @@ real session is run; never report planned outcomes as findings.
 | Connect | | | | |
 | Network | | | | |
 | Review an amount | | | | |
+| Validate unit conversion | | | | |
 | Confirm a deposit | | | | |
 | Understand withdrawal | | | | |
 
