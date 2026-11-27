@@ -2,6 +2,7 @@
 
 import React from 'react';
 import { Zap, TrendingUp, ShieldCheck, Flame } from 'lucide-react';
+import { SUMMARY_CARD_SIZE } from './dashboardCardLayout';
 
 interface StrategyBadgeProps {
   strategy: 'Conservative' | 'Balanced' | 'Growth';
@@ -43,9 +44,9 @@ export const StrategyBadge: React.FC<StrategyBadgeProps> = ({ strategy, apy, onS
   const IconComponent = meta.icon;
 
   return (
-    <div className="glass-panel-interactive rounded-2xl p-6 relative overflow-hidden flex flex-col justify-between">
+    <div className={`glass-panel-interactive rounded-2xl p-6 relative overflow-hidden flex flex-col justify-between ${SUMMARY_CARD_SIZE}`}>
       <div>
-        <div className="flex items-center justify-between mb-4">
+        <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
           <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
             Current Strategy
           </span>
@@ -56,7 +57,7 @@ export const StrategyBadge: React.FC<StrategyBadgeProps> = ({ strategy, apy, onS
         </div>
 
         <div className="mb-4">
-          <div className="flex items-baseline gap-2">
+          <div className="flex flex-wrap items-baseline gap-2">
             <span className="text-4xl font-extrabold tracking-tight text-white font-mono">
               {apy.toFixed(1)}%
             </span>
@@ -78,7 +79,7 @@ export const StrategyBadge: React.FC<StrategyBadgeProps> = ({ strategy, apy, onS
         <div
           role="group"
           aria-labelledby="strategy-selector-label"
-          className="flex gap-1.5"
+          className="flex flex-wrap gap-1.5"
         >
           {(['Conservative', 'Balanced', 'Growth'] as const).map((st) => (
             <button

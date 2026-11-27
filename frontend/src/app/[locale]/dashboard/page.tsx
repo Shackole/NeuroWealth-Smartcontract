@@ -58,7 +58,7 @@ export default function DashboardViewPage() {
         onDisconnect={() => setPublicKey(null)}
       />
 
-      <main id="main-content" className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8 flex-1">
+      <main id="main-content" className="w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8 flex-1">
         <header className="space-y-2">
           <h1 className="text-3xl font-extrabold tracking-tight text-white">Dashboard</h1>
           <p className="text-slate-400">View your active yield strategies, portfolio balance, and performance metrics.</p>
@@ -81,7 +81,7 @@ export default function DashboardViewPage() {
                 setIsModalOpen(true);
               }}
             />
-            <EarningsCard earnings={earnings} apy={vaultState.apy} />
+            <EarningsCard earnings={earnings} isConnected={Boolean(publicKey)} />
           </div>
         </section>
 
