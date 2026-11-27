@@ -992,6 +992,7 @@ export class VaultClient {
   private readonly contractId: string;
   private readonly server: StellarSdk.SorobanRpc.Server;
   private readonly networkPassphrase: string;
+  private readonly pendingViews = new Map<string, Promise<unknown>>();
 
   constructor(options: {
     /** Deployed contract address (C...). */
@@ -1042,7 +1043,23 @@ export class VaultClient {
    * Simulate a read-only call and return the decoded result.
    * @internal
    */
-  private async simulate<T>(
+  private simulate<T>(
+    method: string,
+    args: StellarSdk.xdr.ScVal[],
+    sourcePublicKey: string,
+  ): Promise<T> {
+    const key = JSON.stringify([method, sourcePublicKey, args.map((arg) => arg.toXDR('base64'))]);
+    const pending = this.pendingViews.get(key);
+    if (pending) return pending as Promise<T>;
+
+    const request = this.simulateView<T>(method, args, sourcePublicKey).finally(() => {
+      this.pendingViews.delete(key);
+    });
+    this.pendingViews.set(key, request);
+    return request;
+  }
+
+  private async simulateView<T>(
     method: string,
     args: StellarSdk.xdr.ScVal[],
     sourcePublicKey: string,
