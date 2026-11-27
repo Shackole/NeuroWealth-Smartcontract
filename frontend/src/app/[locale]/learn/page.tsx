@@ -1,6 +1,7 @@
 import React from 'react';
 import { BookOpen, Zap, ArrowLeft } from 'lucide-react';
 import Link from 'next/link';
+import { SampleChart } from './SampleChart';
 import { notFound } from 'next/navigation';
 import { getLearnArticles, getLearnLabels } from './articles';
 
@@ -69,6 +70,8 @@ export default async function LearnPage({ params }: { params: Promise<{ locale: 
             harvest) — it cannot withdraw funds to arbitrary addresses.
           </p>
         </section>
+
+        <SampleChart />
 
         {/* Glossary */}
         <section aria-labelledby="glossary-heading">
