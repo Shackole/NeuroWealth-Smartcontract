@@ -385,7 +385,10 @@ export const TransactionProgress: React.FC<TransactionProgressProps> = ({
                       </button>
                     )}
 
-                    {step.recoveryAction && (
+                    {step.recoveryAction &&
+                      (!('variant' in step.recoveryAction) ||
+                        step.recoveryAction.variant !== 'external' ||
+                        step.recoveryAction.href) && (
                       <>
                         {step.recoveryAction.href ? (
                           <a
