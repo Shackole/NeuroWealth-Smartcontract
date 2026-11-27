@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef, useLayoutEffect, useId } from 'react';
 import { ArrowDownLeft, ArrowUpRight, RefreshCw, ExternalLink, Download, Filter, ChevronDown } from 'lucide-react';
 import { TransactionRecord } from '@/lib/database';
 import { groupTransactionsByDay } from '@/lib/transactionDays';
@@ -8,6 +8,8 @@ import { groupTransactionsByDay } from '@/lib/transactionDays';
 interface TransactionHistoryProps {
   transactions: TransactionRecord[];
 }
+
+const ROWS_PER_PAGE = 20;
 
 type SortField = 'timestamp' | 'amount';
 type SortDirection = 'asc' | 'desc';
@@ -94,6 +96,11 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({ transact
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
   const [earningsPeriod, setEarningsPeriod] = useState<EarningsPeriod>('all');
 
+  const [visibleLimit, setVisibleLimit] = useState(ROWS_PER_PAGE);
+  const tableId = useId();
+  const firstNewRowId = useRef<string | null>(null);
+  const firstNewRow = useRef<HTMLTableRowElement>(null);
+
   const filteredTransactions = useMemo(() => {
     const filtered = filterTransactions(transactions, typeFilter);
     return filtered;
@@ -122,6 +129,22 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({ transact
   const earnings = useMemo(() => {
     return calculateEarnings(transactions, earningsPeriod);
   }, [transactions, earningsPeriod]);
+
+  const orderedRows = days.flatMap((day) => day.transactions);
+  const visibleCount = Math.min(visibleLimit, orderedRows.length);
+  const visibleIds = new Set(orderedRows.slice(0, visibleCount).map((tx) => tx.id));
+
+  useLayoutEffect(() => {
+    firstNewRow.current?.focus({ preventScroll: true });
+    firstNewRowId.current = null;
+  }, [visibleLimit]);
+
+  function loadMore() {
+    const nextRow = orderedRows[visibleCount];
+    if (!nextRow) return;
+    firstNewRowId.current = nextRow.id;
+    setVisibleLimit(visibleCount + ROWS_PER_PAGE);
+  }
 
   if (transactions.length === 0) {
     return (
@@ -152,7 +175,10 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({ transact
           <Filter size={14} className="text-slate-400" />
           <select
             value={typeFilter}
-            onChange={(e) => setTypeFilter(e.target.value as FilterType)}
+            onChange={(e) => {
+              setTypeFilter(e.target.value as FilterType);
+              setVisibleLimit(ROWS_PER_PAGE);
+            }}
             className="bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-xs text-slate-200 focus:outline-none focus:border-emerald-500 focus-visible:ring-2 focus-visible:ring-emerald-500"
           >
             <option value="all">All Types</option>
@@ -170,6 +196,7 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({ transact
               const [field, dir] = e.target.value.split('-');
               setSortField(field as SortField);
               setSortDirection(dir as SortDirection);
+              setVisibleLimit(ROWS_PER_PAGE);
             }}
             className="bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-xs text-slate-200 focus:outline-none focus:border-emerald-500 focus-visible:ring-2 focus-visible:ring-emerald-500"
           >
@@ -200,7 +227,7 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({ transact
       </div>
 
       <div className="overflow-x-auto">
-        <table className="w-full text-left border-collapse text-sm">
+        <table id={tableId} className="w-full text-left border-collapse text-sm">
           <thead>
             <tr className="border-b border-slate-800 text-xs font-semibold text-slate-400 uppercase tracking-wider">
               <th className="py-3 px-4">Type</th>
@@ -210,15 +237,20 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({ transact
               <th className="py-3 px-4 text-right">Status</th>
             </tr>
           </thead>
-          {days.map((day) => (
+          {days.filter((day) => day.transactions.some((tx) => visibleIds.has(tx.id))).map((day) => (
             <tbody key={day.key} className="divide-y divide-slate-800/60 font-mono text-xs">
               <tr>
                 <th scope="rowgroup" colSpan={5} className="bg-slate-800/30 px-4 py-2 font-sans text-slate-200">
                   {day.instant ? dateFormatter.format(day.instant) : 'Unknown date'}
                 </th>
               </tr>
-              {day.transactions.map((tx) => (
-                <tr key={tx.id} className="hover:bg-slate-900/40 transition-colors">
+              {day.transactions.filter((tx) => visibleIds.has(tx.id)).map((tx) => (
+                <tr
+                  key={tx.id}
+                  ref={tx.id === firstNewRowId.current ? firstNewRow : undefined}
+                  tabIndex={-1}
+                  className="hover:bg-slate-900/40 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-emerald-500"
+                >
                   <td className="py-3 px-4">
                     <div className="flex items-center gap-2">
                       {tx.type === 'deposit' && (
@@ -274,6 +306,20 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({ transact
           ))}
         </table>
       </div>
+
+      <p role="status" aria-atomic="true" className="mt-3 text-xs text-slate-400">
+        Showing {visibleCount} of {filteredTransactions.length} activity rows.
+      </p>
+      {visibleCount < filteredTransactions.length && (
+        <button
+          type="button"
+          aria-controls={tableId}
+          onClick={loadMore}
+          className="mt-2 min-h-[44px] rounded-lg bg-emerald-500/10 px-4 text-sm font-medium text-emerald-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+        >
+          Load more activity
+        </button>
+      )}
 
       {filteredTransactions.length === 0 && (
         <div className="text-center py-8 text-slate-400 text-sm">
