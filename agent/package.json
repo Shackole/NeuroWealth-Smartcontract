@@ -4,12 +4,14 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "pretest": "tsx --test src/apy*.test.ts",
     "build": "tsc",
-    "test": "tsx src/openAiKeyManager.test.ts && tsx src/rateLimiter.test.ts && tsx src/db.test.ts",
+    "replay:yields": "tsc -p scripts/tsconfig.replay.json && node dist/replay/scripts/replay-yields.js",
+    "test": "tsx src/openAiKeyManager.test.ts && tsx src/rateLimiter.test.ts && tsx src/db.test.ts && tsx src/__tests__/eventListener.health.test.ts",
     "start:prod": "npx ts-node src/index.ts",
     "start:dev": "ts-node src/index.ts",
-    "posttest": "ts-node --transpile-only src/__tests__/transactionQueue.correlation.test.ts"
+    "pretest": "tsx --test src/apy*.test.ts",
+    "posttest": "ts-node --transpile-only src/__tests__/transactionQueue.correlation.test.ts",
+    "test:queue-metrics": "ts-node --transpile-only src/operationalMetrics.test.ts"
   },
   "keywords": [],
   "author": "",
@@ -24,14 +26,17 @@
     "@opentelemetry/sdk-trace-node": "^2.11.0",
     "@opentelemetry/semantic-conventions": "^1.18.1",
     "@stellar/stellar-sdk": "^17.2.1",
+    "bull": "^4.16.5",
     "dotenv": "^18.0.3",
     "express": "^5.2.1",
     "express-rate-limit": "^8.7.0",
     "openai": "^7.0.0",
     "pg": "^8.22.0",
-    "pino": "^10.3.1"
+    "pino": "^10.3.1",
+    "prom-client": "^15.1.3"
   },
   "devDependencies": {
+    "@types/bull": "^4.10.4",
     "@types/express": "^5.0.6",
     "@types/mocha": "^10.0.10",
     "@types/node": "^26.1.2",

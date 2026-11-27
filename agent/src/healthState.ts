@@ -37,3 +37,17 @@ export function cacheRpcHealthProbe<T>(probe: () => Promise<T>, ttlMs = 5_000): 
     return inFlight;
   };
 }
+
+type ListenerHealthStatus = 'unknown' | 'ok' | 'error';
+const listenerHealth: Record<'transport' | 'processing', ListenerHealthStatus> = {
+  transport: 'unknown',
+  processing: 'unknown',
+};
+
+export function getListenerHealth() {
+  return { ...listenerHealth };
+}
+
+export function setListenerHealth(signal: keyof typeof listenerHealth, status: ListenerHealthStatus): void {
+  listenerHealth[signal] = status;
+}

@@ -21,8 +21,13 @@
 import { recordYieldSkip, type YieldSkipReason } from './operationalMetrics';
 import { Pool } from 'pg';
 import { ApyRetryBudget } from './apyRetryBudget';
+import { measureRpcRoundTrip } from './rpcMetrics';
 import logger from './logger';
+import { normalizeProviderTimestamp } from './providerTimestamp';
 import { YieldComparisonEngine, ProtocolYieldData, type StrategyDecisionInputs } from './yieldComparison';
+import { rpcCall } from './rpcClient';
+import { recordSubmissionProviderSwitch } from './submissionMetrics';
+import { createSubmissionStatusLookup } from './transactionSubmission';
 
 // A 1,000% APY is the upper sanity bound for automated allocation inputs.
 const MAX_APY_DECIMAL = 10;
@@ -92,7 +97,9 @@ export interface YieldCheckResult {
 // ── Injectable hooks (for testability) ────────────────────────────────────────
 
 /** Fetches live yield data from a protocol. */
-export type ApyFetcher = (protocolId: string) => Promise<ProtocolYieldData>;
+export type ApyFetcher = (protocolId: string) => Promise<
+  Omit<ProtocolYieldData, 'fetchedAt'> & { fetchedAt?: number | string | null }
+>;
 
 /** Returns the currently-active protocol ID and the deployed USDC amount (stroops). */
 export type CurrentProtocolFetcher = () => Promise<{
@@ -214,15 +221,28 @@ async function storeResult(
  */
 export class YieldCheckJob {
   private readonly engine: YieldComparisonEngine;
+  private readonly hooks: Omit<YieldCheckHooks, 'apyFetchers'> & {
+    apyFetchers: Record<string, (id: string) => Promise<ProtocolYieldData>>;
+  };
   private timer: ReturnType<typeof setInterval> | null = null;
   private jobCounter = 0;
   private running = false;
 
   constructor(
     private readonly config: YieldCheckConfig,
-    private readonly hooks: YieldCheckHooks,
+    hooks: YieldCheckHooks,
     private readonly pool: Pool,
   ) {
+    this.hooks = {
+      ...hooks,
+      apyFetchers: Object.fromEntries(Object.entries(hooks.apyFetchers).map(([id, fetcher]) => [
+        id,
+        async (protocolId: string) => {
+          const observation = await fetcher(protocolId);
+          return { ...observation, fetchedAt: normalizeProviderTimestamp(observation?.fetchedAt) };
+        },
+      ])),
+    };
     this.engine = new YieldComparisonEngine(
       config.minImprovementThreshold,
       /* riskFreeRate */ 0.04,
@@ -625,7 +645,7 @@ export class YieldCheckJob {
       !Number.isFinite(data.volatility) || data.volatility < 0 || (data.volatility > 0 && data.volatility < 1e-12) ||
       !Number.isFinite(data.riskScore) || data.riskScore < 1 || data.riskScore > 100
     ) return false;
-    if (data.fetchedAt === undefined) return true;
+    if (data.fetchedAt === undefined) return false;
     const age = this.now() - data.fetchedAt;
     return Number.isFinite(data.fetchedAt) && age >= -60_000 && age <= (this.config.maxApyAgeMs ?? 15 * 60_000);
   }
@@ -665,6 +685,13 @@ export function createProductionYieldCheckJob(pool: Pool): YieldCheckJob {
   // configured with real network credentials.
   const config = { ...DEFAULT_YIELD_CHECK_CONFIG };
   let pendingRebalanceHash: string | null = null;
+  const lookupSubmissionStatus = createSubmissionStatusLookup(
+    (hash, onFallback) => rpcCall((server) => server.getTransaction(hash), {
+      retryOnFallback: true,
+      onFallback,
+    }),
+    recordSubmissionProviderSwitch,
+  );
 
   const hooks: YieldCheckHooks = {
     /**
@@ -749,7 +776,7 @@ export function createProductionYieldCheckJob(pool: Pool): YieldCheckJob {
       // A previous send may have timed out after the network accepted it.
       // Resolve that hash before building or submitting another rebalance.
       if (pendingRebalanceHash) {
-        const prior = await server.getTransaction(pendingRebalanceHash);
+        const prior = await lookupSubmissionStatus(pendingRebalanceHash);
         if (prior.status === 'SUCCESS') {
           const priorHash = pendingRebalanceHash;
           pendingRebalanceHash = null;
@@ -787,7 +814,11 @@ export function createProductionYieldCheckJob(pool: Pool): YieldCheckJob {
       prepared.sign(keypair);
       pendingRebalanceHash = prepared.hash().toString('hex');
 
-      const response = await server.sendTransaction(prepared);
+      const response = await measureRpcRoundTrip(
+        'submission',
+        () => server.sendTransaction(prepared),
+        (result) => result.status === 'PENDING' || result.status === 'DUPLICATE',
+      );
 
       if (response.status === 'ERROR') {
         pendingRebalanceHash = null;
@@ -801,7 +832,7 @@ export function createProductionYieldCheckJob(pool: Pool): YieldCheckJob {
       for (let i = 0; i < 30; i++) {
         await new Promise((r) => setTimeout(r, 1000));
         try {
-          const tx = await server.getTransaction(txHash);
+          const tx = await lookupSubmissionStatus(txHash);
           if (tx.status === 'SUCCESS') { confirmed = true; pendingRebalanceHash = null; break; }
           if (tx.status === 'FAILED') {
             pendingRebalanceHash = null;
@@ -818,10 +849,8 @@ export function createProductionYieldCheckJob(pool: Pool): YieldCheckJob {
     },
     reconcileRebalance: async () => {
       if (!pendingRebalanceHash) return null;
-      const StellarSdk = await import('@stellar/stellar-sdk');
-      const server = new StellarSdk.SorobanRpc.Server(config.rpcUrl);
       const pendingHash = pendingRebalanceHash;
-      const transaction = await server.getTransaction(pendingHash);
+      const transaction = await lookupSubmissionStatus(pendingHash);
       if (transaction.status === 'SUCCESS') {
         pendingRebalanceHash = null;
         return { txHash: pendingHash };

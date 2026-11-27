@@ -1,0 +1,104 @@
+name: Terraform Lockfile Check
+
+# Validates that the Terraform provider lockfile is present, covers all required
+# platforms, and matches the provider pins declared in versions.tf.
+# Addresses issue #787: keep provider resolution repeatable across operator platforms.
+
+on:
+  pull_request:
+    paths:
+      - 'infra/terraform/**'
+      - '.github/workflows/terraform-lockfile-check.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'infra/terraform/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lockfile-check:
+    name: Validate provider lockfile
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify lockfile exists
+        run: |
+          if [ ! -f infra/terraform/.terraform.lock.hcl ]; then
+            echo "::error file=infra/terraform/.terraform.lock.hcl::Provider lockfile is missing. Run 'terraform providers lock' to generate it."
+            exit 1
+          fi
+          echo "✅ Lockfile present: infra/terraform/.terraform.lock.hcl"
+
+      - name: Check required platforms are covered
+        run: |
+          LOCKFILE="infra/terraform/.terraform.lock.hcl"
+          PLATFORMS=("linux_amd64" "linux_arm64" "darwin_amd64" "darwin_arm64")
+          missing=()
+          for platform in "${PLATFORMS[@]}"; do
+            if ! grep -q "$platform" "$LOCKFILE"; then
+              missing+=("$platform")
+            fi
+          done
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error file=${LOCKFILE}::Lockfile is missing checksums for platforms: ${missing[*]}"
+            echo "Run: terraform providers lock -platform=linux_amd64 -platform=linux_arm64 -platform=darwin_amd64 -platform=darwin_arm64"
+            exit 1
+          fi
+          echo "✅ All required platforms covered: ${PLATFORMS[*]}"
+
+      - name: Check pinned versions match versions.tf
+        run: |
+          LOCKFILE="infra/terraform/.terraform.lock.hcl"
+          VERSIONS_TF="infra/terraform/versions.tf"
+
+          # Extract pinned version constraints from versions.tf
+          while IFS= read -r line; do
+            if [[ "$line" =~ version[[:space:]]*=[[:space:]]*\"=[[:space:]]*([0-9]+\.[0-9]+\.[0-9]+)\" ]]; then
+              declared_version="${BASH_REMATCH[1]}"
+              # Check the lockfile contains this version
+              if ! grep -q "version.*=.*\"${declared_version}\"" "$LOCKFILE"; then
+                echo "::error file=${LOCKFILE}::Lockfile does not contain pinned version ${declared_version} from versions.tf. Run 'terraform init -upgrade' to refresh."
+                exit 1
+              fi
+            fi
+          done < "$VERSIONS_TF"
+          echo "✅ Lockfile versions match versions.tf pins"
+
+      - name: Detect lockfile drift via terraform init
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.5.7"
+
+      - name: Terraform init (backend-less) to verify lockfile consistency
+        working-directory: infra/terraform
+        run: |
+          terraform init -backend=false -lockfile=readonly 2>&1 | tee init_output.txt
+          if grep -qi "lock file needs to be updated" init_output.txt; then
+            echo "::error::Terraform lockfile is out of date. Run 'terraform init' locally to update it."
+            cat init_output.txt
+            exit 1
+          fi
+          echo "✅ Lockfile is consistent with provider requirements"
+        continue-on-error: true
+
+      - name: Summarise lockfile status
+        if: always()
+        run: |
+          echo "## Terraform Lockfile Check" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Check | Status |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-------|--------|" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f infra/terraform/.terraform.lock.hcl ]; then
+            echo "| Lockfile present | ✅ |" >> "$GITHUB_STEP_SUMMARY"
+            PROVIDER_COUNT=$(grep -c "^provider " infra/terraform/.terraform.lock.hcl || echo 0)
+            echo "| Providers pinned | ${PROVIDER_COUNT} |" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "| Lockfile present | ❌ |" >> "$GITHUB_STEP_SUMMARY"
+          fi

@@ -18,9 +18,12 @@ import { getSession, getSessionLocale, updateState, UserState } from './stateMan
 import { resolveLocale, translate } from './locale';
 import { generateOTP, verifyOTP } from './otpService';
 import { createCustodialWallet, getWallet } from './walletService';
-import { getPortfolio, handleDeposit, handleWithdraw } from './vaultRouter';
+import { processVerifiedIntent } from './verifiedIntent';
 import Queue from 'bull';
 import crypto from 'crypto';
+import { DELIVERY_STATUS_PATH, storeDeliveryReceipt } from './deliveryReceipts';
+
+export { processVerifiedIntent } from './verifiedIntent';
 
 // ─────────────────────────────────────────────────────────
 // Twilio client
@@ -35,6 +38,10 @@ const TWILIO_WHATSAPP_FROM =
 // ─────────────────────────────────────────────────────────
 // Bull queue — async intent processing
 // ─────────────────────────────────────────────────────────
+const WEBHOOK_BASE_URL = process.env.WEBHOOK_BASE_URL?.replace(/\/+$/, '');
+const DELIVERY_STATUS_URL = WEBHOOK_BASE_URL
+  ? `${WEBHOOK_BASE_URL}${DELIVERY_STATUS_PATH}`
+  : undefined;
 const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
 export const INTENT_JOB_ATTEMPTS = 1;
 
@@ -127,10 +134,8 @@ export function twilioSignatureMiddleware(
     return;
   }
 
-  const webhookUrl =
-    process.env.WEBHOOK_BASE_URL
-      ? `${process.env.WEBHOOK_BASE_URL}/api/whatsapp/webhook`
-      : `${req.protocol}://${req.get('host')}/api/whatsapp/webhook`;
+  const publicBaseUrl = WEBHOOK_BASE_URL || `${req.protocol}://${req.get('host')}`;
+  const webhookUrl = `${publicBaseUrl}${req.originalUrl}`;
 
   const signature = req.headers['x-twilio-signature'] as string | undefined;
 
@@ -147,6 +152,25 @@ export function twilioSignatureMiddleware(
   }
 
   next();
+}
+
+export async function handleWhatsAppDeliveryStatus(req: Request, res: Response): Promise<void> {
+  const { MessageSid, MessageStatus } = req.body ?? {};
+  if (
+    typeof MessageSid !== 'string' || !/^(SM|MM)[a-f0-9]{32}$/i.test(MessageSid) ||
+    typeof MessageStatus !== 'string'
+  ) {
+    res.status(400).end();
+    return;
+  }
+
+  try {
+    await storeDeliveryReceipt((...args) => intentQueue.client.eval(...args), MessageSid, MessageStatus);
+    res.status(204).end();
+  } catch (error) {
+    console.error('[deliveryStatus] failed to store receipt:', error);
+    res.status(503).end();
+  }
 }
 
 // ─────────────────────────────────────────────────────────
@@ -409,134 +433,11 @@ intentQueue.process(INTENT_WORKER_CONCURRENCY, async (job) => {
     from: TWILIO_WHATSAPP_FROM,
     to: fromNumber,
     body: replyText,
+    statusCallback: DELIVERY_STATUS_URL,
   });
 
   await logMessageToDb(phoneHash, 'outbound', replyText);
 });
-
-// ─────────────────────────────────────────────────────────
-// Intent processor for verified users
-// ─────────────────────────────────────────────────────────
-
-export async function processVerifiedIntent(
-  phoneHash: string,
-  messageBody: string,
-): Promise<string> {
-  const locale = getSessionLocale(phoneHash);
-  const t = (english: string, spanish: string) => translate(locale, english, spanish);
-  const lower = messageBody.toLowerCase().trim();
-
-  // Balance / portfolio
-  if (
-    lower.includes('balance') ||
-    lower.includes('portfolio') ||
-    lower.includes('how much') ||
-    lower.includes('my account')
-  ) {
-    const portfolio = await getPortfolio(phoneHash);
-    return t(
-      `💰 Your NeuroWealth Portfolio\n\n` +
-      `Balance: ${portfolio.balance.toFixed(2)} USDC ($${portfolio.usdEquivalent.toFixed(2)})\n` +
-      `Earnings today: +$${portfolio.dailyEarnings.toFixed(2)}\n` +
-      `Current APY: ${portfolio.apy}%\n` +
-      `Strategy: ${portfolio.strategy}`,
-      `💰 Tu cartera de NeuroWealth\n\n` +
-      `Saldo: ${portfolio.balance.toFixed(2)} USDC ($${portfolio.usdEquivalent.toFixed(2)})\n` +
-      `Ganancias de hoy: +$${portfolio.dailyEarnings.toFixed(2)}\n` +
-      `APY actual: ${portfolio.apy}%\n` +
-      `Estrategia: ${portfolio.strategy}`,
-    );
-  }
-
-  // Deposit
-  const depositMatch = lower.match(/deposit\s+([\d.]+)/);
-  if (depositMatch) {
-    const amount = parseFloat(depositMatch[1]);
-    const strategyMatch = lower.match(/\b(conservative|balanced|growth)\b/);
-    const strategy = strategyMatch ? strategyMatch[1] : undefined;
-    const result = await handleDeposit(phoneHash, amount, strategy, locale);
-    return `🤖 ${result.message}`;
-  }
-
-  // Withdraw all
-  if (
-    lower.includes('withdraw all') ||
-    lower.includes('withdraw everything')
-  ) {
-    const result = await handleWithdraw(phoneHash, undefined, true, locale);
-    return `🤖 ${result.message}`;
-  }
-
-  // Withdraw amount
-  const withdrawMatch = lower.match(/withdraw\s+([\d.]+)/);
-  if (withdrawMatch) {
-    const amount = parseFloat(withdrawMatch[1]);
-    const result = await handleWithdraw(phoneHash, amount, false, locale);
-    return `🤖 ${result.message}`;
-  }
-
-  // Strategy switch
-  const stratMatch = lower.match(
-    /switch\s+(?:to\s+)?(conservative|balanced|growth)/,
-  );
-  if (stratMatch) {
-    const strat = stratMatch[1];
-    return t(
-      `✅ Strategy updated to ${strat.toUpperCase()}. The AI agent will rebalance on the next scheduled run.`,
-      `✅ Estrategia cambiada a ${strat.toUpperCase()}. El agente hará el rebalanceo en la próxima ejecución programada.`,
-    );
-  }
-
-  // Earnings
-  if (lower.includes('earn') || lower.includes('yield') || lower.includes('apy')) {
-    const portfolio = await getPortfolio(phoneHash);
-    return t(
-      `📈 Earnings Summary\n\n` +
-      `Today: +$${portfolio.dailyEarnings.toFixed(2)}\n` +
-      `Current APY: ${portfolio.apy}%\n` +
-      `Strategy: ${portfolio.strategy}`,
-      `📈 Resumen de ganancias\n\n` +
-      `Hoy: +$${portfolio.dailyEarnings.toFixed(2)}\n` +
-      `APY actual: ${portfolio.apy}%\n` +
-      `Estrategia: ${portfolio.strategy}`,
-    );
-  }
-
-  // Greeting
-  if (lower === 'hi' || lower === 'hello' || lower === 'help') {
-    return t(
-      `🤖 Hi! I'm your NeuroWealth AI Agent.\n\n` +
-      `Commands:\n` +
-      `• "balance" — view portfolio\n` +
-      `• "deposit 100 USDC" — deposit funds\n` +
-      `• "withdraw 50" — withdraw USDC\n` +
-      `• "switch to growth" — change strategy\n` +
-      `• "earnings" — view yield stats\n` +
-      `• "language es" — switch to Spanish`,
-      `🤖 ¡Hola! Soy tu agente de NeuroWealth.\n\n` +
-      `Comandos:\n` +
-      `• "balance" — consultar la cartera\n` +
-      `• "deposit 100 USDC" — depositar fondos\n` +
-      `• "withdraw 50" — retirar USDC\n` +
-      `• "switch to growth" — cambiar de estrategia\n` +
-      `• "earnings" — consultar las ganancias\n` +
-      `• "language en" — cambiar a inglés`,
-    );
-  }
-
-  return t(
-    `I didn't quite catch that. Try:\n` +
-    `• "deposit 50 USDC"\n` +
-    `• "what's my balance"\n` +
-    `• "withdraw all"\n` +
-    `• "switch to conservative"`,
-    `No entendí tu solicitud. Prueba con:\n` +
-    `• "deposit 50 USDC"\n` +
-    `• "balance"\n` +
-    `• "withdraw all"\n` +
-    `• "switch to conservative"`,
-  );
-}
 
 // ─────────────────────────────────────────────────────────
 // DB logging

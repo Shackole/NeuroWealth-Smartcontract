@@ -2,6 +2,8 @@ import { pool } from './db';
 import { evaluateYield } from './yieldComparison';
 import { processEventForAlerts } from './alertEngine';
 import logger from './logger';
+import { setListenerHealth } from './healthState';
+import { eventRequestPosition } from './eventCursor';
 import { withRetry } from './retry';
 import { rpcCall, getRpcServer } from './rpcClient';
 import {
@@ -51,101 +53,134 @@ export async function startEventListener(checkpointLedger?: number) {
     return;
   }
 
-  try {
-    const latestLedgerResponse = await withRetry(
-      () => rpcCall((s) => s.getLatestLedger()),
+  if (eventInterval) return;
+
+  let startLedger: number | undefined;
+  let polling = false;
+  const filters = [{ type: 'contract' as const, contractIds: [VAULT_CONTRACT_ID] }];
+
+  let transportFailed = false;
+
+  async function transport<T>(operation: () => Promise<T>): Promise<T> {
+    try {
+      const result = await operation();
+      setListenerHealth('transport', 'ok');
+      return result;
+    } catch (error) {
+      transportFailed = true;
+      setListenerHealth('transport', 'error');
+      throw error;
+    }
+  }
+
+  async function initialize(): Promise<number> {
+    const latest = await transport(() => withRetry(
+      () => rpcCall((server) => server.getLatestLedger()),
       'getLatestLedger',
-    );
-    let startLedger = latestLedgerResponse.sequence;
-    observeEventLedger(startLedger);
-    recordEventCheckpoint(startLedger, startLedger);
-    logger.info({ startLedger }, 'Starting event listener');
+    ));
+    observeEventLedger(latest.sequence);
+    const firstLedger = checkpointLedger && checkpointLedger > 0
+      ? checkpointLedger + 1
+      : latest.sequence;
+    logger.info({ startLedger: firstLedger }, 'Starting event listener');
+    return firstLedger;
+  }
 
-    eventInterval = setInterval(async () => {
-      try {
-        const filters = [{ type: 'contract' as const, contractIds: [VAULT_CONTRACT_ID] }];
-        const firstPage = await withRetry(
-          () => rpcCall((s) => s.getEvents({
-            startLedger,
+  const poll = async () => {
+    if (polling) return;
+    polling = true;
+    transportFailed = false;
+    try {
+      if (startLedger === undefined) startLedger = await initialize();
+      const windowStart = startLedger;
+      const fetchPage = (cursor?: string) => transport(async () => {
+        const page = await withRetry(
+          () => rpcCall((server) => server.getEvents({
+            ...eventRequestPosition(windowStart, cursor ?? null, EVENT_PAGE_LIMIT),
             filters,
-            pagination: { limit: EVENT_PAGE_LIMIT },
           })),
-          'getEvents',
+          cursor ? 'getEvents page' : 'getEvents',
         );
-        let latestLedger = firstPage.latestLedger;
-        observeEventLedger(latestLedger);
-        let page = firstPage;
+        if (page.events.length === EVENT_PAGE_LIMIT && !page.events[EVENT_PAGE_LIMIT - 1]?.cursor) {
+          throw new Error('Full RPC event page returned no continuation cursor');
+        }
+        return page;
+      });
+      const firstPage = await fetchPage();
+      let latestLedger = firstPage.latestLedger;
+      observeEventLedger(latestLedger);
+      let page = firstPage;
 
-        while (true) {
-          for (const event of page.events) {
-            const topics = event.topic.map(t => t.toString());
-            let eventType = '';
+      while (true) {
+        for (const event of page.events) {
+          const topics = event.topic.map(t => t.toString());
+          let eventType = '';
 
-            if (topics.some(t => t.includes('deposit'))) {
-              eventType = 'deposit';
-            } else if (topics.some(t => t.includes('withdraw'))) {
-              eventType = 'withdraw';
-            }
-
-            if (!eventType) continue;
-
-            logger.info({ eventType, ledger: event.ledger }, 'Detected event');
-
-            await logEventToDb(eventType, event.id, event.ledger);
-
-            if (eventType === 'deposit') {
-              logger.info('New deposit detected, evaluating yield');
-              const userStrategy = 'balanced';
-              const currentProtocol = 'none';
-
-              const decision = await evaluateYield(userStrategy, currentProtocol, 0);
-
-              if (decision.shouldRebalance) {
-                logger.info({ targetProtocol: decision.targetProtocol }, 'Rebalance needed');
-              }
-            }
-
-            const alertPayload = { type: eventType, amount: 150000 };
-            await processEventForAlerts(alertPayload);
+          if (topics.some(t => t.includes('deposit'))) {
+            eventType = 'deposit';
+          } else if (topics.some(t => t.includes('withdraw'))) {
+            eventType = 'withdraw';
           }
 
-          if (page.events.length < EVENT_PAGE_LIMIT) break;
-          const cursor = page.events[page.events.length - 1]?.cursor;
-          if (!cursor) throw new Error('Full RPC event page returned no continuation cursor');
-          page = await withRetry(
-            () => rpcCall((s) => s.getEvents({
-              filters,
-              pagination: { cursor, limit: EVENT_PAGE_LIMIT },
-            })),
-            'getEvents page',
-          );
-          latestLedger = Math.max(latestLedger, page.latestLedger);
-          observeEventLedger(latestLedger);
-        }
-        // The successful getEvents response covers the scanned range even when
-        // the vault emitted no matching events in that range.
-        startLedger = Math.max(startLedger, latestLedger + 1);
-        recordEventCheckpoint(latestLedger, latestLedger);
-      } catch (error) {
-        recordEventProcessingFailure();
-        logger.error({ error: error instanceof Error ? error.message : error }, 'Error polling Soroban events');
-      }
-    }, 5000);
+          if (!eventType) continue;
 
+          logger.info({ eventType, ledger: event.ledger }, 'Detected event');
+
+          await logEventToDb(eventType, event.id, event.ledger);
+
+          if (eventType === 'deposit') {
+            logger.info('New deposit detected, evaluating yield');
+            const userStrategy = 'balanced';
+            const currentProtocol = 'none';
+
+            const decision = await evaluateYield(userStrategy, currentProtocol, 0);
+
+            if (decision.shouldRebalance) {
+              logger.info({ targetProtocol: decision.targetProtocol }, 'Rebalance needed');
+            }
+          }
+
+          const alertPayload = { type: eventType, amount: 150000 };
+          await processEventForAlerts(alertPayload);
+        }
+
+        if (page.events.length < EVENT_PAGE_LIMIT) break;
+        page = await fetchPage(page.events[page.events.length - 1].cursor);
+        latestLedger = Math.max(latestLedger, page.latestLedger);
+        observeEventLedger(latestLedger);
+      }
+      // The successful getEvents response covers the scanned range even when
+      // the vault emitted no matching events in that range.
+      startLedger = Math.max(startLedger, latestLedger + 1);
+      recordEventCheckpoint(latestLedger, latestLedger);
+      setListenerHealth('processing', 'ok');
+    } catch (error) {
+      if (!transportFailed) {
+        setListenerHealth('processing', 'error');
+        recordEventProcessingFailure();
+      }
+      logger.error({ error: error instanceof Error ? error.message : error }, 'Error polling Soroban events');
+    } finally {
+      polling = false;
+    }
+  };
+
+  polling = true;
+  eventInterval = setInterval(poll, 5000);
+  try {
+    startLedger = await initialize();
   } catch (error) {
     logger.error({ error: error instanceof Error ? error.message : error }, 'Failed to initialize event listener');
+  } finally {
+    polling = false;
   }
 }
 
 async function logEventToDb(type: string, eventId: string, ledger: number) {
-  try {
-    if (process.env.DATABASE_URL) {
-      await pool.query(
-        'INSERT INTO vault_events (event_id, event_type, ledger_sequence, created_at) VALUES ($1, $2, $3, NOW()) ON CONFLICT DO NOTHING',
-        [eventId, type, ledger]
-      );
-    }
-  } catch (error) {
-    logger.error({ error: error instanceof Error ? error.message : error }, 'Database logging failed');
+  if (process.env.DATABASE_URL) {
+    await pool.query(
+      'INSERT INTO vault_events (event_id, event_type, ledger_sequence, created_at) VALUES ($1, $2, $3, NOW()) ON CONFLICT DO NOTHING',
+      [eventId, type, ledger],
+    );
   }
 }

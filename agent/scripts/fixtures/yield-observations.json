@@ -1,0 +1,26 @@
+[
+  {
+    "protocolId": "blend",
+    "name": "Blend",
+    "type": "blend",
+    "currentApy": 0.08,
+    "historicalApy7d": 0.078,
+    "historicalApy30d": 0.075,
+    "tvlUsdc": 2500000,
+    "volatility": 0.02,
+    "riskScore": 20,
+    "fetchedAt": 1735689600000
+  },
+  {
+    "protocolId": "dex",
+    "name": "DEX Liquidity Pool",
+    "type": "dex_lp",
+    "currentApy": 0.09,
+    "historicalApy7d": 0.085,
+    "historicalApy30d": 0.08,
+    "tvlUsdc": 1000000,
+    "volatility": 0.04,
+    "riskScore": 30,
+    "fetchedAt": 1735689600000
+  }
+]
