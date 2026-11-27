@@ -1,0 +1,10 @@
+[
+  {"mode": "rehearse", "scope": "full", "expected": "validate-only"},
+  {"mode": "rehearse", "scope": "contract-only", "expected": "validate-only"},
+  {"mode": "deploy", "scope": "full", "expected": "deploy-full"},
+  {"mode": "deploy", "scope": "contract-only", "expected": "deploy-contract"},
+  {"mode": "", "scope": "full", "expected": "invalid"},
+  {"mode": "dry-run", "scope": "full", "expected": "invalid"},
+  {"mode": "deploy", "scope": "production", "expected": "invalid"},
+  {"mode": "rehearse", "scope": "", "expected": "invalid"}
+]

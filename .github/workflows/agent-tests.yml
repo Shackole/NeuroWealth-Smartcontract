@@ -44,7 +44,18 @@ jobs:
         run: npx --yes tsx@4.20.6 src/alertEngine.test.ts
       - name: Run the discovered agent test suite
         working-directory: agent
-        run: npm test
+        shell: bash
+        run: |
+          mkdir -p test-reports
+          npm test 2>&1 | tee test-reports/agent-tests.log
+
+      - name: Upload agent test reports
+        if: ${{ !cancelled() && hashFiles('agent/test-reports/**') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-test-reports
+          path: agent/test-reports/
+          retention-days: 14
 
   queue-metrics:
     runs-on: ubuntu-latest

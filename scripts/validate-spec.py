@@ -190,69 +190,59 @@ class ContractValidator:
     # ------------------------------------------------------------------
 
     def _validate_error_codes(self):
-        """
-        Extract VaultError enum variants and their numeric codes from source,
-        then verify the spec's error entries match.
-
-        Detects: renumbered codes, removed variants, or spec entries that no
-        longer correspond to a real error variant.
-        """
+        """Compare the deployed enum and generated spec with the committed snapshot."""
         print("\n❗ Validating Error Codes...")
 
         enum_match = re.search(
-            r"pub\s+enum\s+VaultError\s*\{([^}]*)\}", self.source, re.DOTALL
+            r"#\[contracterror(?:\([^\n]*\))?\]\s*(?:#\[[^\n]*\]\s*)*"
+            r"pub\s+enum\s+VaultError\s*\{([^}]*)\}",
+            self.source,
         )
         if not enum_match:
-            self.warnings.append(
-                "Could not locate VaultError enum in source — skipping error code validation"
-            )
+            self.errors.append("Could not locate the typed VaultError enum in contract source")
             return
 
-        contract_errors: Dict[int, str] = {}
-        for variant, code_str in re.findall(r"(\w+)\s*=\s*(\d+)\s*,", enum_match.group(1)):
-            contract_errors[int(code_str)] = variant
-
-        print(f"   Contract defines {len(contract_errors)} VaultError variants")
-
-        spec_vault_errors: Dict[int, str] = {}
-        for key, val in self.spec.get("errors", {}).items():
-            if not key.startswith("VaultError::"):
+        contract_errors = {}
+        for entry in re.sub(r"//[^\n]*", "", enum_match.group(1)).split(","):
+            if not entry.strip():
                 continue
-            variant_name = key[len("VaultError::"):]
-            code = val.get("code") if isinstance(val, dict) else None
-            if code is None:
-                self.warnings.append(f"Spec error entry '{key}' has no 'code' field")
+            variant = re.fullmatch(r"\s*(\w+)\s*=\s*(\d+)\s*", entry)
+            if not variant:
+                self.errors.append(f"Could not parse VaultError variant: {entry.strip()}")
                 continue
-            spec_vault_errors[int(code)] = variant_name
+            name, code = variant.groups()
+            contract_errors[name] = int(code)
 
-        print(f"   Spec documents {len(spec_vault_errors)} VaultError entries")
+        spec_errors = {}
+        for key, value in self.spec.get("errors", {}).items():
+            if key.startswith("VaultError::"):
+                name = key.split("::", 1)[1]
+                code = value.get("code") if isinstance(value, dict) else None
+                if type(code) is not int:
+                    self.errors.append(f"Spec error {key} must have an integer code")
+                    continue
+                spec_errors[name] = code
 
-        drift_found = False
+        snapshot_path = Path(__file__).with_name("vault-error-snapshot.json")
+        snapshot = json.loads(snapshot_path.read_text())
+        for label, actual in (("contract source", contract_errors), ("generated spec", spec_errors)):
+            for name in sorted(snapshot.keys() | actual.keys()):
+                if name not in actual:
+                    self.errors.append(
+                        f"{label}: missing VaultError::{name} (snapshot code {snapshot[name]})"
+                    )
+                elif name not in snapshot:
+                    self.errors.append(
+                        f"{label}: unexpected VaultError::{name} (code {actual[name]})"
+                    )
+                elif snapshot[name] != actual[name]:
+                    self.errors.append(
+                        f"{label}: VaultError::{name} expected code {snapshot[name]}, "
+                        f"found {actual[name]}"
+                    )
 
-        for code, variant in sorted(contract_errors.items()):
-            if code not in spec_vault_errors:
-                self.errors.append(
-                    f"VaultError::{variant} (code {code}) exists in contract "
-                    f"but is absent from spec errors"
-                )
-                drift_found = True
-            elif spec_vault_errors[code] != variant:
-                self.errors.append(
-                    f"Error code {code}: contract has '{variant}' but spec has "
-                    f"'{spec_vault_errors[code]}' — name drift detected"
-                )
-                drift_found = True
-
-        for code, variant in sorted(spec_vault_errors.items()):
-            if code not in contract_errors:
-                self.errors.append(
-                    f"Spec error VaultError::{variant} (code {code}) has no "
-                    f"matching variant in the contract enum"
-                )
-                drift_found = True
-
-        if not drift_found:
-            self.info.append("✓ All VaultError codes match between contract and spec")
+        if snapshot == contract_errors == spec_errors:
+            self.info.append("✓ VaultError variants match the committed snapshot")
 
     # ------------------------------------------------------------------
     # Spec structure validation

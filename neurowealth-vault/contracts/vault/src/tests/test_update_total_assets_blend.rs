@@ -15,7 +15,12 @@
 extern crate std;
 
 use super::utils::*;
-use soroban_sdk::{symbol_short, testutils::Address as _, Address, Env};
+use crate::{YieldAttributedEvent, TOPIC_YIELD_ATTRIBUTED};
+use soroban_sdk::{
+    symbol_short,
+    testutils::{Address as _, Ledger as _},
+    Address, Env, TryFromVal,
+};
 
 // ============================================================================
 // HELPERS
@@ -91,25 +96,29 @@ fn test_update_total_assets_blend_yield_succeeds() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let deposit = 20_000_000_i128;
-    let yield_amount = 2_000_000_i128; // 10% yield
+    let principal = 20_000_000_i128;
+    let yield_amount = 2_000_000_i128;
+    let report_ledger = 120;
+    let report_timestamp = 600;
+    let (_, agent, _, pool, client, token_client) = setup_all_in_blend(&env, principal);
+    assert_eq!(client.get_asset_breakdown(), (0, principal));
 
-    let (_, agent, usdc_token, blend_pool, client, token_client) =
-        setup_all_in_blend(&env, deposit);
+    // The pool balance response includes principal plus accrued yield.
+    token_client.mint(&pool, &yield_amount);
+    env.ledger().set_sequence_number(report_ledger);
+    env.ledger().set_timestamp(report_timestamp);
+    let position_value = principal + yield_amount;
+    assert_eq!(client.get_asset_breakdown(), (0, position_value));
 
-    // Simulate Blend accruing yield by minting directly to the pool.
-    token_client.mint(&blend_pool, &yield_amount);
-    assert_eq!(token_client.balance(&blend_pool), deposit + yield_amount);
+    client.update_total_assets(&agent, &position_value, &false, &0);
+    assert_eq!(client.get_total_assets(), position_value);
 
-    // Idle = 0, deployed (pool reports) = deposit + yield_amount
-    // total_available = deposit + yield_amount → new_total should pass.
-    let new_total = deposit + yield_amount;
-    client.update_total_assets(&agent, &new_total, &false, &0);
-
-    assert_eq!(client.get_total_assets(), new_total);
-    // Token is still in pool (agent didn't withdraw)
-    assert_eq!(token_client.balance(&usdc_token), 0_i128); // pool still holds it
-    drop(token_client); // suppress unused warning
+    let events = find_events_by_topic(env.events().all(), &env, TOPIC_YIELD_ATTRIBUTED);
+    let (_, _, data) = events.last().expect("expected yield attribution");
+    let attribution = YieldAttributedEvent::try_from_val(&env, data).unwrap();
+    assert_eq!(attribution.protocol, symbol_short!("blend"));
+    assert_eq!(attribution.amount, yield_amount);
+    assert_eq!(attribution.timestamp, report_timestamp);
 }
 
 // ============================================================================

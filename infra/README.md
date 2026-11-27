@@ -210,3 +210,25 @@ For an isolated staging recovery drill, use
 [`docs/STAGING_RECOVERY_EXERCISE.md`](../docs/STAGING_RECOVERY_EXERCISE.md).
 Do not declare the event-replay portion complete while the runbook's durable
 checkpoint gate is blocked.
+
+### Monitoring deployment records
+
+Deploy with a new absolute record directory, then reuse that directory to
+verify the running stack:
+
+```bash
+./infra/monitoring-deployment.sh deploy "$PWD/monitoring-record-20260101"
+./infra/monitoring-deployment.sh smoke "$PWD/monitoring-record-20260101"
+```
+
+The deployment snapshots Compose, Prometheus scrape settings and rules,
+Alertmanager settings, and Grafana provisioning and dashboards. The record
+contains SHA-256 manifests for the files mounted by each service. Keep the
+record directory in place for the life of the deployment. Its configuration
+snapshot is mounted read-only in the containers.
+
+Both commands verify the record, container health, the deployment digest on
+each container, and the configuration file bytes inside each container.
+Redeploy with a fresh record when configuration changes. The smoke check
+validates configuration files and service health. It does not verify the
+agent's scrape endpoint or capture runtime environment values in the record.

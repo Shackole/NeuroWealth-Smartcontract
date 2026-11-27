@@ -42,8 +42,17 @@ fn test_owner_can_emergency_harvest() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, _usdc_token, _blend_pool) = setup_with_deployed_funds(&env);
+    let (contract_id, _agent, _owner, usdc_token, blend_pool) = setup_with_deployed_funds(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
+
+    let token = TestTokenClient::new(&env, &usdc_token);
+    let pool = MockBlendPoolClient::new(&env, &blend_pool);
+    let deployed = 10_000_000_i128;
+
+    // A second deposit leaves idle funds alongside the existing Blend position.
+    let idle = 3_000_000_i128;
+    let user = Address::generate(&env);
+    mint_and_deposit(&env, &client, &usdc_token, &user, idle);
 
     client.emergency_harvest(&0_i128);
 
@@ -58,10 +67,15 @@ fn test_owner_can_emergency_harvest() {
     let event = EmergencyHarvestEvent::try_from_val(&env, data)
         .expect("EmergencyHarvestEvent decode failed");
     assert_eq!(event.protocol, symbol_short!("blend"));
-    assert!(
-        event.amount_harvested >= 0,
-        "harvested amount must be non-negative"
-    );
+    assert_eq!(event.amount_harvested, deployed);
+
+    assert_eq!(token.balance(&contract_id), idle);
+    assert_eq!(pool.supplied(&usdc_token), deployed);
+    assert_eq!(client.get_idle_balance(), idle);
+    assert_eq!(client.get_deployed_assets(), deployed);
+    assert_eq!(client.get_asset_breakdown(), (idle, deployed));
+    assert_eq!(client.get_total_assets(), idle + deployed);
+    assert_eq!(client.get_total_shares(), idle + deployed);
 }
 
 #[test]

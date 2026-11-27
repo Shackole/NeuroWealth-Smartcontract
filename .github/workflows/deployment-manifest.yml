@@ -1,0 +1,26 @@
+name: Deployment Manifest Schema
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/deployment-manifest.yml'
+      - 'scripts/verify-deployment*.sh'
+      - 'scripts/verify-deployment-manifest.py'
+      - 'scripts/deploy-staging.sh'
+      - 'docs/fixtures/deployment/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  manifest-schema:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Validate documented deployment fixtures
+        run: |
+          for environment in staging production; do
+            bash scripts/verify-deployment.sh --manifest "docs/fixtures/deployment/$environment.json" \
+              --environment "$environment"
+          done

@@ -54,6 +54,7 @@ the conversation. Regional tags such as `es-MX` use their base language.
 New sessions and unsupported language selections use English. The preference
 lasts until the conversation session expires. The command examples shown in
 each language use the bot's existing command vocabulary.
+
 ## Outbound delivery receipts
 
 Set `WEBHOOK_BASE_URL` to the public service URL to track outbound WhatsApp
