@@ -326,3 +326,23 @@ fn harvest_rate_limit_can_be_disabled() {
     assert_eq!(config.max_calls, 0, "max_calls must be 0 when disabled");
     assert_eq!(config.window_ledgers, 0, "window_ledgers must be 0 when disabled");
 }
+
+#[test]
+fn batch_size_setters_update_both_getters() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (vault_id, _agent, _owner) = setup_vault(&env);
+    let client = NeuroWealthVaultClient::new(&env, &vault_id);
+
+    client.set_max_batch_size(&12);
+    assert_eq!(client.get_max_batch_size(), 12);
+    assert_eq!(client.get_batch_size_limit(), 12);
+
+    client.set_batch_size_limit(&4);
+    assert_eq!(client.get_max_batch_size(), 4);
+    assert_eq!(client.get_batch_size_limit(), 4);
+
+    client.set_batch_size_limit(&0);
+    assert_eq!(client.get_max_batch_size(), 0);
+    assert_eq!(client.get_batch_size_limit(), 0);
+}
