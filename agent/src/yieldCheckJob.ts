@@ -18,6 +18,7 @@
  *  - Uses @stellar/stellar-sdk to submit the rebalance transaction
  */
 
+import { recordYieldSkip, type YieldSkipReason } from './operationalMetrics';
 import { Pool } from 'pg';
 import { ApyRetryBudget } from './apyRetryBudget';
 import logger from './logger';
@@ -80,7 +81,7 @@ export interface YieldCheckResult {
   bestApy: number;
   rebalanceTriggered: boolean;
   /** Why rebalance was skipped, when applicable. */
-  skipReason?: string;
+  skipReason?: YieldSkipReason;
   txHash?: string;
   minOut?: number;
   deployedAmount?: number;
@@ -243,8 +244,21 @@ export class YieldCheckJob {
         bestApy: 0,
         rebalanceTriggered: false,
         error: err instanceof Error ? err.message : String(err),
+        skipReason: 'evaluation_failed',
       };
       logger.error({ jobId, error: result.error }, 'Yield check job threw unexpectedly');
+    }
+
+    if (result.skipReason) {
+      recordYieldSkip(result.skipReason);
+      logger.info({
+        jobId,
+        reason: result.skipReason,
+        cooldownLedgersRemaining: result.cooldownLedgersRemaining,
+        currentApy: result.currentApy,
+        bestApy: result.bestApy,
+        minImprovementThreshold: this.config.minImprovementThreshold,
+      }, 'Yield check skipped');
     }
 
     // Persist regardless of outcome
@@ -332,11 +346,6 @@ export class YieldCheckJob {
     const ledgersSinceRebalance = currentLedger - lastRebalanceLedger;
     if (cooldownLedgers > 0 && ledgersSinceRebalance < cooldownLedgers) {
       const remaining = cooldownLedgers - ledgersSinceRebalance;
-      logger.info(
-        { jobId, remaining, cooldownLedgers, ledgersSinceRebalance },
-        'Rebalance cooldown active — skipping',
-      );
-
       // Still need current APY for the log record; use a best-effort fetch
       const currentApyData = await this.fetchApySafe(currentProtocol);
 
@@ -348,7 +357,7 @@ export class YieldCheckJob {
         bestProtocol: currentProtocol,
         bestApy: currentApyData?.currentApy ?? 0,
         rebalanceTriggered: false,
-        skipReason: `cooldown_active: ${remaining} ledgers remaining`,
+        skipReason: 'cooldown_active',
         cooldownLedgersRemaining: remaining,
         deployedAmount: deployedAmountStroops,
       };
@@ -418,9 +427,7 @@ export class YieldCheckJob {
       const reason =
         bestProtocol === currentProtocol
           ? 'already_on_best_protocol'
-          : `improvement_below_threshold: ${((bestApy - currentApy) * 100).toFixed(3)}% < ${(this.config.minImprovementThreshold * 100).toFixed(1)}%`;
-
-      logger.info({ jobId, reason }, 'No rebalance needed');
+          : 'improvement_below_threshold';
 
       return {
         jobId,
@@ -504,7 +511,7 @@ export class YieldCheckJob {
             return {
               jobId, checkedAt, currentProtocol, currentApy, bestProtocol, bestApy,
               rebalanceTriggered: true, txHash: reconciled.txHash, minOut,
-              deployedAmount: deployedAmountStroops, skipReason: 'submission_reconciled_after_uncertain_response',
+              deployedAmount: deployedAmountStroops,
             };
           }
         } catch (reconcileError) {
